@@ -966,6 +966,8 @@ class CG:
         self.func_ret_lbl = self.fresh('func_ret')
         self.made_call = False                # any emitted call forces `mov sp,bp`
         self.return_blocks = {}               # const value -> shared `return K` block label
+        self.block_labels = {}                # if-body AST repr -> shared block label
+        self.dup_blocks = self._find_dup_if_blocks(body)  # bodies worth cross-jumping
         # Function args go at [bp+4], [bp+6], ...  (positive offsets)
         # Stored in self.locals with positive offsets to distinguish from
         # locals (which get negative offsets via collect_locals below).
@@ -1049,6 +1051,29 @@ class CG:
                 return True
             return any(self._has_deref(c) for c in node)
         return False
+
+    @staticmethod
+    def _block_terminates(body):
+        """True if the statement list always exits (no fall-through) — its last
+        statement is a return/goto/break/continue."""
+        return bool(body) and body[-1][0] in (
+            'return', 'goto', 'break', 'continue')
+
+    def _find_dup_if_blocks(self, body):
+        """Set of repr(if-body) appearing in >= 2 terminating `if (cond){body}`
+        statements — the cross-jump candidates.  Only these get a shared (cold)
+        block; a unique block stays a fall-through and may use live registers."""
+        counts = {}
+        def walk(node):
+            if isinstance(node, (list, tuple)):
+                if (isinstance(node, tuple) and len(node) >= 3 and node[0] == 'if'
+                        and not node[3] and self._block_terminates(node[2])):
+                    k = repr(node[2])
+                    counts[k] = counts.get(k, 0) + 1
+                for c in node:
+                    walk(c)
+        walk(body)
+        return {k for k, v in counts.items() if v >= 2}
 
     def _has_branch(self, node):
         """True if the body has any control flow (branch/loop/goto) — i.e. it is
@@ -1376,6 +1401,25 @@ class CG:
                     self.return_blocks[val] = blk
                 self.expr_to_ax(val)
                 self.emit_jmp_short(self.func_ret_lbl)
+                self.lbl(done)
+                return
+            # Block cross-jumping: `if (cond) { ...; return/goto/break }` whose whole
+            # body matches an earlier such `if` shares one copy — the later one JCCs
+            # straight to that block.  Only for a *terminating* body (it cannot fall
+            # through, so reusing it can't change what runs after the original `if`).
+            if (not s[3] and self._block_terminates(s[2])
+                    and repr(s[2]) in self.dup_blocks):
+                key = repr(s[2])
+                if key in self.block_labels:
+                    self.cond_jump(s[1], self.block_labels[key], True)
+                    return
+                done = self.fresh('done')
+                self.cond_jump(s[1], done, False)
+                blk = self.fresh('blk')
+                self.lbl(blk)
+                self.block_labels[key] = blk
+                for ss in s[2]:
+                    self.stmt(ss)
                 self.lbl(done)
                 return
             if s[3]:

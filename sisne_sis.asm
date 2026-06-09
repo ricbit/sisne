@@ -3947,7 +3947,8 @@ READ_FCB_WITH_NETWORK:
          * WRITE_AT_FCB_POSITION) or the driver/network path (GET_DPB_DRIVER_VECTOR +
          * RETRY_NETWORK_LOOP + WRITE_DIRTY_BUFFER_TO_DISK), updating the caller's count
          * and position, zero-padding short reads, and returning a status byte in AL.
-         * DS-relative globals; goto-faithful first pass.
+         * DS-relative globals. The three short-read exits (`*count = 0; return 1;`) are
+         * written inline; tiny_cc cross-jumps the identical blocks into one.
          */
 
         extern unsigned char far *find_driver_by_psp(unsigned char far *fcb) __addr__(0x1D26);
@@ -4013,12 +4014,14 @@ READ_FCB_WITH_NETWORK:
                 DPB_SECTOR_SIZE = *(int far *)(dpb + 2);
                 CLUSTER_SHIFT = dpb[0x20] + dpb[5];
                 if (*(long far *)(fcb + 0x10) == 0) {
-        return_empty:
                     *count = 0;
                     return 1;
                 }
                 EOF_ANCHOR = divmod32(*(long far *)(fcb + 0x10) - 1, (long)*(unsigned int far *)(fcb + 0x0E));
-                if (FCB_POS > EOF_ANCHOR) goto return_empty;
+                if (FCB_POS > EOF_ANCHOR) {
+                    *count = 0;
+                    return 1;
+                }
                 IO_START = mul32_by_word((long)*(unsigned int far *)(fcb + 0x0E), FCB_POS);
                 if (*count + FCB_POS - 1 >= EOF_ANCHOR) {
                     capped = (unsigned int)EOF_ANCHOR - (unsigned int)FCB_POS + 1;
@@ -4055,7 +4058,10 @@ READ_FCB_WITH_NETWORK:
                 }
             } else {
                 attr_flag = fcb[0x1A] & 0x20;
-                if (*count == 0) goto return_empty;
+                if (*count == 0) {
+                    *count = 0;
+                    return 1;
+                }
                 byte_count = *(unsigned int far *)(fcb + 0x0E) * *count;
                 DRIVER_VEC = get_dpb_driver_vector(fcb);
                 if (NETWORK_ACTIVE != 0) {
