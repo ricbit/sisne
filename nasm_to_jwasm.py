@@ -62,8 +62,19 @@ def expand_compiled(lines):
     out = []
     i = 0
     n = len(lines)
+    header_lines = []   # shared C extern decls prepended to every block
     while i < n:
         line = lines[i]
+        # Shared header block (emitted once at the top): collect its C lines and
+        # drop it — it produces no bytes, only declarations for tiny_cc.
+        if re.match(r'^\s*;@compiled_headers\s*$', line):
+            i += 1
+            while i < n and not re.match(r'^\s*;@endcompiled_headers\s*$', lines[i]):
+                if not lines[i].strip().startswith(';@'):
+                    header_lines.append(lines[i])
+                i += 1
+            i += 1  # skip ;@endcompiled_headers
+            continue
         m = re.match(r'^\s*;@compiled\s+(\S+)\s+([0-9A-Fa-f]+)\s+(\d+)\s*$', line)
         if not m:
             out.append(line)
@@ -86,7 +97,8 @@ def expand_compiled(lines):
             i += 1
         i += 1  # skip ;@endcompiled
 
-        c_src = "\n".join(c_lines)
+        # Prepend the shared header decls so the block holds only its function.
+        c_src = "\n".join(header_lines + c_lines)
         result = tiny_cc.compile_src(c_src, addr_map)
         if name not in result:
             print(f"Error: tiny_cc did not produce function '{name}' from the "

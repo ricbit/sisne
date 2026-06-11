@@ -1,6 +1,6 @@
 ; SISNE (PC/8086, SCOPUS, 1983) — disk 1 main program (SISNE.SIS, loaded by init)
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-06-10
+; Last update at 2026-06-11
 ;
         .8086
         .model tiny
@@ -48,6 +48,197 @@ MAIN_PATH_TABLE                  equ     00EACh    ; Word table of offsets into 
 DEVICE_PATH_BUF                  equ     00C24h    ; Concatenated DEVICE strings — "name\0args\nname\0args\n…"
 DOS_ERROR_FLAG                   equ     0145Fh    ; Cleared at the start of every INT 21h call; set on internal failure
 NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment paragraph, advanced by bump-allocators
+
+        ;@compiled_headers
+        /*
+         * Shared C extern declarations prepended to every [compiled] block by
+         * nasm_to_jwasm.py before tiny_cc, so each block holds only its own function.
+         * Symbols needing a caller-specific signature (divmod32, divmod32_bin,
+         * lookup_cached_sector, get_dpb_by_drive_index, init_fcb_from_drive,
+         * lookup_error_msg, dispatch_request_packet) or whose name maps to different
+         * addresses across functions (LINE_BUF, EOF_ANCHOR, DRIVER_VEC, IO_START,
+         * REQ_BUF, COUNT, CURSOR) keep their per-function extern in the .c.
+         */
+        /* ---- functions ---- */
+        extern int con_getc(int dev) __addr__(0xA0FA);
+        extern int con_getc_brk(int dev) __addr__(0xA145);
+        extern int con_putc(int dev, int c) __addr__(0xA193);
+        extern int con_putc_or_fcb1(int c) __addr__(0xA22C);
+        extern int dispatch_fcb_open(unsigned char far *rec) __addr__(0x85AB);
+        extern int dos_fn_01_char_input_with_echo(unsigned char far *fcb) __addr__(0x08DB);
+        extern int find_fcb_logical_limit(void) __addr__(0xA1FB);
+        extern int lookup_mcb_by_drive_bit7(unsigned char drive) __addr__(0xBD7D);
+        extern int read_back_fat_entry(void) __addr__(0x20A0);
+        extern int read_byte(void) __addr__(0x00F9);
+        extern int read_fcb_path_char(int cursor) __addr__(0xB791);
+        extern int read_or_follow_fat_chain(long pos) __addr__(0x2170);
+        extern long __lshl() __addr__(0xECED);
+        extern long __lshr() __addr__(0xECC1);
+        extern long alloc_and_convert_bpb(unsigned char *pkt) __addr__(0xBE9C);
+        extern long disk_request_dispatch(unsigned char op, long buf, unsigned char x, unsigned char far *lba) __addr__(0x0AAB);
+        extern long pascal mul32_by_word(long a, long b) __addr__(0xEC0D);
+        extern long read_fat_via_dispatch(unsigned int seg, long val) __addr__(0x15A3);
+        extern unsigned char check_con_busy(unsigned char far *drv, unsigned char *ch) __addr__(0xB129);
+        extern unsigned char far *alloc_new_mcb(void) __addr__(0xBE65);
+        extern unsigned char far *disk_verify_request(unsigned char *pkt) __addr__(0xBFB7);
+        extern unsigned char far *get_dpb_driver_vector(unsigned char far *fcb) __addr__(0x17F8);
+        extern unsigned char far *resolve_fcb_driver(unsigned char far *fcb) __addr__(0x1D26);
+        extern unsigned char find_fcb_for_drive(int drive, unsigned char far **out_rec) __addr__(0x1BBC);
+        extern unsigned char get_current_drive(void) __addr__(0xBA01);
+        extern unsigned char get_dpb_cluster_count(unsigned char far *dpb) __addr__(0xBF81);
+        extern unsigned char get_drive_count(void) __addr__(0xB9FB);
+        extern unsigned char int2f_network_1085(unsigned char far *driver, unsigned long io, unsigned int bytes) __addr__(0xEADE);
+        extern unsigned char int2f_network_1087(unsigned char far *rec, unsigned int flag) __addr__(0xEB0E);
+        extern unsigned char invoke_int24_with_device() __addr__(0xEB37);
+        extern unsigned char read_con_or_fcb(unsigned char far *drv, unsigned char *ch) __addr__(0xB022);
+        extern unsigned int aligned_dpb_calc(unsigned int z, unsigned char drive, unsigned int f34, long start, unsigned int bytes, unsigned char far *buf, unsigned int csize) __addr__(0xBA93);
+        extern unsigned int char_device_io(unsigned char attr, unsigned int bytes, unsigned char far *buf) __addr__(0x2240);
+        extern unsigned int device_output_packet(unsigned char far *drv, unsigned char far *buf, unsigned int count) __addr__(0xB1F4);
+        extern unsigned int div_ax_by_bx_capped(unsigned int rsize, unsigned char far *buf, unsigned int cnt) __addr__(0xD1E3);
+        extern unsigned int get_sda_preserved_size(void) __addr__(0x178E);
+        extern unsigned int read_at_fcb_position(unsigned char drive, unsigned int chunk, unsigned int coff, unsigned int bytes, unsigned char far *buf, unsigned char ext, unsigned int *work) __addr__(0x166F);
+        extern unsigned int read_next_buffer_chunk(void) __addr__(0x205F);
+        extern unsigned int scan_for_ctrl_z(unsigned char far *buf, unsigned int bytes) __addr__(0xD241);
+        extern unsigned int write_at_fcb_position(unsigned char drive, unsigned int chunk, unsigned int coff, unsigned int bytes, unsigned char far *buf, unsigned int *work) __addr__(0x15CA);
+        extern void abort_program(void) __addr__(0xC8E0);
+        extern void advance_sector_and_refresh_mcb(void) __addr__(0x1363);
+        extern void align_io_to_sector(unsigned int bytes) __addr__(0x21F7);
+        extern void alloc_mcb_slots_wrap(int n, unsigned int *segp) __addr__(0xBF1A);
+        extern void build_dos_datetime(unsigned int *t, unsigned int *d) __addr__(0xD1A6);
+        extern void build_fat_request(unsigned int seg, long val) __addr__(0x13B4);
+        extern void call_driver_with_packet(unsigned char far *req, unsigned int a, unsigned int b) __addr__(0xD5A3);
+        extern void check_ctrl_break_flags(void) __addr__(0xAF6A);
+        extern void compute_fcb_sector_number(void) __addr__(0x1220);
+        extern void con_flush_or_fcb_close(void) __addr__(0xA1D4);
+        extern void con_write_char(unsigned char far *drv, unsigned int ch) __addr__(0xB268);
+        extern void con_write_string(unsigned long drv, unsigned char far *buf, unsigned int bytes) __addr__(0xB34F);
+        extern void copy_bpb_to_dpb(unsigned char far *src, unsigned char far *dpb) __addr__(0xB9CD);
+        extern void copy_fcb_fragment_and_advance(unsigned int len, unsigned char far **bufp, unsigned char wflag) __addr__(0x13F3);
+        extern void disk_read_request(unsigned char *pkt) __addr__(0xBFC8);
+        extern void disk_write_request(unsigned char *pkt) __addr__(0xBFD2);
+        extern void dos_fn_06_direct_console_io(unsigned char far *fcb) __addr__(0x095A);
+        extern void dos_fn_07_direct_console_input(unsigned char far *fcb) __addr__(0x09AE);
+        extern void dos_fn_08_console_input_no_echo(unsigned char far *fcb) __addr__(0x09C4);
+        extern void dos_fn_0a_buffered_kbd_input(unsigned char far *fcb) __addr__(0x0A0F);
+        extern void handle_ctrl_break(void) __addr__(0xAF84);
+        extern void init_fcb_and_cache_dpb(unsigned char drive, int start, unsigned int file_off, unsigned int length) __addr__(0x124A);
+        extern void init_line_buffer(unsigned char far *buf) __addr__(0xA433);
+        extern void init_sda_driver_links(void) __addr__(0x176B);
+        extern void int2f_network_1086(unsigned char far *driver, unsigned int flag) __addr__(0xEAFE);
+        extern void load_dir_fcb_into_globals(unsigned char far *fcb) __addr__(0x17C3);
+        extern void mark_mcb_bit7(int mcb, int flag) __addr__(0xBD3B);
+        extern void mark_mcb_free_at_head(void) __addr__(0xBD4F);
+        extern void mem_copy_far(unsigned char far *src, unsigned char far *dst, unsigned int n) __addr__(0xB8D3);
+        extern void mem_fill_zero(unsigned char far *p, unsigned int n) __addr__(0xD25D);
+        extern void notify_share_fcb(unsigned char far *rec) __addr__(0xEAD1);
+        extern void print_error(int code) __addr__(0x089D);
+        extern void print_nul_string(char *msg) __addr__(0x01B7);
+        extern void read_or_write_fcb_data(unsigned char far **bufp, unsigned char wflag) __addr__(0x1474);
+        extern void remove_mcb_entries_by_key(unsigned char drive) __addr__(0xBC93);
+        extern void reset_dpb_probe_drive(unsigned char drive) __addr__(0x0B14);
+        extern void retry_network_loop(unsigned char far *driver, unsigned int bytes, unsigned int z) __addr__(0x1DDC);
+        extern void set_dir_fcb_position(unsigned char far *driver, unsigned int bytes, unsigned int z, unsigned char far *fcb) __addr__(0x2397);
+        extern void set_input_buffers_and_desc(unsigned char far *a, unsigned char far *b, unsigned char far *tmpl) __addr__(0xA480);
+        extern void shift_driver_records_flag(unsigned char far *driver) __addr__(0x1CDB);
+        extern void write_fcb_fat_entry(int cursor, int val) __addr__(0xB7E9);
+        extern void write_fcb_to_con_or_driver(int op, unsigned char far *rec) __addr__(0x4134);
+        /* ---- data ---- */
+        extern char MSG_ERROR_IN_COMMAND[] __addr__(0x27A);
+        extern char MSG_IN_CONFIG_FILE[] __addr__(0x29C);
+        extern char MSG_INVALID_COMMAND[] __addr__(0x28B);
+        extern char MSG_SHELL_MISSING[] __addr__(0x24A);
+        extern int DPB_FLAGS __addr__(0x1546);
+        extern int FAT_CACHE_DIRTY __addr__(0x14E8);
+        extern int FAT_CACHE_HI __addr__(0x14EC);
+        extern int FAT_CACHE_LO __addr__(0x14EA);
+        extern int MAIN_LOOP_INDEX __addr__(0x0E24);
+        extern int MCB_CLUSTER __addr__(0x14E8);
+        extern int MCB_FLAG __addr__(0x1570);
+        extern int PARSE_POS __addr__(0x0E26);
+        extern int PARSE_TOKEN_START __addr__(0x0C22);
+        extern long CLUSTER_ALIGNED __addr__(0x0F26);
+        extern long CLUSTER_END __addr__(0x0F2A);
+        extern long DOS_DATETIME __addr__(0x1564);
+        extern long FAT_CACHE __addr__(0x14EA);
+        extern long FAT_REQ_RESULT __addr__(0x14E6);
+        extern long FAT_WINDOW_END __addr__(0x1540);
+        extern long FCB_CACHED_MCB __addr__(0x0ED0);
+        extern long FCB_SECTOR __addr__(0x0EDA);
+        extern long REQ_LBA __addr__(0x0EF4);
+        extern long REQ_PKT_SECTOR __addr__(0x0EE7);
+        extern long REQ_RESULT __addr__(0x0EF8);
+        extern unsigned char *KEYWORD_PTR_TABLE[18] __addr__(0x0226);
+        extern unsigned char ALLOC_COUNT __addr__(0x0F04);
+        extern unsigned char CON_REQ_CMD __addr__(0x1466);
+        extern unsigned char CON_REQ_FLAG __addr__(0x1464);
+        extern unsigned char CON_REQ_UNIT __addr__(0x1465);
+        extern unsigned char CUR_CHAR __addr__(0x1088);
+        extern unsigned char CURRENT_DRIVE __addr__(0x02E4);
+        extern unsigned char DRIVE __addr__(0x1574);
+        extern unsigned char DRIVE_CODE __addr__(0x0F20);
+        extern unsigned char far *CACHED_MCB __addr__(0x0ED0);
+        extern unsigned char far *DPB_PTR __addr__(0x156A);
+        extern unsigned char far *DPB_TABLE __addr__(0x0414);
+        extern unsigned char far *DRIVER_CHAIN_HEAD __addr__(0x0402);
+        extern unsigned char far *DRIVER_TABLE __addr__(0x0418);
+        extern unsigned char far *FCB_DPB __addr__(0x0EF4);
+        extern unsigned char far *FILES_TABLE __addr__(0x1204);
+        extern unsigned char far *REQ_BUF2 __addr__(0x0EF8);
+        extern unsigned char far *SDA_FILE_TABLE __addr__(0x142E);
+        extern unsigned char far *SDA_PTR __addr__(0x1422);
+        extern unsigned char FAT_SHIFT __addr__(0x0ECC);
+        extern unsigned char FCB_DRIVE __addr__(0x0F20);
+        extern unsigned char INSTALLED_COUNT __addr__(0x0F08);
+        extern unsigned char INT28_GATE_FLAG __addr__(0x03E1);
+        extern unsigned char NETWORK_ACTIVE __addr__(0x02E0);
+        extern unsigned char PROBED_COUNT __addr__(0x0F05);
+        extern unsigned char REQ_CMD2 __addr__(0x0EF3);
+        extern unsigned char REQ_MODE __addr__(0x0EF3);
+        extern unsigned char REQ_OP __addr__(0x0EE6);
+        extern unsigned char REQ_PKT_VAL_TOP __addr__(0x0EEF);
+        extern unsigned char REQ_X __addr__(0x0EF2);
+        extern unsigned int BUF_CHUNK __addr__(0x0F0E);
+        extern unsigned int BYTES_PER_SECTOR __addr__(0x1546);
+        extern unsigned int CACHED_MCB_OFF __addr__(0x0ED0);
+        extern unsigned int CACHED_MCB_SEG __addr__(0x0ED2);
+        extern unsigned int CFG_LASTDRIVE __addr__(0x01CC);
+        extern unsigned int CLUSTER_ALIGNED_LO __addr__(0x0F26);
+        extern unsigned int CLUSTER_DPB __addr__(0x0F2E);
+        extern unsigned int CLUSTER_END_LO __addr__(0x0F2A);
+        extern unsigned int CLUSTER_END_REM __addr__(0x0EDE);
+        extern unsigned int CLUSTER_SHIFT __addr__(0x0F06);
+        extern unsigned int CLUSTER_WORK __addr__(0x0F26);
+        extern unsigned int CURRENT_CLUSTER __addr__(0x0EFC);
+        extern unsigned int DIR_BASE __addr__(0x0EE4);
+        extern unsigned int DIR_FAT_PAGE __addr__(0x0F18);
+        extern unsigned int DIR_FIELD_HI __addr__(0x0F1E);
+        extern unsigned int DIR_FIELD_LO __addr__(0x0F34);
+        extern unsigned int DPB_FIELD_F34 __addr__(0x0F34);
+        extern unsigned int DPB_SECTOR_SIZE __addr__(0x0F1C);
+        extern unsigned int DRIVER_COUNT __addr__(0x0424);
+        extern unsigned int END_FRAG_FLAG __addr__(0x0ECE);
+        extern unsigned int F18_GEOMETRY __addr__(0x0F18);
+        extern unsigned int FAT_BASE __addr__(0x0ED4);
+        extern unsigned int FCB_SECTOR_COUNT __addr__(0x0EE2);
+        extern unsigned int FRAG_FLAG2 __addr__(0x0ECE);
+        extern unsigned int IO_SECTOR __addr__(0x0F02);
+        extern unsigned int LINE_POS __addr__(0x1576);
+        extern unsigned int RENAME_STATE __addr__(0x1576);
+        extern unsigned int REQ_COUNT __addr__(0x0EF0);
+        extern unsigned int REQ_PKT_SEG __addr__(0x0EEB);
+        extern unsigned int REQ_PKT_VAL_MID __addr__(0x0EED);
+        extern unsigned int RETRY_LIMIT __addr__(0x1562);
+        extern unsigned int SDA_SEG __addr__(0x1424);
+        extern unsigned int SDA_SRC_SEG __addr__(0x02DE);
+        extern unsigned int SEC_PER_CLUSTER __addr__(0x0ED6);
+        extern unsigned int SECTOR_INDEX __addr__(0x0F1A);
+        extern unsigned int SECTOR_REM __addr__(0x0ED8);
+        extern unsigned int SHIFT_STICKY __addr__(0x1432);
+        extern unsigned int START_FRAG_FLAG __addr__(0x0EE0);
+        extern unsigned int WRITE_RESULT __addr__(0x0F1E);
+        extern unsigned long FCB_POS __addr__(0x1564);
+        ;@endcompiled_headers
+
 
 SISNE_SIS_START:
         ; Entry — init far-JMPs to 70h:0000 (= linear 0x0700)
@@ -1000,25 +1191,33 @@ READ_LINE_TO_BUFFER:
          */
 
         extern unsigned char LINE_BUF[128] __addr__(0x0E28);
-        extern int           read_byte(void) __addr__(0x00F9);   /* returns byte in AL */
 
         int read_line_to_buffer(void) __addr__(0x0724)
         {
-            register int  len;      /* SI */
-            unsigned char ch;       /* [bp-4] */
+            register int len; /* SI */
+            unsigned char ch; /* [bp-4] */
 
             len = 0;
             do {
-                for (; (ch = read_byte()) != 0x0D; ) {
-                    if (ch == 0x1A) break;                  /* Ctrl-Z */
-                if (ch <= 0x1F && ch != 9) continue;    /* control char (non-tab) */
-                if (len >= 0x7F) continue;              /* buffer full */
-                if (ch >= 'a' && ch <= 'z')
-                    LINE_BUF[len++] = ch - 0x20;        /* upper-case */
-                else
-                    LINE_BUF[len++] = ch;
+                for (; (ch = read_byte()) != 0x0D;) {
+                    if (ch == 0x1A) {
+                        break; /* Ctrl-Z */
+                    }
+                    if (ch <= 0x1F && ch != 9) {
+                        continue; /* control char (non-tab) */
+                    }
+                    if (len >= 0x7F) {
+                        continue; /* buffer full */
+                    }
+                    if (ch >= 'a' && ch <= 'z') {
+                        LINE_BUF[len++] = ch - 0x20; /* upper-case */
+                    } else {
+                        LINE_BUF[len++] = ch;
+                    }
                 }
-                if (ch == 0x1A && len == 0) return -1;      /* empty + Ctrl-Z -> EOF */
+                if (ch == 0x1A && len == 0) {
+                    return -1; /* empty + Ctrl-Z -> EOF */
+                }
             } while (len == 0);
             LINE_BUF[len] = 0x0D;
             return len;
@@ -1035,13 +1234,13 @@ SKIP_WHITESPACE:
          * return the first non-whitespace byte (zero-extended).
          */
 
-        extern int           PARSE_POS __addr__(0x0E26);
         extern unsigned char LINE_BUF[128] __addr__(0x0E28);
 
         int skip_whitespace(void) __addr__(0x0786)
         {
-            while (LINE_BUF[PARSE_POS] == 0x20 || LINE_BUF[PARSE_POS] == 9)
+            while (LINE_BUF[PARSE_POS] == 0x20 || LINE_BUF[PARSE_POS] == 9) {
                 PARSE_POS++;
+            }
             return LINE_BUF[PARSE_POS];
         }
         ;@endcompiled
@@ -1057,8 +1256,6 @@ SKIP_ALNUM:
          * read the token as LINE_BUF[PARSE_TOKEN_START..PARSE_POS].
          */
 
-        extern int  PARSE_TOKEN_START __addr__(0x0C22);
-        extern int  PARSE_POS __addr__(0x0E26);
         extern unsigned char LINE_BUF[128] __addr__(0x0E28);
 
         void skip_alnum(void) __addr__(0x07AF)
@@ -1069,7 +1266,9 @@ SKIP_ALNUM:
             while (1) {
                 ch = LINE_BUF[PARSE_POS];
                 if (ch < '0' || ch > '9') {
-                    if (ch < 'A' || ch > 'Z') return;
+                    if (ch < 'A' || ch > 'Z') {
+                        return;
+                    }
                 }
                 PARSE_POS++;
             }
@@ -1088,18 +1287,13 @@ ATOI_DECIMAL:
          * PRINT_ERROR and keep scanning.
          */
 
-        extern int  PARSE_TOKEN_START __addr__(0x0C22);
-        extern int  MAIN_LOOP_INDEX __addr__(0x0E24);
-        extern int  PARSE_POS __addr__(0x0E26);
         extern unsigned char LINE_BUF[128] __addr__(0x0E28);
-
-        extern void print_error(int code) __addr__(0x089D);
 
         int atoi_decimal(void) __addr__(0x07E4)
         {
             unsigned char ch;
-            int           cursor;
-            int           result;
+            int cursor;
+            int result;
 
             result = 0;
 
@@ -1128,31 +1322,29 @@ LOOKUP_TOKEN:
          * Returns the matching table index, or -1 on miss.
          */
 
-        extern int PARSE_TOKEN_START __addr__(0x0C22);
-        extern int PARSE_POS __addr__(0x0E26);
         extern unsigned char LINE_BUF[128] __addr__(0x0E28);
-        extern unsigned char *KEYWORD_PTR_TABLE[18] __addr__(0x0226);
 
         int lookup_token(void) __addr__(0x083A)
         {
             unsigned char *key;
             unsigned char *tok;
             unsigned char *tok_start;
-            register int   i;
+            register int i;
             unsigned char *tok_end;
 
             tok_start = LINE_BUF + PARSE_TOKEN_START;
-            tok_end   = LINE_BUF + PARSE_POS;
+            tok_end = LINE_BUF + PARSE_POS;
 
             for (i = 0; i < 18; i++) {
                 tok = tok_start;
                 key = KEYWORD_PTR_TABLE[i];
-                for (; *key == *tok; ) {
+                for (; *key == *tok;) {
                     key++;
                     tok++;
                 }
-                if (*key == 0 && tok == tok_end)
+                if (*key == 0 && tok == tok_end) {
                     return i;
+                }
             }
             return -1;
         }
@@ -1176,14 +1368,6 @@ PRINT_ERROR:
          * (e.g. MSG_SHELL_MISSING at DS:0x24A is the string stored at file 0xF55A).
          */
 
-        extern void print_nul_string(char *msg) __addr__(0x01B7);
-        extern unsigned char *KEYWORD_PTR_TABLE[18] __addr__(0x0226);
-
-        extern char MSG_SHELL_MISSING[]     __addr__(0x24A);
-        extern char MSG_ERROR_IN_COMMAND[]   __addr__(0x27A);
-        extern char MSG_INVALID_COMMAND[]  __addr__(0x28B);
-        extern char MSG_IN_CONFIG_FILE[] __addr__(0x29C);
-
         void print_error(int code) __addr__(0x089D)
         {
             if (code < 0) {
@@ -1191,7 +1375,7 @@ PRINT_ERROR:
             } else {
                 if (code <= 0x0D) {
                     print_nul_string(MSG_ERROR_IN_COMMAND);
-                    print_nul_string((char *) KEYWORD_PTR_TABLE[code]);
+                    print_nul_string((char *)KEYWORD_PTR_TABLE[code]);
                 } else {
                     print_nul_string(MSG_INVALID_COMMAND);
                 }
@@ -1211,9 +1395,6 @@ DOS_FN_01_CHAR_INPUT_WITH_ECHO:
          * as a far pointer; the byte is read with no echo, then echoed via the
          * shared putc routine.
          */
-
-        extern void dos_fn_08_console_input_no_echo(unsigned char far *fcb) __addr__(0x09C4);
-        extern int con_putc_or_fcb1(int c) __addr__(0xA22C);
 
         int dos_fn_01_char_input_with_echo(unsigned char far *fcb) __addr__(0x08DB)
         {
@@ -1236,13 +1417,11 @@ DOS_FN_03_AUX_INPUT:
          * FCB (passed as a far pointer), and re-route Ctrl-C (0x03) through INT 23h.
          */
 
-        extern int  con_getc(int dev) __addr__(0xA0FA);
-        extern void handle_ctrl_break(void) __addr__(0xAF84);
-
         void dos_fn_03_aux_input(unsigned char far *fcb) __addr__(0x0900)
         {
-            if ((fcb[0] = con_getc(3)) == 3)
+            if ((fcb[0] = con_getc(3)) == 3) {
                 handle_ctrl_break();
+            }
         }
         ;@endcompiled
 
@@ -1256,9 +1435,6 @@ DOS_FN_04_AUX_OUTPUT:
          * to send is the caller's FCB field at offset 6; output goes through the
          * shared putc routine, then the Ctrl-Break flags are polled.
          */
-
-        extern int  con_putc(int dev, int c) __addr__(0xA193);
-        extern void check_ctrl_break_flags(void) __addr__(0xAF6A);
 
         void dos_fn_04_aux_output(unsigned char far *fcb) __addr__(0x091E)
         {
@@ -1276,9 +1452,6 @@ DOS_FN_05_PRINTER_OUTPUT:
          * MS-DOS INT 21h AH=05h: write one byte to PRN: (device index 4). Same shape
          * as AH=04h (AUX output) but with the printer device index.
          */
-
-        extern int  con_putc(int dev, int c) __addr__(0xA193);
-        extern void check_ctrl_break_flags(void) __addr__(0xAF6A);
 
         void dos_fn_05_printer_output(unsigned char far *fcb) __addr__(0x093C)
         {
@@ -1302,18 +1475,14 @@ DOS_FN_06_DIRECT_CONSOLE_IO:
          *     otherwise set the "no char ready" bit and store 0.
          */
 
-        extern int find_fcb_logical_limit(void) __addr__(0xA1FB);
-        extern int con_getc(int dev) __addr__(0xA0FA);
-        extern int con_putc(int dev, int c) __addr__(0xA193);
-
         void dos_fn_06_direct_console_io(unsigned char far *fcb) __addr__(0x095A)
         {
             if (fcb[6] == 0xFF) {
                 if (find_fcb_logical_limit() == 0) {
-                    fcb[0x16] |= 0x40;          /* no char ready: set status bit, return 0 */
+                    fcb[0x16] |= 0x40; /* no char ready: set status bit, return 0 */
                     fcb[0] = 0;
                 } else {
-                    *(int far *)(fcb + 0x16) &= 0xFFBF;     /* char ready: clear status bit */
+                    *(int far *)(fcb + 0x16) &= 0xFFBF; /* char ready: clear status bit */
                     fcb[0] = con_getc(0);
                     return;
                 }
@@ -1335,8 +1504,6 @@ DOS_FN_07_DIRECT_CONSOLE_INPUT:
          * FCB (passed as a far pointer).
          */
 
-        extern int con_getc(int dev) __addr__(0xA0FA);
-
         void dos_fn_07_direct_console_input(unsigned char far *fcb) __addr__(0x09AE)
         {
             fcb[0] = con_getc(0);
@@ -1354,8 +1521,6 @@ DOS_FN_08_CONSOLE_INPUT_NO_ECHO:
          * caller's FCB (far pointer). Same as AH=07h but via the Ctrl-Break-aware
          * console-getc variant.
          */
-
-        extern int con_getc_brk(int dev) __addr__(0xA145);
 
         void dos_fn_08_console_input_no_echo(unsigned char far *fcb) __addr__(0x09C4)
         {
@@ -1375,14 +1540,12 @@ DOS_FN_09_PRINT_STRING:
          * byte is written until the '$' sentinel.
          */
 
-        extern int con_putc_or_fcb1(int c) __addr__(0xA22C);
-
         void dos_fn_09_print_string(unsigned char far *fcb) __addr__(0x09DA)
         {
             unsigned char far *p;
 
-            FP_SEG(p) = *(int far *)(fcb + 0x0E);   /* caller's DS */
-            FP_OFF(p) = *(int far *)(fcb + 6);       /* caller's DX */
+            FP_SEG(p) = *(int far *)(fcb + 0x0E); /* caller's DS */
+            FP_OFF(p) = *(int far *)(fcb + 6);    /* caller's DX */
             for (; *p != '$'; p++) {
                 con_putc_or_fcb1(*p);
             }
@@ -1400,14 +1563,12 @@ DOS_FN_0A_BUFFERED_KBD_INPUT:
          * far pointer and hand it to the line-buffer reader.
          */
 
-        extern void init_line_buffer(unsigned char far *buf) __addr__(0xA433);
-
         void dos_fn_0a_buffered_kbd_input(unsigned char far *fcb) __addr__(0x0A0F)
         {
             unsigned char far *p;
 
-            FP_SEG(p) = *(int far *)(fcb + 0x0E);   /* caller's DS */
-            FP_OFF(p) = *(int far *)(fcb + 6);       /* caller's DX */
+            FP_SEG(p) = *(int far *)(fcb + 0x0E); /* caller's DS */
+            FP_OFF(p) = *(int far *)(fcb + 6);    /* caller's DX */
             init_line_buffer(p);
         }
         ;@endcompiled
@@ -1422,9 +1583,6 @@ DOS_FN_0B_GET_INPUT_STATUS:
          * report whether console input is available (find_fcb_logical_limit) by
          * storing the status byte into the caller's FCB.
          */
-
-        extern void check_ctrl_break_flags(void) __addr__(0xAF6A);
-        extern int  find_fcb_logical_limit(void) __addr__(0xA1FB);
 
         void dos_fn_0b_get_input_status(unsigned char far *fcb) __addr__(0x0A31)
         {
@@ -1461,22 +1619,25 @@ DOS_FN_0C_FLUSH_AND_INPUT:
          * returns after the flush.
          */
 
-        extern void con_flush_or_fcb_close(void) __addr__(0xA1D4);
-        extern int dos_fn_01_char_input_with_echo(unsigned char far *fcb) __addr__(0x08DB);
-        extern void dos_fn_06_direct_console_io(unsigned char far *fcb)    __addr__(0x095A);
-        extern void dos_fn_07_direct_console_input(unsigned char far *fcb) __addr__(0x09AE);
-        extern void dos_fn_08_console_input_no_echo(unsigned char far *fcb) __addr__(0x09C4);
-        extern void dos_fn_0a_buffered_kbd_input(unsigned char far *fcb)   __addr__(0x0A0F);
-
         void dos_fn_0c_flush_and_input(unsigned char far *fcb) __addr__(0x0A44)
         {
             con_flush_or_fcb_close();
             switch (fcb[0]) {
-                case 1:    dos_fn_01_char_input_with_echo(fcb);   break;
-                case 6:    dos_fn_06_direct_console_io(fcb);       break;
-                case 7:    dos_fn_07_direct_console_input(fcb);    break;
-                case 8:    dos_fn_08_console_input_no_echo(fcb);   break;
-                case 0x0A: dos_fn_0a_buffered_kbd_input(fcb);      break;
+            case 1:
+                dos_fn_01_char_input_with_echo(fcb);
+                break;
+            case 6:
+                dos_fn_06_direct_console_io(fcb);
+                break;
+            case 7:
+                dos_fn_07_direct_console_input(fcb);
+                break;
+            case 8:
+                dos_fn_08_console_input_no_echo(fcb);
+                break;
+            case 0x0A:
+                dos_fn_0a_buffered_kbd_input(fcb);
+                break;
             }
         }
         ;@endcompiled
@@ -1492,16 +1653,14 @@ DOS_FN_0C_FLUSH_AND_INPUT:
          * Globals 0EE6h.. are the shared request packet (DS-relative).
          */
 
-        extern long lookup_cached_sector(unsigned char op, unsigned char far *buf) __addr__(0xBDAD);
+        extern long lookup_cached_sector(unsigned char op, unsigned char far *buf)
+            __addr__(0xBDAD);
         extern void dispatch_request_packet(unsigned char *pkt) __addr__(0xBBCF);
 
-        extern unsigned char       REQ_OP     __addr__(0x0EE6);
-        extern unsigned char far  *REQ_BUF    __addr__(0x0EE7);
-        extern unsigned char       REQ_X      __addr__(0x0EF2);
-        extern long                REQ_LBA     __addr__(0x0EF4);
-        extern long                REQ_RESULT  __addr__(0x0EF8);
+        extern unsigned char far *REQ_BUF __addr__(0x0EE7);
 
-        long disk_request_dispatch(unsigned char op, unsigned char far *buf, unsigned char x, long lba) __addr__(0x0AAB)
+        long disk_request_dispatch(unsigned char op, unsigned char far *buf, unsigned char x,
+                                   long lba) __addr__(0x0AAB)
         {
             long result;
 
@@ -1534,42 +1693,36 @@ RESET_DPB_PROBE_DRIVE:
          */
 
         extern unsigned char far *get_dpb_by_drive_index(unsigned char drive) __addr__(0xB9E1);
-        extern unsigned char get_dpb_cluster_count(unsigned char far *dpb) __addr__(0xBF81);
-        extern int  lookup_mcb_by_drive_bit7(unsigned char drive) __addr__(0xBD7D);
-        extern void remove_mcb_entries_by_key(unsigned char drive) __addr__(0xBC93);
-        extern unsigned char far *alloc_new_mcb(void) __addr__(0xBE65);
-        extern unsigned char far *disk_verify_request(unsigned char *pkt) __addr__(0xBFB7);
-        extern void copy_bpb_to_dpb(unsigned char far *src, unsigned char far *dpb) __addr__(0xB9CD);
         extern void dispatch_request_packet(unsigned char *pkt) __addr__(0xBBCF);
 
-        extern unsigned char far *DPB_PTR     __addr__(0x156A);
-        extern unsigned char      REQ_OP      __addr__(0x0EE6);
-        extern unsigned char far *REQ_BUF     __addr__(0x0EE7);
-        extern unsigned char      REQ_X       __addr__(0x0EF2);
-        extern unsigned char      REQ_MODE    __addr__(0x0EF3);
-        extern long               REQ_LBA     __addr__(0x0EF4);
-        extern long               REQ_RESULT  __addr__(0x0EF8);
+        extern unsigned char far *REQ_BUF __addr__(0x0EE7);
 
         void reset_dpb_probe_drive(unsigned char drive) __addr__(0x0B14)
         {
             unsigned char flag;
 
             DPB_PTR = get_dpb_by_drive_index(drive);
-            if (DPB_PTR[0x16] == 0xF8) return;
+            if (DPB_PTR[0x16] == 0xF8) {
+                return;
+            }
             *(int far *)(DPB_PTR + 0x1C) = 0;
             flag = get_dpb_cluster_count(DPB_PTR);
             if (flag == 1) {
-                if (DPB_PTR[0x17] != 0xFF) return;
+                if (DPB_PTR[0x17] != 0xFF) {
+                    return;
+                }
             }
             if (flag == 0) {
-                if (lookup_mcb_by_drive_bit7(drive) != 0) return;
+                if (lookup_mcb_by_drive_bit7(drive) != 0) {
+                    return;
+                }
             }
             remove_mcb_entries_by_key(drive);
             REQ_OP = drive;
             REQ_MODE = 3;
             REQ_LBA = DPB_PTR;
             REQ_X = 6;
-            if ((*(int far *)(*(unsigned char far * far *)(DPB_PTR + 0x12) + 4) & 0x2000) == 0) {
+            if ((*(int far *)(*(unsigned char far *far *)(DPB_PTR + 0x12) + 4) & 0x2000) == 0) {
                 FP_OFF(REQ_BUF) = *(int far *)(DPB_PTR + 6);
                 FP_SEG(REQ_BUF) = 0;
                 dispatch_request_packet(&REQ_OP);
@@ -1593,14 +1746,8 @@ RESET_DPB_PROBE_DRIVE:
 
         extern unsigned char far *get_dpb_by_drive_index(unsigned char drive) __addr__(0xB9E1);
 
-        extern unsigned char far *DPB_PTR        __addr__(0x156A);
-        extern unsigned char      DRIVE          __addr__(0x1574);
-        extern int                DPB_FLAGS       __addr__(0x1546);
-        extern int                COUNT           __addr__(0x1572);
-        extern int                FAT_CACHE_LO    __addr__(0x14EA);
-        extern int                FAT_CACHE_HI    __addr__(0x14EC);
-        extern int                FAT_CACHE_DIRTY __addr__(0x14E8);
-        extern int                CURSOR          __addr__(0x1544);
+        extern int COUNT __addr__(0x1572);
+        extern int CURSOR __addr__(0x1544);
 
         void init_fcb_from_drive(unsigned char drive, int cursor) __addr__(0x0C06)
         {
@@ -1615,38 +1762,28 @@ RESET_DPB_PROBE_DRIVE:
         }
         ;@endcompiled
 
-FAT_WRITE_DIRTY_MCB:
+FAT_RELOAD_SECTOR_WINDOW:
         ; Mark MCB dirty if cluster [14E8h] nonzero; dispatch via unresolved SUB_0EC33h
-        ;@compiled fat_write_dirty_mcb 0C50 165
+        ;@compiled fat_reload_sector_window 0C50 165
         /*
-         * FAT_WRITE_DIRTY_MCB @ 0x0C50 in SISNE.SIS (165 bytes).
+         * FAT_RELOAD_SECTOR_WINDOW @ 0x0C50 in SISNE.SIS (165 bytes).
          *
-         * Flush the FAT sector for cluster `cl`: mark any pending MCB in-use, divide
-         * the cluster by the entries-per-sector (the dual-entry DIVMOD32 helper, which
-         * is callee-cleaned / pascal) to locate its FAT sector, record the cache
-         * window, and dispatch the disk read. All DS-relative globals.
+         * Reload the cached FAT-sector window for cluster `cl`: first mark any pending
+         * MCB in-use, then divide the cluster by the entries-per-sector (the dual-entry
+         * DIVMOD32 helper, callee-cleaned / pascal) to locate its FAT sector, record the
+         * new cache-window bounds, and dispatch the disk read. All DS-relative globals.
          */
 
-        extern void mark_mcb_bit7(int mcb, int flag) __addr__(0xBD3B);
         extern long pascal divmod32(long n, int d, int hi) __addr__(0xEC33);
         extern long pascal divmod32_bin(long n, int d, int hi) __addr__(0xEC2E);
-        extern long disk_request_dispatch(unsigned char op, long buf, unsigned char x, unsigned char far *lba) __addr__(0x0AAB);
 
-        extern unsigned char far *DPB_PTR        __addr__(0x156A);
-        extern int                DPB_FLAGS       __addr__(0x1546);
-        extern int                FAT_CACHE_DIRTY __addr__(0x14E8);
-        extern int                MCB_FLAG        __addr__(0x1570);
-        extern long               FAT_CACHE       __addr__(0x14EA);
-        extern long               FAT_WINDOW_END  __addr__(0x1540);
-        extern long               FAT_REQ_RESULT  __addr__(0x14E6);
-        extern unsigned char      DRIVE           __addr__(0x1574);
-
-        void fat_write_dirty_mcb(long cl) __addr__(0x0C50)
+        void fat_reload_sector_window(long cl) __addr__(0x0C50)
         {
             long sec;
 
-            if (FAT_CACHE_DIRTY != 0)
+            if (FAT_CACHE_DIRTY != 0) {
                 mark_mcb_bit7(FAT_CACHE_DIRTY, MCB_FLAG);
+            }
             sec = divmod32(cl, DPB_FLAGS, 0) + *(int far *)(DPB_PTR + 6);
             FAT_CACHE = cl - divmod32_bin(cl, DPB_FLAGS, 0);
             FAT_WINDOW_END = FAT_CACHE + DPB_FLAGS - 1;
@@ -1667,47 +1804,47 @@ SECTOR_READ_AT_DPB_OFFSET:
          */
 
         extern unsigned char far *get_dpb_by_drive_index(unsigned char drive) __addr__(0xB9E1);
-        extern long disk_request_dispatch(unsigned char op, long buf, unsigned char x, unsigned char far *lba) __addr__(0x0AAB);
 
-        void sector_read_at_dpb_offset(unsigned char drive, long offset, long *out) __addr__(0x0CF5)
+        void sector_read_at_dpb_offset(unsigned char drive, long offset, long *out)
+            __addr__(0x0CF5)
         {
             unsigned char far *dpb;
 
             dpb = get_dpb_by_drive_index(drive);
-            *out = disk_request_dispatch(drive, (long) *(int far *)(dpb + 0x10) + offset, 2, dpb);
+            *out = disk_request_dispatch(drive, (long)*(int far *)(dpb + 0x10) + offset, 2, dpb);
         }
         ;@endcompiled
 
-READ_2_CLUSTERS_AT_OFFSET:
+READ_CLUSTER_SECTOR:
         ; Count=2 cluster read using DPB[5] cluster size; sector-based offset
-        ;@compiled read_2_clusters_at_offset 0D3C 89
+        ;@compiled read_cluster_sector 0D3C 89
         /*
-         * READ_2_CLUSTERS_AT_OFFSET @ 0x0D3C in SISNE.SIS (89 bytes).
+         * READ_CLUSTER_SECTOR @ 0x0D3C in SISNE.SIS (89 bytes).
          *
          * Read the sector for data `cluster` (+ `extra` sector offset) on `drive`:
          * (cluster-2) << sectors-per-cluster-log2 (DPB+5) + data-area start (DPB+0xB),
-         * dispatched as a 2-sector read; store the 32-bit result through `out`.
+         * dispatched via disk_request_dispatch with REQ_X mode 2; 32-bit result via `out`.
          */
 
         extern unsigned char far *get_dpb_by_drive_index(unsigned char drive) __addr__(0xB9E1);
-        extern long __lshl() __addr__(0xECED);   /* SHL_DXAX_BY_CL, used by << */
-        extern long disk_request_dispatch(unsigned char op, long buf, unsigned char x, unsigned char far *lba) __addr__(0x0AAB);
 
-        void read_2_clusters_at_offset(unsigned char drive, int cluster, int extra, long *out) __addr__(0x0D3C)
+        void read_cluster_sector(unsigned char drive, int cluster, int extra, long *out)
+            __addr__(0x0D3C)
         {
             unsigned char far *dpb;
 
             dpb = get_dpb_by_drive_index(drive);
-            *out = disk_request_dispatch(drive,
-                ((long)(cluster - 2) << dpb[5]) + *(int far *)(dpb + 0x0B) + extra, 2, dpb);
+            *out = disk_request_dispatch(
+                drive, ((long)(cluster - 2) << dpb[5]) + *(int far *)(dpb + 0x0B) + extra, 2,
+                dpb);
         }
         ;@endcompiled
 
-WRITE_SECTORS_FROM_DPB:
+GET_DATA_SECTOR_BUFFER:
         ; Build [0EE6h] write packet from DPB: drive, mode 2, fields from sector arg
-        ;@compiled write_sectors_from_dpb 0D95 107
+        ;@compiled get_data_sector_buffer 0D95 107
         /*
-         * WRITE_SECTORS_FROM_DPB @ 0x0D95 in SISNE.SIS (107 bytes).
+         * GET_DATA_SECTOR_BUFFER @ 0x0D95 in SISNE.SIS (107 bytes).
          *
          * Build a mode-2 request packet for the sector holding data `cluster`
          * (+ `extra`) on `drive` — DPB pointer as the LBA, the computed sector as the
@@ -1716,15 +1853,11 @@ WRITE_SECTORS_FROM_DPB:
          */
 
         extern unsigned char far *get_dpb_by_drive_index(unsigned char drive) __addr__(0xB9E1);
-        extern long __lshl() __addr__(0xECED);   /* SHL_DXAX_BY_CL, used by << */
-        extern long alloc_and_convert_bpb(unsigned char *pkt) __addr__(0xBE9C);
 
-        extern unsigned char REQ_OP  __addr__(0x0EE6);
-        extern unsigned char REQ_X   __addr__(0x0EF2);
-        extern long          REQ_LBA __addr__(0x0EF4);
-        extern long          REQ_BUF __addr__(0x0EE7);
+        extern long REQ_BUF __addr__(0x0EE7);
 
-        void write_sectors_from_dpb(unsigned char drive, int cluster, int extra, long *out) __addr__(0x0D95)
+        void get_data_sector_buffer(unsigned char drive, int cluster, int extra, long *out)
+            __addr__(0x0D95)
         {
             unsigned char far *dpb;
 
@@ -1755,17 +1888,17 @@ READ_PATH_CHARS:
          */
 
         extern void init_fcb_from_drive(unsigned char drive, int start) __addr__(0x0C06);
-        extern int  read_fcb_path_char(int cursor) __addr__(0xB791);
 
         extern unsigned int CURSOR __addr__(0x1544);
-        extern unsigned int COUNT  __addr__(0x1572);
+        extern unsigned int COUNT __addr__(0x1572);
 
         int read_path_chars(unsigned char drive, int start, unsigned int n) __addr__(0x0E00)
         {
             init_fcb_from_drive(drive, start);
             for (;; CURSOR = read_fcb_path_char(CURSOR), n--) {
-                if (n <= 0)
+                if (n <= 0) {
                     return CURSOR;
+                }
                 if (CURSOR == 0 || CURSOR > COUNT) {
                     CURSOR = 0xFFFF;
                     return CURSOR;
@@ -1797,21 +1930,16 @@ RESERVE_SECTOR_FOR_DRIVE:
          */
 
         /* DS-resident runtime globals (not file positions). */
-        extern unsigned     CURSOR      __addr__(0x1544);  /* FCB-table scan cursor */
-        extern unsigned     COUNT       __addr__(0x1572);  /* FCB-table size */
-        extern int          MCB_CLUSTER __addr__(0x14E8);  /* current MCB cluster */
-        extern unsigned char far *DPB_PTR __addr__(0x156A);/* DPB far pointer (off:seg) */
+        extern unsigned CURSOR __addr__(0x1544); /* FCB-table scan cursor */
+        extern unsigned COUNT __addr__(0x1572);  /* FCB-table size */
 
         extern unsigned char far *get_dpb_by_drive_index(int drive) __addr__(0xB9E1);
-        extern void  init_fcb_from_drive(int drive, int hint)       __addr__(0x0C06);
-        extern int   read_fcb_path_char(int cursor)                 __addr__(0xB791);
-        extern void  write_fcb_fat_entry(int cursor, int value)     __addr__(0xB7E9);
-        extern void  mark_mcb_bit7(int cluster, int bit)            __addr__(0xBD3B);
+        extern void init_fcb_from_drive(int drive, int hint) __addr__(0x0C06);
 
         int reserve_sector_for_drive(unsigned char drive, int hint_arg) __addr__(0x0E49)
         {
-            register int start_pos;    /* SI */
-            register int path_result;  /* DI */
+            register int start_pos;   /* SI */
+            register int path_result; /* DI */
 
             DPB_PTR = get_dpb_by_drive_index(drive);
 
@@ -1833,15 +1961,23 @@ RESERVE_SECTOR_FOR_DRIVE:
 
             do {
                 path_result = read_fcb_path_char(CURSOR);
-                if (path_result == 0) break;
+                if (path_result == 0) {
+                    break;
+                }
                 CURSOR++;
-                if (CURSOR > COUNT) CURSOR = 2;
+                if (CURSOR > COUNT) {
+                    CURSOR = 2;
+                }
             } while (CURSOR != start_pos);
 
-            if (path_result != 0) return 0;
+            if (path_result != 0) {
+                return 0;
+            }
 
             write_fcb_fat_entry(CURSOR, 0xFFFF);
-            if (hint_arg != 0) write_fcb_fat_entry(hint_arg, CURSOR);
+            if (hint_arg != 0) {
+                write_fcb_fat_entry(hint_arg, CURSOR);
+            }
 
             if (DPB_PTR[0x16] == 0xF8) {
                 *(int far *)(DPB_PTR + 0x1C) = CURSOR;
@@ -1869,29 +2005,23 @@ INVALIDATE_CACHED_FCB:
          */
 
         extern void init_fcb_from_drive(unsigned char drive, int start) __addr__(0x0C06);
-        extern int  read_fcb_path_char(int cursor) __addr__(0xB791);
-        extern void write_fcb_fat_entry(int cursor, int val) __addr__(0xB7E9);
         extern long pascal divmod32(long n, long d) __addr__(0xEC33);
         extern long pascal divmod32_bin(long n, long d) __addr__(0xEC2E);
-        extern long __lshl() __addr__(0xECED);
         extern long lookup_cached_sector(unsigned char op, long lba) __addr__(0xBDAD);
-        extern void mark_mcb_free_at_head(void) __addr__(0xBD4F);
-        extern void mark_mcb_bit7(int mcb, int flag) __addr__(0xBD3B);
 
-        extern unsigned char far *DPB_PTR        __addr__(0x156A);
-        extern unsigned int       CURSOR          __addr__(0x1544);
-        extern unsigned int       COUNT           __addr__(0x1572);
-        extern int                FAT_CACHE_DIRTY  __addr__(0x14E8);
+        extern unsigned int CURSOR __addr__(0x1544);
+        extern unsigned int COUNT __addr__(0x1572);
 
-        void invalidate_cached_fcb(unsigned char drive, int start, int flag, long size) __addr__(0x0F31)
+        void invalidate_cached_fcb(unsigned char drive, int start, int flag, long size)
+            __addr__(0x0F31)
         {
             long nclus;
             long cached;
             long sector;
-            int  spc;
+            int spc;
             unsigned char i;
             register int ch;
-            int  match;
+            int match;
 
             match = 0;
             init_fcb_from_drive(drive, start);
@@ -1900,14 +2030,16 @@ INVALIDATE_CACHED_FCB:
                 write_fcb_fat_entry(CURSOR, 0xFFFF);
                 if (size != 0) {
                     spc = *(int far *)(DPB_PTR + 2) << DPB_PTR[5];
-                    nclus = divmod32_bin(size, (long) spc);
+                    nclus = divmod32_bin(size, (long)spc);
                     if (nclus != 0) {
-                        nclus = divmod32(nclus - 1, (long) *(int far *)(DPB_PTR + 2)) + 1;
-                        sector = ((long)(CURSOR - 2) << DPB_PTR[5])
-                                 + *(int far *)(DPB_PTR + 0x0B) + nclus;
+                        nclus = divmod32(nclus - 1, (long)*(int far *)(DPB_PTR + 2)) + 1;
+                        sector = ((long)(CURSOR - 2) << DPB_PTR[5]) +
+                                 *(int far *)(DPB_PTR + 0x0B) + nclus;
                         for (i = nclus; DPB_PTR[4] >= i; i++) {
                             cached = lookup_cached_sector(DPB_PTR[0], sector);
-                            if (cached >> 16 != 0) mark_mcb_free_at_head();
+                            if (cached >> 16 != 0) {
+                                mark_mcb_free_at_head();
+                            }
                             sector++;
                         }
                     }
@@ -1915,21 +2047,26 @@ INVALIDATE_CACHED_FCB:
                 CURSOR = ch;
             }
 
-            for (; CURSOR != 0; ) {
-                if (CURSOR > COUNT) break;
+            for (; CURSOR != 0;) {
+                if (CURSOR > COUNT) {
+                    break;
+                }
                 ch = read_fcb_path_char(CURSOR);
                 write_fcb_fat_entry(CURSOR, 0);
                 sector = ((long)(CURSOR - 2) << DPB_PTR[5]) + *(int far *)(DPB_PTR + 0x0B);
                 for (i = 0; DPB_PTR[4] >= i; i++) {
                     cached = lookup_cached_sector(DPB_PTR[0], sector);
-                    if (cached >> 16 != 0) mark_mcb_free_at_head();
+                    if (cached >> 16 != 0) {
+                        mark_mcb_free_at_head();
+                    }
                     sector++;
                 }
                 CURSOR = ch;
                 match++;
             }
-            if (*(int far *)(DPB_PTR + 0x1E) != 0xFFFF)
+            if (*(int far *)(DPB_PTR + 0x1E) != 0xFFFF) {
                 *(int far *)(DPB_PTR + 0x1E) += match;
+            }
             mark_mcb_bit7(FAT_CACHE_DIRTY, 1);
         }
         ;@endcompiled
@@ -1951,48 +2088,45 @@ DOS_FN_36_GET_FREE_SPACE:
          * the caller's buffer.
          */
 
-        extern unsigned char  get_current_drive(void) __addr__(0xBA01);
-        extern void           lookup_error_msg(int code) __addr__(0xD300);
-        extern void           reset_dpb_probe_drive(unsigned char drive) __addr__(0x0B14);
-        extern void           init_fcb_from_drive(unsigned char drive, int start) __addr__(0x0C06);
-        extern int            read_fcb_path_char(int cursor) __addr__(0xB791);
+        extern void lookup_error_msg(int code) __addr__(0xD300);
+        extern void init_fcb_from_drive(unsigned char drive, int start) __addr__(0x0C06);
 
-        extern unsigned char far *DPB_TABLE        __addr__(0x0414);   /* DPB-entry table base */
-        extern unsigned char far *DPB_PTR          __addr__(0x156A);   /* current drive's DPB */
-        extern unsigned int       CFG_LASTDRIVE    __addr__(0x01CC);
-        extern unsigned char      INT28_GATE_FLAG  __addr__(0x03E1);   /* path-cache / INT28 gate */
-        extern unsigned int       CURSOR           __addr__(0x1544);
-        extern unsigned int       COUNT            __addr__(0x1572);
+        extern unsigned int CURSOR __addr__(0x1544);
+        extern unsigned int COUNT __addr__(0x1572);
 
         void dos_fn_36_get_free_space(unsigned char far *fcb) __addr__(0x10FE)
         {
-            unsigned int dpb_flags;        /* [bp-2]  */
-            register unsigned int len;     /* SI, home [bp-4] */
-            unsigned char drive;           /* [bp-6]  */
-            register int nchars;           /* DI, home [bp-8] */
+            unsigned int dpb_flags;    /* [bp-2]  */
+            register unsigned int len; /* SI, home [bp-4] */
+            unsigned char drive;       /* [bp-6]  */
+            register int nchars;       /* DI, home [bp-8] */
 
             drive = fcb[6];
             drive--;
-            if (fcb[6] == 0)
+            if (fcb[6] == 0) {
                 drive = get_current_drive();
+            }
             dpb_flags = *(unsigned int far *)(DPB_TABLE + 0x51 * drive + 0x43);
-            if (drive >= CFG_LASTDRIVE || dpb_flags == 0
-                    || (*(unsigned int far *)(DPB_TABLE + 0x51 * drive + 0x45)
-                        | *(unsigned int far *)(DPB_TABLE + 0x51 * drive + 0x47)) == 0) {
+            if (drive >= CFG_LASTDRIVE || dpb_flags == 0 ||
+                (*(unsigned int far *)(DPB_TABLE + 0x51 * drive + 0x45) |
+                 *(unsigned int far *)(DPB_TABLE + 0x51 * drive + 0x47)) == 0) {
                 lookup_error_msg(0x0F);
                 *(unsigned int far *)fcb = 0xFFFF;
             } else {
-                if ((dpb_flags & 0x1000) != 0)
+                if ((dpb_flags & 0x1000) != 0) {
                     drive = *(unsigned char far *)(DPB_TABLE + 0x51 * drive) - 0x41;
-                else
+                } else {
                     drive = drive;
+                }
                 reset_dpb_probe_drive(drive);
                 init_fcb_from_drive(drive, 2);
                 len = COUNT;
                 if (*(unsigned int far *)(DPB_PTR + 0x1E) == 0xFFFF || INT28_GATE_FLAG != 0) {
-                    for (nchars = 0; CURSOR <= len; CURSOR++)
-                        if (read_fcb_path_char(CURSOR) == 0)
+                    for (nchars = 0; CURSOR <= len; CURSOR++) {
+                        if (read_fcb_path_char(CURSOR) == 0) {
                             nchars++;
+                        }
+                    }
                     *(unsigned int far *)(DPB_PTR + 0x1E) = nchars;
                 } else {
                     nchars = *(unsigned int far *)(DPB_PTR + 0x1E);
@@ -2017,13 +2151,7 @@ DOS_FN_36_GET_FREE_SPACE:
          * Globals are DS-relative.
          */
 
-        extern long __lshl() __addr__(0xECED);   /* SHL_DXAX_BY_CL: DX:AX << CL, used by << */
-
-        extern int           CURSOR    __addr__(0x1544);
-        extern unsigned char FAT_SHIFT __addr__(0x0ECC);
-        extern unsigned int  FAT_BASE  __addr__(0x0ED4);
-        extern unsigned int  DIR_BASE  __addr__(0x0EE4);
-        extern long          FCB_SECTOR __addr__(0x0EDA);
+        extern int CURSOR __addr__(0x1544);
 
         void compute_fcb_sector_number(void) __addr__(0x1220)
         {
@@ -2042,26 +2170,10 @@ DOS_FN_36_GET_FREE_SPACE:
 
         extern void init_fcb_from_drive(unsigned char drive, int start) __addr__(0x0C06);
         extern long pascal divmod32(long n, long d) __addr__(0xEC33);
-        extern void compute_fcb_sector_number(void) __addr__(0x1220);
         extern long lookup_cached_sector(unsigned char op, long lba) __addr__(0xBDAD);
 
-        extern unsigned char far *DPB_PTR          __addr__(0x156A);
-        extern unsigned int       SEC_PER_CLUSTER   __addr__(0x0ED6);
-        extern unsigned char      FAT_SHIFT         __addr__(0x0ECC);
-        extern unsigned int       FAT_BASE          __addr__(0x0ED4);
-        extern unsigned char      REQ_OP            __addr__(0x0EE6);
-        extern unsigned char far *FCB_DPB           __addr__(0x0EF4);
-        extern unsigned int       DIR_BASE          __addr__(0x0EE4);
-        extern unsigned int       BYTES_PER_SECTOR  __addr__(0x1546);
-        extern unsigned int       SECTOR_REM        __addr__(0x0ED8);
-        extern unsigned int       CLUSTER_END_REM   __addr__(0x0EDE);
-        extern long               FCB_SECTOR         __addr__(0x0EDA);
-        extern unsigned int       FCB_SECTOR_COUNT   __addr__(0x0EE2);
-        extern unsigned int       START_FRAG_FLAG    __addr__(0x0EE0);
-        extern unsigned int       END_FRAG_FLAG      __addr__(0x0ECE);
-        extern long               FCB_CACHED_MCB     __addr__(0x0ED0);
-
-        void init_fcb_and_cache_dpb(unsigned char drive, int start, unsigned int file_off, unsigned int length) __addr__(0x124A)
+        void init_fcb_and_cache_dpb(unsigned char drive, int start, unsigned int file_off,
+                                    unsigned int length) __addr__(0x124A)
         {
             long total;
 
@@ -2074,28 +2186,34 @@ DOS_FN_36_GET_FREE_SPACE:
             DIR_BASE = file_off / BYTES_PER_SECTOR;
             SECTOR_REM = file_off % BYTES_PER_SECTOR;
             CLUSTER_END_REM = ((length - 1) % BYTES_PER_SECTOR + SECTOR_REM) % BYTES_PER_SECTOR;
-            total = (long) length;
+            total = (long)length;
             total = total + SECTOR_REM + BYTES_PER_SECTOR - 1;
-            FCB_SECTOR_COUNT = divmod32(total, (long) BYTES_PER_SECTOR);
+            FCB_SECTOR_COUNT = divmod32(total, (long)BYTES_PER_SECTOR);
 
-            if (SECTOR_REM != 0 || length < BYTES_PER_SECTOR)
+            if (SECTOR_REM != 0 || length < BYTES_PER_SECTOR) {
                 START_FRAG_FLAG = 1;
-            else
+            } else {
                 START_FRAG_FLAG = 0;
-            if (BYTES_PER_SECTOR - 1 != CLUSTER_END_REM && FCB_SECTOR_COUNT > 1)
+            }
+            if (BYTES_PER_SECTOR - 1 != CLUSTER_END_REM && FCB_SECTOR_COUNT > 1) {
                 END_FRAG_FLAG = 1;
-            else
+            } else {
                 END_FRAG_FLAG = 0;
-            if (START_FRAG_FLAG != 0) FCB_SECTOR_COUNT--;
-            if (END_FRAG_FLAG != 0) FCB_SECTOR_COUNT--;
+            }
+            if (START_FRAG_FLAG != 0) {
+                FCB_SECTOR_COUNT--;
+            }
+            if (END_FRAG_FLAG != 0) {
+                FCB_SECTOR_COUNT--;
+            }
 
             compute_fcb_sector_number();
             FCB_CACHED_MCB = lookup_cached_sector(drive, FCB_SECTOR);
         }
         ;@endcompiled
-        ;@compiled advance_char_and_lookup 1363 81
+        ;@compiled advance_sector_and_refresh_mcb 1363 81
         /*
-         * ADVANCE_CHAR_AND_LOOKUP @ 0x1363 in SISNE.SIS (81 bytes).
+         * ADVANCE_SECTOR_AND_REFRESH_MCB @ 0x1363 in SISNE.SIS (81 bytes).
          *
          * Advance the FCB read position by one sector and refresh the cached MCB.
          * When the per-cluster sector counter wraps (== sectors-per-cluster) it walks
@@ -2104,18 +2222,11 @@ DOS_FN_36_GET_FREE_SPACE:
          * cache entry for the new sector. DS-relative globals.
          */
 
-        extern int  read_fcb_path_char(int cursor) __addr__(0xB791);
-        extern void compute_fcb_sector_number(void) __addr__(0x1220);
         extern long lookup_cached_sector(unsigned char op, long lba) __addr__(0xBDAD);
 
-        extern unsigned int  DIR_BASE        __addr__(0x0EE4);
-        extern unsigned int  SEC_PER_CLUSTER  __addr__(0x0ED6);
-        extern int           CURSOR           __addr__(0x1544);
-        extern long          FCB_SECTOR        __addr__(0x0EDA);
-        extern unsigned char REQ_OP            __addr__(0x0EE6);
-        extern long          FCB_CACHED_MCB    __addr__(0x0ED0);
+        extern int CURSOR __addr__(0x1544);
 
-        void advance_char_and_lookup(void) __addr__(0x1363)
+        void advance_sector_and_refresh_mcb(void) __addr__(0x1363)
         {
             if (DIR_BASE++ == SEC_PER_CLUSTER) {
                 DIR_BASE = 0;
@@ -2137,15 +2248,6 @@ DOS_FN_36_GET_FREE_SPACE:
          * DS-relative globals.
          */
 
-        extern long __lshr() __addr__(0xECC1);   /* >> helper; pins SHR_DXAX_BY_CL */
-
-        extern unsigned char REQ_X            __addr__(0x0EF2);
-        extern long          FCB_SECTOR        __addr__(0x0EDA);
-        extern long          REQ_PKT_SECTOR    __addr__(0x0EE7);
-        extern unsigned int  REQ_PKT_SEG       __addr__(0x0EEB);
-        extern unsigned int  REQ_PKT_VAL_MID   __addr__(0x0EED);
-        extern unsigned char REQ_PKT_VAL_TOP   __addr__(0x0EEF);
-
         void build_fat_request(unsigned int seg, long val) __addr__(0x13B4)
         {
             REQ_X = 4;
@@ -2155,9 +2257,9 @@ DOS_FN_36_GET_FREE_SPACE:
             REQ_PKT_VAL_TOP = (unsigned char)(val >> 24);
         }
         ;@endcompiled
-        ;@compiled advance_fcb_read_pos 13F3 129
+        ;@compiled copy_fcb_fragment_and_advance 13F3 129
         /*
-         * ADVANCE_FCB_READ_POS @ 0x13F3 in SISNE.SIS (129 bytes).
+         * COPY_FCB_FRAGMENT_AND_ADVANCE @ 0x13F3 in SISNE.SIS (129 bytes).
          *
          * Copy one run of bytes between the user buffer (*bufp) and the cached sector
          * data (CACHED_MCB), then advance both positions. `len` is the run length on
@@ -2168,26 +2270,16 @@ DOS_FN_36_GET_FREE_SPACE:
          * DS-relative globals.
          */
 
-        extern void mem_copy_far(unsigned char far *a, unsigned char far *b, unsigned int n) __addr__(0xB8D3);
-        extern void mark_mcb_bit7(int mcb, int flag) __addr__(0xBD3B);
-        extern void advance_char_and_lookup(void) __addr__(0x1363);
-
-        extern unsigned char far *CACHED_MCB      __addr__(0x0ED0);
-        extern unsigned int       CACHED_MCB_OFF   __addr__(0x0ED0);
-        extern unsigned int       CACHED_MCB_SEG   __addr__(0x0ED2);
-        extern unsigned int       BYTES_PER_SECTOR __addr__(0x1546);
-        extern unsigned int       SECTOR_REM       __addr__(0x0ED8);
-        extern unsigned int       FCB_SECTOR_COUNT __addr__(0x0EE2);
-        extern unsigned int       FRAG_FLAG2       __addr__(0x0ECE);
-
-        void advance_fcb_read_pos(unsigned int len, unsigned char far **bufp, unsigned char wflag) __addr__(0x13F3)
+        void copy_fcb_fragment_and_advance(unsigned int len, unsigned char far **bufp,
+                                           unsigned char wflag) __addr__(0x13F3)
         {
             register unsigned int n;
 
-            if (FCB_SECTOR_COUNT == 0 && FRAG_FLAG2 == 0)
+            if (FCB_SECTOR_COUNT == 0 && FRAG_FLAG2 == 0) {
                 n = len;
-            else
+            } else {
                 n = BYTES_PER_SECTOR - SECTOR_REM;
+            }
             CACHED_MCB_OFF += SECTOR_REM;
             if (wflag == 0) {
                 mem_copy_far(CACHED_MCB, *bufp, n);
@@ -2196,48 +2288,34 @@ DOS_FN_36_GET_FREE_SPACE:
                 mark_mcb_bit7(CACHED_MCB_SEG, 1);
             }
             FP_OFF(*bufp) += n;
-            if (FCB_SECTOR_COUNT > 0)
-                advance_char_and_lookup();
+            if (FCB_SECTOR_COUNT > 0) {
+                advance_sector_and_refresh_mcb();
+            }
         }
         ;@endcompiled
         ;@compiled read_or_write_fcb_data 1474 303
         /*
-        * READ_OR_WRITE_FCB_DATA @ 0x1474 in SISNE.SIS (303 bytes).
-        *
-        * The FCB read/write driver: walk the remaining sectors (FCB_SECTOR_COUNT),
-        * batching contiguous whole sectors into a single multi-sector disk request and
-        * copying any partial/cached fragment via the MCB cache. `mode` (di) selects the
-        * tail action: 1 = cached fragment, 2 = done, 0 = loop. `nsect` (si) counts the
-        * batched whole sectors. `bufp` is a near pointer to the user's far buffer
-        * pointer; `wflag` picks read vs write. DS-relative globals.
-        */
+         * READ_OR_WRITE_FCB_DATA @ 0x1474 in SISNE.SIS (303 bytes).
+         *
+         * The FCB read/write driver: walk the remaining sectors (FCB_SECTOR_COUNT),
+         * batching contiguous whole sectors into a single multi-sector disk request and
+         * copying any partial/cached fragment via the MCB cache. `mode` (di) selects the
+         * tail action: 1 = cached fragment, 2 = done, 0 = loop. `nsect` (si) counts the
+         * batched whole sectors. `bufp` is a near pointer to the user's far buffer
+         * pointer; `wflag` picks read vs write. DS-relative globals.
+         */
 
-        extern void advance_char_and_lookup(void) __addr__(0x1363);
-        extern void disk_read_request(unsigned char *pkt)  __addr__(0xBFC8);
-        extern void disk_write_request(unsigned char *pkt) __addr__(0xBFD2);
-        extern void mem_copy_far(unsigned char far *a, unsigned char far *b, unsigned int n) __addr__(0xB8D3);
-        extern void mark_mcb_bit7(int mcb, int flag) __addr__(0xBD3B);
-
-        extern unsigned int       FCB_SECTOR_COUNT __addr__(0x0EE2);
-        extern long               FCB_SECTOR        __addr__(0x0EDA);
-        extern unsigned int       CACHED_MCB_SEG    __addr__(0x0ED2);
-        extern unsigned char far *CACHED_MCB        __addr__(0x0ED0);
-        extern unsigned int       BYTES_PER_SECTOR  __addr__(0x1546);
-        extern unsigned char      REQ_OP            __addr__(0x0EE6);
-        extern long               REQ_PKT_SECTOR    __addr__(0x0EE7);
-        extern unsigned int       REQ_COUNT         __addr__(0x0EF0);
-        extern unsigned char      REQ_X             __addr__(0x0EF2);
-        extern unsigned char      REQ_CMD2          __addr__(0x0EF3);
-        extern unsigned char far *REQ_BUF2          __addr__(0x0EF8);
-
-        void read_or_write_fcb_data(unsigned char far **bufp, unsigned char wflag) __addr__(0x1474)
+        void read_or_write_fcb_data(unsigned char far **bufp, unsigned char wflag)
+            __addr__(0x1474)
         {
-            register unsigned int nsect;  /* SI */
-            register int mode;      /* DI */
-            long base_sector;       /* [bp-8] */
-            long probe_sector;      /* [bp-0C] */
+            register unsigned int nsect; /* SI */
+            register int mode;           /* DI */
+            long base_sector;            /* [bp-8] */
+            long probe_sector;           /* [bp-0C] */
 
-            if (FCB_SECTOR_COUNT <= 0) return;
+            if (FCB_SECTOR_COUNT <= 0) {
+                return;
+            }
 
             while (1) {
                 FCB_SECTOR_COUNT--;
@@ -2256,7 +2334,7 @@ DOS_FN_36_GET_FREE_SPACE:
                             break;
                         }
                         probe_sector = FCB_SECTOR;
-                        advance_char_and_lookup();
+                        advance_sector_and_refresh_mcb();
                         FCB_SECTOR_COUNT--;
                     } while (probe_sector + 1 == FCB_SECTOR);
                     if (nsect > 0) {
@@ -2265,13 +2343,16 @@ DOS_FN_36_GET_FREE_SPACE:
                         REQ_PKT_SECTOR = base_sector;
                         REQ_COUNT = nsect;
                         REQ_BUF2 = *bufp;
-                        if (wflag == 0)
+                        if (wflag == 0) {
                             disk_read_request(&REQ_OP);
-                        else
+                        } else {
                             disk_write_request(&REQ_OP);
+                        }
                         FP_OFF(*bufp) += BYTES_PER_SECTOR * nsect;
                     }
-                    if (mode == 2) return;
+                    if (mode == 2) {
+                        return;
+                    }
                 } while (mode != 1);
                 if (wflag == 0) {
                     mem_copy_far(CACHED_MCB, *bufp, BYTES_PER_SECTOR);
@@ -2280,8 +2361,10 @@ DOS_FN_36_GET_FREE_SPACE:
                     mark_mcb_bit7(CACHED_MCB_SEG, 1);
                 }
                 FP_OFF(*bufp) += BYTES_PER_SECTOR;
-                if (FCB_SECTOR_COUNT == 0) return;
-                advance_char_and_lookup();
+                if (FCB_SECTOR_COUNT == 0) {
+                    return;
+                }
+                advance_sector_and_refresh_mcb();
             }
 
             return;
@@ -2296,11 +2379,7 @@ DOS_FN_36_GET_FREE_SPACE:
          * pointer parked at [0EF8h].
          */
 
-        extern void build_fat_request(unsigned int seg, long val) __addr__(0x13B4);
-        extern int  dispatch_request_packet(unsigned char *pkt) __addr__(0xBBCF);
-
-        extern unsigned char      REQ_OP   __addr__(0x0EE6);
-        extern unsigned char far *REQ_BUF2 __addr__(0x0EF8);
+        extern int dispatch_request_packet(unsigned char *pkt) __addr__(0xBBCF);
 
         unsigned char far *read_fat_via_dispatch(unsigned int seg, long val) __addr__(0x15A3)
         {
@@ -2309,9 +2388,6 @@ DOS_FN_36_GET_FREE_SPACE:
             return REQ_BUF2;
         }
         ;@endcompiled
-
-WRITE_AT_FCB_POSITION:
-        ; Write at FCB cluster/offset, walking the FAT chain via READ_FAT_VIA_DISPATCH
         ;@compiled write_at_fcb_position 15CA 165
         /*
          * WRITE_AT_FCB_POSITION @ 0x15CA in SISNE.SIS (165 bytes).
@@ -2326,34 +2402,27 @@ WRITE_AT_FCB_POSITION:
          * is a near descriptor {long cluster0; long cluster1; unsigned int seg}.
          */
 
-        extern void init_fcb_and_cache_dpb(unsigned char drive, int start, unsigned int file_off, unsigned int length) __addr__(0x124A);
-        extern long read_fat_via_dispatch(unsigned int seg, long val) __addr__(0x15A3);
-        extern void advance_fcb_read_pos(unsigned int len, unsigned char far **bufp, unsigned char wflag) __addr__(0x13F3);
-        extern void read_or_write_fcb_data(unsigned char far **bufp, unsigned char wflag) __addr__(0x1474);
-        extern void advance_char_and_lookup(void) __addr__(0x1363);
-        extern void mem_copy_far(unsigned char far *a, unsigned char far *b, unsigned int n) __addr__(0xB8D3);
+        extern unsigned int CURSOR __addr__(0x1544);
 
-        extern unsigned int       START_FRAG_FLAG __addr__(0x0EE0);
-        extern unsigned int       END_FRAG_FLAG   __addr__(0x0ECE);
-        extern unsigned int       CACHED_MCB_SEG  __addr__(0x0ED2);
-        extern unsigned char far *CACHED_MCB      __addr__(0x0ED0);
-        extern long               FCB_CACHED_MCB  __addr__(0x0ED0);
-        extern unsigned int       CLUSTER_END_REM __addr__(0x0EDE);
-        extern unsigned int       CURSOR          __addr__(0x1544);
-
-        int write_at_fcb_position(unsigned char drive, int start, unsigned int file_off, unsigned int length, unsigned char far *buf, unsigned char *req) __addr__(0x15CA)
+        int write_at_fcb_position(unsigned char drive, int start, unsigned int file_off,
+                                  unsigned int length, unsigned char far *buf, unsigned char *req)
+            __addr__(0x15CA)
         {
             init_fcb_and_cache_dpb(drive, start, file_off, length);
             if (START_FRAG_FLAG != 0) {
-                if (CACHED_MCB_SEG == 0)
-                    FCB_CACHED_MCB = read_fat_via_dispatch(*(unsigned int *)(req + 8), *(long *)req);
-                advance_fcb_read_pos(length, &buf, 0);
+                if (CACHED_MCB_SEG == 0) {
+                    FCB_CACHED_MCB =
+                        read_fat_via_dispatch(*(unsigned int *)(req + 8), *(long *)req);
+                }
+                copy_fcb_fragment_and_advance(length, &buf, 0);
             }
             read_or_write_fcb_data(&buf, 0);
             if (END_FRAG_FLAG != 0) {
-                advance_char_and_lookup();
-                if (CACHED_MCB_SEG == 0)
-                    FCB_CACHED_MCB = read_fat_via_dispatch(*(unsigned int *)(req + 8), *(long *)(req + 4));
+                advance_sector_and_refresh_mcb();
+                if (CACHED_MCB_SEG == 0) {
+                    FCB_CACHED_MCB =
+                        read_fat_via_dispatch(*(unsigned int *)(req + 8), *(long *)(req + 4));
+                }
                 mem_copy_far(CACHED_MCB, buf, CLUSTER_END_REM + 1);
             }
             return CURSOR;
@@ -2378,46 +2447,33 @@ READ_AT_FCB_POSITION:
          * {long cluster0; long cluster1; unsigned int seg}.
          */
 
-        extern void init_fcb_and_cache_dpb(unsigned char drive, int start, unsigned int file_off, unsigned int length) __addr__(0x124A);
-        extern long read_fat_via_dispatch(unsigned int seg, long val) __addr__(0x15A3);
-        extern void build_fat_request(unsigned int seg, long val) __addr__(0x13B4);
-        extern long alloc_and_convert_bpb(unsigned char *pkt) __addr__(0xBE9C);
-        extern void advance_fcb_read_pos(unsigned int len, unsigned char far **bufp, unsigned char wflag) __addr__(0x13F3);
-        extern void read_or_write_fcb_data(unsigned char far **bufp, unsigned char wflag) __addr__(0x1474);
-        extern void advance_char_and_lookup(void) __addr__(0x1363);
-        extern void mem_copy_far(unsigned char far *a, unsigned char far *b, unsigned int n) __addr__(0xB8D3);
-        extern void mark_mcb_bit7(int mcb, int flag) __addr__(0xBD3B);
+        extern unsigned int CURSOR __addr__(0x1544);
 
-        extern unsigned int       START_FRAG_FLAG __addr__(0x0EE0);
-        extern unsigned int       END_FRAG_FLAG   __addr__(0x0ECE);
-        extern unsigned int       CACHED_MCB_SEG  __addr__(0x0ED2);
-        extern unsigned char far *CACHED_MCB      __addr__(0x0ED0);
-        extern long               FCB_CACHED_MCB  __addr__(0x0ED0);
-        extern unsigned int       CLUSTER_END_REM __addr__(0x0EDE);
-        extern unsigned char      REQ_OP          __addr__(0x0EE6);
-        extern unsigned int       CURSOR          __addr__(0x1544);
-
-        int read_at_fcb_position(unsigned char drive, int start, unsigned int file_off, unsigned int length, unsigned char far *buf, unsigned int ext, unsigned char *req) __addr__(0x166F)
+        int read_at_fcb_position(unsigned char drive, int start, unsigned int file_off,
+                                 unsigned int length, unsigned char far *buf, unsigned int ext,
+                                 unsigned char *req) __addr__(0x166F)
         {
             init_fcb_and_cache_dpb(drive, start, file_off, length);
             if (START_FRAG_FLAG != 0) {
                 if (CACHED_MCB_SEG == 0) {
-                    if (ext != 0)
-                        FCB_CACHED_MCB = read_fat_via_dispatch(*(unsigned int *)(req + 8), *(long *)req);
-                    else {
+                    if (ext != 0) {
+                        FCB_CACHED_MCB =
+                            read_fat_via_dispatch(*(unsigned int *)(req + 8), *(long *)req);
+                    } else {
                         build_fat_request(*(unsigned int *)(req + 8), *(long *)req);
                         FCB_CACHED_MCB = alloc_and_convert_bpb(&REQ_OP);
                     }
                 }
-                advance_fcb_read_pos(length, &buf, 1);
+                copy_fcb_fragment_and_advance(length, &buf, 1);
             }
             read_or_write_fcb_data(&buf, 1);
             if (END_FRAG_FLAG != 0) {
-                advance_char_and_lookup();
+                advance_sector_and_refresh_mcb();
                 if (CACHED_MCB_SEG == 0) {
-                    if (ext != 0)
-                        FCB_CACHED_MCB = read_fat_via_dispatch(*(unsigned int *)(req + 8), *(long *)(req + 4));
-                    else {
+                    if (ext != 0) {
+                        FCB_CACHED_MCB =
+                            read_fat_via_dispatch(*(unsigned int *)(req + 8), *(long *)(req + 4));
+                    } else {
                         build_fat_request(*(unsigned int *)(req + 8), *(long *)(req + 4));
                         FCB_CACHED_MCB = alloc_and_convert_bpb(&REQ_OP);
                     }
@@ -2438,10 +2494,6 @@ INIT_SDA_DRIVER_LINKS:
          * Build the SDA far pointer ([2DEh]:0000) at [1422h], then cache the SDA's
          * driver-chain table pointer (the far pointer at SDA+0x34) into [142Eh]/[1430h].
          */
-
-        extern unsigned int       SDA_SRC_SEG    __addr__(0x02DE);
-        extern unsigned char far *SDA_PTR        __addr__(0x1422);
-        extern unsigned char far *SDA_FILE_TABLE __addr__(0x142E);
 
         void init_sda_driver_links(void) __addr__(0x176B)
         {
@@ -2464,20 +2516,16 @@ GET_SDA_PRESERVED_SIZE:
          * own SDA+0x32 field.
          */
 
-        extern unsigned int       SDA_SRC_SEG     __addr__(0x02DE);
-        extern unsigned char far *SDA_PTR         __addr__(0x1422);
-        extern unsigned char far *SDA_FILE_TABLE  __addr__(0x142E);
-
         unsigned int get_sda_preserved_size(void) __addr__(0x178E)
         {
             unsigned int result;
 
-            if (*(unsigned int far *)(SDA_PTR + 0x32) > 0x14
-                    && FP_OFF(SDA_FILE_TABLE) == 0x18
-                    && FP_SEG(SDA_FILE_TABLE) == SDA_SRC_SEG)
+            if (*(unsigned int far *)(SDA_PTR + 0x32) > 0x14 && FP_OFF(SDA_FILE_TABLE) == 0x18 &&
+                FP_SEG(SDA_FILE_TABLE) == SDA_SRC_SEG) {
                 result = 0x14;
-            else
+            } else {
                 result = *(unsigned int far *)(SDA_PTR + 0x32);
+            }
             return result;
         }
         ;@endcompiled
@@ -2493,24 +2541,17 @@ LOAD_DIR_FCB_INTO_GLOBALS:
          * driver/extent fields at FCB+0x0B/+0x1B/+0x19.
          */
 
-        extern unsigned char DRIVE_CODE   __addr__(0x0F20);
-        extern long          IO_START     __addr__(0x0EFE);
-        extern unsigned int  DIR_FIELD_LO __addr__(0x0F34);
-        extern unsigned int  DIR_FIELD_HI __addr__(0x0F1E);
-        extern unsigned int  DIR_FAT_PAGE __addr__(0x0F18);
+        extern long IO_START __addr__(0x0EFE);
 
         void load_dir_fcb_into_globals(unsigned char far *fcb) __addr__(0x17C3)
         {
-            DRIVE_CODE   = fcb[5] & 0x0F;
-            IO_START     = *(long far *)(fcb + 0x15);
+            DRIVE_CODE = fcb[5] & 0x0F;
+            IO_START = *(long far *)(fcb + 0x15);
             DIR_FIELD_LO = *(int far *)(fcb + 0x0B);
             DIR_FIELD_HI = *(int far *)(fcb + 0x1B);
             DIR_FAT_PAGE = *(int far *)(fcb + 0x19);
         }
         ;@endcompiled
-
-GET_DPB_DRIVER_VECTOR:
-        ; Read driver ptr from DPB entry — SDA-aware path via [bp+4]+18h/1Bh
         ;@compiled get_dpb_driver_vector 17F8 50
         /*
          * GET_DPB_DRIVER_VECTOR @ 0x17F8 in SISNE.SIS (50 bytes).
@@ -2521,8 +2562,6 @@ GET_DPB_DRIVER_VECTOR:
          * at DPB+0x1B (offset +0x1B, segment +0x1D) is returned directly.
          */
 
-        extern unsigned char NETWORK_ACTIVE __addr__(0x02E0);
-
         unsigned char far *get_dpb_driver_vector(unsigned char far *dpb) __addr__(0x17F8)
         {
             unsigned char far *p;
@@ -2532,7 +2571,7 @@ GET_DPB_DRIVER_VECTOR:
                 FP_OFF(p) = *(int far *)(dpb + 0x1B);
                 return p;
             }
-            return *(unsigned char far * far *)(dpb + 0x1B);
+            return *(unsigned char far *far *)(dpb + 0x1B);
         }
         ;@endcompiled
 
@@ -2642,38 +2681,29 @@ INIT_PSP_DRIVE_LOOP_TEST:
 SETUP_DRIVE_TABLE:
         ; Initialize the per-drive control block — clamp counts vs CFG_LASTDRIVE
         ;@compiled setup_drive_table 1944 423
-        extern unsigned char       get_drive_count(void) __addr__(0xB9FB);
-        extern void                mem_fill_zero(unsigned char far *buf, unsigned int len) __addr__(0xD25D);
-        extern void                mem_copy_far(unsigned char far *dst, unsigned char far *src, unsigned int n) __addr__(0xB8D3);
-        extern void                alloc_mcb_slots_wrap(int n, unsigned int *segp) __addr__(0xBF1A);
-        extern unsigned char far  *get_dpb_by_drive_index(int drive) __addr__(0xB9E1);
-
-        extern unsigned char       PROBED_COUNT    __addr__(0x0F05);
-        extern unsigned char       INSTALLED_COUNT __addr__(0x0F08);
-        extern unsigned char       ALLOC_COUNT     __addr__(0x0F04);
-        extern unsigned int        CFG_LASTDRIVE   __addr__(0x01CC);
-        extern unsigned char far  *DPB_TABLE       __addr__(0x0414);
-        extern unsigned char far  *FILES_TABLE     __addr__(0x1204);
+        extern unsigned char far *get_dpb_by_drive_index(int drive) __addr__(0xB9E1);
 
         void setup_drive_table(unsigned char nfiles, unsigned int *para) __addr__(0x1944)
         {
-            long              marker;     /* bp-4  */
-            unsigned int      oldseg;     /* bp-6  */
-            unsigned int      eff;        /* bp-8  */
-            unsigned int      newsize;    /* bp-0Ah */
-            unsigned int      files;      /* bp-0Ch */
-            unsigned int      count;      /* bp-0Eh */
-            unsigned char     i;          /* bp-10h */
+            long marker;                  /* bp-4  */
+            unsigned int oldseg;          /* bp-6  */
+            unsigned int eff;             /* bp-8  */
+            unsigned int newsize;         /* bp-0Ah */
+            unsigned int files;           /* bp-0Ch */
+            unsigned int count;           /* bp-0Eh */
+            unsigned char i;              /* bp-10h */
             unsigned char far *newbuf;    /* bp-14h/-12h */
             unsigned char far *entry;     /* bp-18h/-16h */
             unsigned char far *files_buf; /* bp-1Ch/-1Ah */
 
             count = get_drive_count() + 1;
             eff = count;
-            if (count < PROBED_COUNT)
+            if (count < PROBED_COUNT) {
                 eff = PROBED_COUNT;
-            if (eff < CFG_LASTDRIVE)
+            }
+            if (eff < CFG_LASTDRIVE) {
                 eff = CFG_LASTDRIVE;
+            }
             if (eff > PROBED_COUNT) {
                 newsize = 0x51 * eff + 0x0F;
                 FP_OFF(newbuf) = 0;
@@ -2695,16 +2725,16 @@ SETUP_DRIVE_TABLE:
                     *(unsigned int far *)(entry + 0x43) = 0x4000;
                     *(unsigned long far *)(entry + 0x45) = get_dpb_by_drive_index(i);
                 }
-                *(unsigned int far *)(entry + 0x49) =
-                *(unsigned int far *)(entry + 0x4B) =
-                *(unsigned int far *)(entry + 0x4D) = 0xFFFF;
+                *(unsigned int far *)(entry + 0x49) = *(unsigned int far *)(entry + 0x4B) =
+                    *(unsigned int far *)(entry + 0x4D) = 0xFFFF;
                 FP_OFF(entry) += 0x51;
                 *(unsigned int far *)(entry + 0x4F) = 2;
             }
             PROBED_COUNT = eff;
             INSTALLED_COUNT = count;
-            if (nfiles < 8)
+            if (nfiles < 8) {
                 nfiles = 8;
+            }
             files = nfiles - 5;
             newsize = 0x35 * files + 0x15;
             FP_SEG(files_buf) = *para;
@@ -2732,31 +2762,26 @@ FIND_FREE_FILE_HANDLE:
          * return 0. Returns 1 if the table is full or no driver record is free.
          */
 
-        extern void         init_sda_driver_links(void) __addr__(0x176B);
-        extern unsigned int get_sda_preserved_size(void) __addr__(0x178E);
-
-        extern unsigned char far *SDA_FILE_TABLE   __addr__(0x142E);
-        extern unsigned char far *DRIVER_CHAIN_HEAD __addr__(0x0402);
-        extern unsigned int       SDA_SEG          __addr__(0x1424);
-
         int find_free_file_handle(int *out_slot, unsigned char far **out_rec) __addr__(0x1AEB)
         {
-            unsigned char far *rec;          /* [bp-4]  */
-            register unsigned int rec_idx;   /* SI      */
-            unsigned int limit;              /* [bp-8]  */
-            register unsigned int slot;      /* DI      */
-            unsigned char handle_base;       /* [bp-0Ch] */
-            unsigned char far *drv;          /* [bp-10h] */
+            unsigned char far *rec;        /* [bp-4]  */
+            register unsigned int rec_idx; /* SI      */
+            unsigned int limit;            /* [bp-8]  */
+            register unsigned int slot;    /* DI      */
+            unsigned char handle_base;     /* [bp-0Ch] */
+            unsigned char far *drv;        /* [bp-10h] */
 
             init_sda_driver_links();
             limit = get_sda_preserved_size();
             for (slot = 0; limit > slot; slot++) {
-                if (SDA_FILE_TABLE[slot] == 0xFF) break;
+                if (SDA_FILE_TABLE[slot] == 0xFF) {
+                    break;
+                }
             }
             handle_base = 0;
             if (limit > slot) {
                 for (drv = DRIVER_CHAIN_HEAD; FP_OFF(drv) != 0xFFFF;
-                     drv = *(unsigned char far * far *)drv) {
+                     drv = *(unsigned char far *far *)drv) {
                     for (rec_idx = 0; *(unsigned int far *)(drv + 4) > rec_idx; rec_idx++) {
                         rec = drv + 0x35 * rec_idx + 6;
                         if (*(int far *)rec == 0) {
@@ -2775,20 +2800,17 @@ FIND_FREE_FILE_HANDLE:
         }
         ;@endcompiled
 
-MARK_FCB_INVALID:
+RELEASE_FILE_HANDLE_SLOT:
         ; Mark FCB at [142Eh]+[bp+4] = 0FFh (unused/invalid)
-        ;@compiled mark_fcb_invalid 1BA5 23
+        ;@compiled release_file_handle_slot 1BA5 23
         /*
-         * MARK_FCB_INVALID @ 0x1BA5 in SISNE.SIS (23 bytes).
+         * RELEASE_FILE_HANDLE_SLOT @ 0x1BA5 in SISNE.SIS (23 bytes).
          *
          * Mark the SDA file-handle table slot for `handle` as free (0xFF) after
          * (re)initializing the SDA driver-chain pointers.
          */
 
-        extern void init_sda_driver_links(void) __addr__(0x176B);
-        extern unsigned char far *SDA_FILE_TABLE __addr__(0x142E);
-
-        void mark_fcb_invalid(int handle) __addr__(0x1BA5)
+        void release_file_handle_slot(int handle) __addr__(0x1BA5)
         {
             init_sda_driver_links();
             SDA_FILE_TABLE[handle] = 0xFF;
@@ -2809,30 +2831,28 @@ FIND_FCB_FOR_DRIVE:
          * no slot (0xFF), or the chain ends (offset 0xFFFF) first.
          */
 
-        extern void         init_sda_driver_links(void) __addr__(0x176B);
-        extern unsigned int get_sda_preserved_size(void) __addr__(0x178E);
-
-        extern unsigned char far *SDA_FILE_TABLE    __addr__(0x142E);
-        extern unsigned char far *DRIVER_CHAIN_HEAD __addr__(0x0402);
-
         int find_fcb_for_drive(int drive, unsigned char far **out_rec) __addr__(0x1BBC)
         {
-            unsigned int limit;          /* bp-2 */
-            unsigned int idx;            /* bp-4 */
-            unsigned char far *drv;      /* bp-8/bp-6 */
+            unsigned int limit;     /* bp-2 */
+            unsigned int idx;       /* bp-4 */
+            unsigned char far *drv; /* bp-8/bp-6 */
 
             init_sda_driver_links();
             limit = get_sda_preserved_size();
-            if (drive >= limit)
+            if (drive >= limit) {
                 return 1;
+            }
             idx = SDA_FILE_TABLE[drive];
-            if (idx == 0xFF)
+            if (idx == 0xFF) {
                 return 1;
-            for (drv = DRIVER_CHAIN_HEAD; ; drv = *(unsigned char far * far *)drv) {
-                if (FP_OFF(drv) == 0xFFFF)
+            }
+            for (drv = DRIVER_CHAIN_HEAD;; drv = *(unsigned char far *far *)drv) {
+                if (FP_OFF(drv) == 0xFFFF) {
                     return 1;
-                if (*(unsigned int far *)(drv + 4) > idx)
+                }
+                if (*(unsigned int far *)(drv + 4) > idx) {
                     break;
+                }
                 idx -= *(unsigned int far *)(drv + 4);
             }
             *out_rec = drv + 0x35 * idx + 6;
@@ -2854,39 +2874,34 @@ OPEN_FCB_BY_DRIVE:
          * dispatch. Returns the dispatch status (or the error-6 code on lookup failure).
          */
 
-        extern unsigned char find_fcb_for_drive(int drive, unsigned char far **out_rec) __addr__(0x1BBC);
-        extern int  lookup_error_msg(int code) __addr__(0xD300);
-        extern void write_fcb_to_con_or_driver(int op, unsigned char far *rec) __addr__(0x4134);
-        extern void build_dos_datetime(unsigned int *t, unsigned int *d) __addr__(0xD1A6);
-        extern int  dispatch_fcb_open(unsigned char far *rec) __addr__(0x85AB);
-        extern void notify_share_fcb(unsigned char far *rec) __addr__(0xEAD1);
-        extern void init_sda_driver_links(void) __addr__(0x176B);
-
-        extern unsigned char       NETWORK_ACTIVE __addr__(0x02E0);
-        extern unsigned char far  *SDA_FILE_TABLE __addr__(0x142E);
+        extern int lookup_error_msg(int code) __addr__(0xD300);
 
         int open_fcb_by_drive(int drive) __addr__(0x1C36)
         {
-            unsigned char far *rec;     /* bp-4  */
-            unsigned int dt_time;       /* bp-6  */
-            unsigned char result;       /* bp-8  */
-            unsigned int dt_date;       /* bp-0Ah */
+            unsigned char far *rec; /* bp-4  */
+            unsigned int dt_time;   /* bp-6  */
+            unsigned char result;   /* bp-8  */
+            unsigned int dt_date;   /* bp-0Ah */
 
-            if (find_fcb_for_drive(drive, &rec) != 0)
+            if (find_fcb_for_drive(drive, &rec) != 0) {
                 return lookup_error_msg(6);
+            }
             write_fcb_to_con_or_driver(0x0E, rec);
             build_dos_datetime(&dt_time, &dt_date);
             *(unsigned int far *)(rec + 0x0F) = dt_time;
             *(unsigned int far *)(rec + 0x0D) = dt_date;
             result = dispatch_fcb_open(rec);
-            if (*(unsigned int far *)rec != 0)
+            if (*(unsigned int far *)rec != 0) {
                 (*(unsigned int far *)rec)--;
-            if (NETWORK_ACTIVE != 0)
+            }
+            if (NETWORK_ACTIVE != 0) {
                 notify_share_fcb(rec);
+            }
             init_sda_driver_links();
             SDA_FILE_TABLE[drive] = 0xFF;
-            if (result != 0)
+            if (result != 0) {
                 lookup_error_msg(2);
+            }
             return result;
         }
         ;@endcompiled
@@ -2903,17 +2918,14 @@ SHIFT_DRIVER_RECORDS_FLAG:
          * way the resulting sticky value is stashed into the caller FCB at +15h.
          */
 
-        extern unsigned int       SHIFT_STICKY  __addr__(0x1432);
-        extern unsigned char far *DRIVER_TABLE  __addr__(0x0418);
-        extern unsigned int       DRIVER_COUNT  __addr__(0x0424);
-
         void shift_driver_records_flag(unsigned char far *fcb) __addr__(0x1CDB)
         {
-            unsigned int i;                 /* bp-2 */
+            unsigned int i; /* bp-2 */
 
             if (SHIFT_STICKY == 0xFFFF) {
-                for (i = 0; i < DRIVER_COUNT; i++)
+                for (i = 0; i < DRIVER_COUNT; i++) {
                     *(unsigned int far *)(DRIVER_TABLE + 0x35 * i + 0x1B) >>= 1;
+                }
                 SHIFT_STICKY = 0x8000;
             } else {
                 SHIFT_STICKY++;
@@ -2921,187 +2933,97 @@ SHIFT_DRIVER_RECORDS_FLAG:
             *(unsigned int far *)(fcb + 0x15) = SHIFT_STICKY;
         }
         ;@endcompiled
-        push    bp                                             ;#1D26: 55
-        mov     bp, sp                                         ;#1D27: 8B EC
-        sub     sp, 0Ch                                        ;#1D29: 83 EC 0C
-        mov     al, 35h                                        ;#1D2C: B0 35
-        les     bx, [bp+4]                                     ;#1D2E: C4 5E 04
-        mul     byte [es:bx+1Dh]                               ;#1D31: 26 F6 67 1D
-        add     ax, [418h]                                     ;#1D35: 03 06 18 04
-        mov     dx, [41Ah]                                     ;#1D39: 8B 16 1A 04
-        add     ax, 6                                          ;#1D3D: 05 06 00
-        mov     [bp-4], ax                                     ;#1D40: 89 46 FC
-        mov     [bp-2], dx                                     ;#1D43: 89 56 FE
-        jmp     short INT24_AFTER_ERROR_RETRY                  ;#1D46: EB 70
+        ;@compiled resolve_fcb_driver 1D26 182
+        /*
+         * RESOLVE_FCB_DRIVER @ 0x1D26 in SISNE.SIS (182 bytes).
+         *
+         * Compute the driver record for an FCB (0x35-byte stride at index FCB+1Dh in the
+         * driver table [418h]:[41Ah], +6), then retry the redirector (INT 2Fh AX=1087h)
+         * until it succeeds; on failure run the INT 24h critical-error handler (network
+         * vs local device dispatch) and abort unless it asks to retry (AL==1).
+         */
 
-INVOKE_INT24_NETWORK_PATH:
-        ; INT24 error-msg LOOKUP (code 23h); network vs local DPB dispatch
-        mov     ax, 23h                                        ;#1D48: B8 23 00
-        push    ax                                             ;#1D4B: 50
-        call    near LOOKUP_ERROR_MSG                          ;#1D4C: E8 B1 B5
-        add     sp, 2                                          ;#1D4F: 83 C4 02
-        les     bx, [bp+4]                                     ;#1D52: C4 5E 04
-        test    byte [es:bx+1Ah], 80h                          ;#1D55: 26 F6 47 1A 80
-        jz      short INT24_LOCAL_DEVICE_HANDLER               ;#1D5A: 74 1A
-        mov     ax, 81h                                        ;#1D5C: B8 81 00
-        push    ax                                             ;#1D5F: 50
-        push    es                                             ;#1D60: 06
-        push    bx                                             ;#1D61: 53
-        call    near GET_DPB_DRIVER_VECTOR                     ;#1D62: E8 93 FA
-        add     sp, 4                                          ;#1D65: 83 C4 04
-        push    dx                                             ;#1D68: 52
-        push    ax                                             ;#1D69: 50
-        mov     ax, 80h                                        ;#1D6A: B8 80 00
-        push    ax                                             ;#1D6D: 50
-        call    near INVOKE_INT24_WITH_DEVICE                  ;#1D6E: E8 C6 CD
-        add     sp, 8                                          ;#1D71: 83 C4 08
-        jmp     short INT24_STORE_RESULT_CHECK_RETRY           ;#1D74: EB 38
+        extern void lookup_error_msg(unsigned int code) __addr__(0xD300);
+        extern unsigned char far *get_dpb_by_drive_index(unsigned char drive) __addr__(0xB9E1);
 
-INT24_LOCAL_DEVICE_HANDLER:
-        ; Non-network device — look up DPB by drive, then INVOKE_INT24_WITH_DEVICE
-        les     bx, [bp+4]                                     ;#1D76: C4 5E 04
-        mov     al, [es:bx+19h]                                ;#1D79: 26 8A 47 19
-        mov     [bp-8], al                                     ;#1D7D: 88 46 F8
-        sub     ah, ah                                         ;#1D80: 2A E4
-        push    ax                                             ;#1D82: 50
-        call    near GET_DPB_BY_DRIVE_INDEX                    ;#1D83: E8 5B 9C
-        add     sp, 2                                          ;#1D86: 83 C4 02
-        mov     [bp-0Ch], ax                                   ;#1D89: 89 46 F4
-        mov     [bp-0Ah], dx                                   ;#1D8C: 89 56 F6
-        mov     al, [bp-8]                                     ;#1D8F: 8A 46 F8
-        sub     ah, ah                                         ;#1D92: 2A E4
-        push    ax                                             ;#1D94: 50
-        mov     ax, 81h                                        ;#1D95: B8 81 00
-        push    ax                                             ;#1D98: 50
-        les     bx, [bp-0Ch]                                   ;#1D99: C4 5E F4
-        push    word [es:bx+14h]                               ;#1D9C: 26 FF 77 14
-        push    word [es:bx+12h]                               ;#1DA0: 26 FF 77 12
-        mov     ax, 0Eh                                        ;#1DA4: B8 0E 00
-        push    ax                                             ;#1DA7: 50
-        call    near INVOKE_INT24_WITH_DEVICE                  ;#1DA8: E8 8C CD
-        add     sp, 0Ah                                        ;#1DAB: 83 C4 0A
-INT24_STORE_RESULT_CHECK_RETRY:
-        ; Store INVOKE_INT24 result at [bp-6]; cmp 1 to choose retry vs abort
-        mov     [bp-6], al                                     ;#1DAE: 88 46 FA
-        cmp     al, 1                                          ;#1DB1: 3C 01
-        jz      short INT24_AFTER_ERROR_RETRY                  ;#1DB3: 74 03
-        call    near ABORT_PROGRAM                             ;#1DB5: E8 28 AB
-INT24_AFTER_ERROR_RETRY:
-        ; After INT 24h handler reports retry (AL=1) — INT 2Fh AX=1087h network retry call
-        les     bx, [bp+4]                                     ;#1DB8: C4 5E 04
-        push    word [es:bx+1Eh]                               ;#1DBB: 26 FF 77 1E
-        push    word [bp-2]                                    ;#1DBF: FF 76 FE
-        push    word [bp-4]                                    ;#1DC2: FF 76 FC
-        call    near INT2F_NETWORK_1087                        ;#1DC5: E8 46 CD
-        add     sp, 6                                          ;#1DC8: 83 C4 06
-        or      al, al                                         ;#1DCB: 0A C0
-        jnz     short INT24_AFTER_RETRY_RET                    ;#1DCD: 75 03
-        jmp     near INVOKE_INT24_NETWORK_PATH                 ;#1DCF: E9 76 FF
+        unsigned char far *resolve_fcb_driver(unsigned char far *fcb) __addr__(0x1D26)
+        {
+            unsigned char far *rec; /* bp-4  */
+            unsigned char result;   /* bp-6  */
+            unsigned char drive;    /* bp-8  */
+            unsigned char far *dpb; /* bp-0Ch */
 
-INT24_AFTER_RETRY_RET:
-        ; Retry succeeded — load AX/DX from driver pointer [bp-4] and return
-        mov     ax, [bp-4]                                     ;#1DD2: 8B 46 FC
-        mov     dx, [bp-2]                                     ;#1DD5: 8B 56 FE
-        mov     sp, bp                                         ;#1DD8: 8B E5
-        pop     bp                                             ;#1DDA: 5D
-        ret                                                    ;#1DDB: C3
+            rec = DRIVER_TABLE + 0x35 * fcb[0x1D] + 6;
+            for (; int2f_network_1087(rec, *(unsigned int far *)(fcb + 0x1E)) == 0;) {
+                lookup_error_msg(0x23);
+                if ((fcb[0x1A] & 0x80) != 0) {
+                    result = invoke_int24_with_device(0x80, get_dpb_driver_vector(fcb), 0x81);
+                } else {
+                    drive = fcb[0x19];
+                    dpb = get_dpb_by_drive_index(drive);
+                    result = invoke_int24_with_device(
+                        0x0E, *(unsigned char far *far *)(dpb + 0x12), 0x81, drive);
+                }
+                if (result != 1) {
+                    abort_program();
+                }
+            }
+            return rec;
+        }
+        ;@endcompiled
 
 RETRY_NETWORK_LOOP:
         ; Retry SUB_EADE (INT 2Fh) up to [1562h] times until success (AL=0)
-        push    bp                                             ;#1DDC: 55
-        mov     bp, sp                                         ;#1DDD: 8B EC
-        sub     sp, 4                                          ;#1DDF: 83 EC 04
-RETRY_NETWORK_1085:
-        ; Retry INT 2Fh AX=1085h with current packet args from caller
-        mov     ax, [1562h]                                    ;#1DE2: A1 62 15
-        mov     [bp-2], ax                                     ;#1DE5: 89 46 FE
-        jmp     short RETRY_NETWORK_1085_LOOP_TEST             ;#1DE8: EB 21
+        ;@compiled retry_network_loop 1DDC 186
+        /*
+         * RETRY_NETWORK_LOOP @ 0x1DDC in SISNE.SIS (186 bytes).
+         *
+         * Retry the SHARE/network redirector (INT 2Fh AX=1085h) up to [1562h] times until
+         * it succeeds (AL==0).  On persistent failure run the INT 24h critical-error
+         * handler (network vs device dispatch); abort unless it asks to retry (AL==1),
+         * then re-enter the whole retry sequence.  Returns 0 on success, else the error.
+         */
 
-RETRY_NETWORK_1085_CALL:
-        ; Top of retry — invoke INT2F AX=1085h with FCB packet args; store AL result
-        push    word [bp+8]                                    ;#1DEA: FF 76 08
-        push    word [0F00h]                                   ;#1DED: FF 36 00 0F
-        push    word [0EFEh]                                   ;#1DF1: FF 36 FE 0E
-        push    word [bp+6]                                    ;#1DF5: FF 76 06
-        push    word [bp+4]                                    ;#1DF8: FF 76 04
-        call    near INT2F_NETWORK_1085                        ;#1DFB: E8 E0 CC
-        add     sp, 0Ah                                        ;#1DFE: 83 C4 0A
-        mov     [bp-4], al                                     ;#1E01: 88 46 FC
-        or      al, al                                         ;#1E04: 0A C0
-        jz      short RETRY_NETWORK_AFTER_RETRIES              ;#1E06: 74 09
-        dec     word [bp-2]                                    ;#1E08: FF 4E FE
-RETRY_NETWORK_1085_LOOP_TEST:
-        ; cmp [bp-2] retry-count vs 0; jnz back to INT2F_1085 call
-        cmp     word [bp-2], 0                                 ;#1E0B: 83 7E FE 00
-        jnz     short RETRY_NETWORK_1085_CALL                  ;#1E0F: 75 D9
-RETRY_NETWORK_AFTER_RETRIES:
-        ; After retry loop — AL=0 success path, else fall to error handling
-        cmp     byte [bp-4], 0                                 ;#1E11: 80 7E FC 00
-        jz      short RETRY_NETWORK_RET_SUCCESS                ;#1E15: 74 79
-        les     bx, [bp+4]                                     ;#1E17: C4 5E 04
-        cmp     byte [es:bx+3], 0                              ;#1E1A: 26 80 7F 03 00
-        jnz     short RETRY_NETWORK_INVOKE_INT24               ;#1E1F: 75 07
-        mov     al, [bp-4]                                     ;#1E21: 8A 46 FC
-        sub     ah, ah                                         ;#1E24: 2A E4
-        jmp     short RETRY_NETWORK_LOOP_EPILOGUE              ;#1E26: EB 6A
+        extern void lookup_error_msg(unsigned int code) __addr__(0xD300);
 
-RETRY_NETWORK_INVOKE_INT24:
-        ; Error — LOOKUP_ERROR_MSG, then INVOKE_INT24_WITH_DEVICE with device or default
-        mov     al, [bp-4]                                     ;#1E28: 8A 46 FC
-        sub     ah, ah                                         ;#1E2B: 2A E4
-        push    ax                                             ;#1E2D: 50
-        call    near LOOKUP_ERROR_MSG                          ;#1E2E: E8 CF B4
-        add     sp, 2                                          ;#1E31: 83 C4 02
-        les     bx, [bp+4]                                     ;#1E34: C4 5E 04
-        test    byte [es:bx+5], 80h                            ;#1E37: 26 F6 47 05 80
-        jz      short RETRY_NETWORK_INT24_DEVICE               ;#1E3C: 74 18
-        mov     ax, 81h                                        ;#1E3E: B8 81 00
-        push    ax                                             ;#1E41: 50
-        push    word [es:bx+9]                                 ;#1E42: 26 FF 77 09
-        push    word [es:bx+7]                                 ;#1E46: 26 FF 77 07
-        mov     ax, 80h                                        ;#1E4A: B8 80 00
-        push    ax                                             ;#1E4D: 50
-        call    near INVOKE_INT24_WITH_DEVICE                  ;#1E4E: E8 E6 CC
-        add     sp, 8                                          ;#1E51: 83 C4 08
-        jmp     short RETRY_NETWORK_INT24_STORE                ;#1E54: EB 2A
+        extern unsigned long IO_START __addr__(0x0EFE);
 
-RETRY_NETWORK_INT24_DEVICE:
-        ; Device-attached error — INVOKE_INT24 with device handle bits and packet info
-        les     bx, [bp+4]                                     ;#1E56: C4 5E 04
-        mov     al, [es:bx+5]                                  ;#1E59: 26 8A 47 05
-        and     ax, 0Fh                                        ;#1E5D: 25 0F 00
-        push    ax                                             ;#1E60: 50
-        mov     ax, 81h                                        ;#1E61: B8 81 00
-        push    ax                                             ;#1E64: 50
-        les     bx, [es:bx+7]                                  ;#1E65: 26 C4 5F 07
-        push    word [es:bx+14h]                               ;#1E69: 26 FF 77 14
-        push    word [es:bx+12h]                               ;#1E6D: 26 FF 77 12
-        mov     al, [bp+0Ah]                                   ;#1E71: 8A 46 0A
-        sub     ah, ah                                         ;#1E74: 2A E4
-        add     ax, 1Eh                                        ;#1E76: 05 1E 00
-        push    ax                                             ;#1E79: 50
-        call    near INVOKE_INT24_WITH_DEVICE                  ;#1E7A: E8 BA CC
-        add     sp, 0Ah                                        ;#1E7D: 83 C4 0A
-RETRY_NETWORK_INT24_STORE:
-        ; Store INVOKE_INT24_WITH_DEVICE result at [bp-4]; cmp 1 to choose retry vs abort
-        mov     [bp-4], al                                     ;#1E80: 88 46 FC
-        cmp     al, 1                                          ;#1E83: 3C 01
-        jnz     short RETRY_NETWORK_ABORT_AND_RETRY            ;#1E85: 75 03
-        jmp     near RETRY_NETWORK_1085                        ;#1E87: E9 58 FF
+        unsigned int retry_network_loop(unsigned char far *driver, unsigned int bytes,
+                                        unsigned char z) __addr__(0x1DDC)
+        {
+            unsigned int count;   /* bp-2 */
+            unsigned char result; /* bp-4 */
 
-RETRY_NETWORK_ABORT_AND_RETRY:
-        ; Result AL≠1 — ABORT_PROGRAM then re-enter retry loop
-        call    near ABORT_PROGRAM                             ;#1E8A: E8 53 AA
-        jmp     near RETRY_NETWORK_1085                        ;#1E8D: E9 52 FF
-
-RETRY_NETWORK_RET_SUCCESS:
-        ; Network retry succeeded — clear AX and return via shared epilogue
-        xor     ax, ax                                         ;#1E90: 33 C0
-RETRY_NETWORK_LOOP_EPILOGUE:
-        ; Mov sp,bp / pop bp / ret tail of RETRY_NETWORK_LOOP (AX=0 success)
-        mov     sp, bp                                         ;#1E92: 8B E5
-        pop     bp                                             ;#1E94: 5D
-        ret                                                    ;#1E95: C3
+            for (;;) {
+                for (count = RETRY_LIMIT; count != 0; count--) {
+                    result = int2f_network_1085(driver, IO_START, bytes);
+                    if (result == 0) {
+                        break;
+                    }
+                }
+                if (result == 0) {
+                    return 0;
+                }
+                if (driver[3] == 0) {
+                    return result;
+                }
+                lookup_error_msg(result);
+                if ((driver[5] & 0x80) != 0) {
+                    result = invoke_int24_with_device(
+                        0x80, *(unsigned char far *far *)(driver + 7), 0x81);
+                } else {
+                    result = invoke_int24_with_device(
+                        z + 0x1E,
+                        *(unsigned char far *far *)(*(unsigned char far *far *)(driver + 7) +
+                                                    0x12),
+                        0x81, driver[5] & 0x0F);
+                }
+                if (result != 1) {
+                    abort_program();
+                }
+            }
+        }
+        ;@endcompiled
 
 SET_FCB_HANDLE_OR_CLEAR:
         ; FCB op: clear bit 6 + write 0FFFEh if handle 0, else mark in-use and store
@@ -3124,60 +3046,43 @@ SET_FCB_HANDLE_OR_CLEAR:
         }
         ;@endcompiled
 
-BUILD_DIRECTORY_ENTRY:
-        ; Init 1Ah-byte scratch with MEM_FILL_ZERO; cmd 5 sets +0=0Eh attribute byte
-        push    bp                                             ;#1EBC: 55
-        mov     bp, sp                                         ;#1EBD: 8B EC
-        sub     sp, 1Ah                                        ;#1EBF: 83 EC 1A
-        mov     ax, 13h                                        ;#1EC2: B8 13 00
-        push    ax                                             ;#1EC5: 50
-        lea     ax, [bp-1Ah]                                   ;#1EC6: 8D 46 E6
-        push    ss                                             ;#1EC9: 16
-        push    ax                                             ;#1ECA: 50
-        call    near MEM_FILL_ZERO                             ;#1ECB: E8 8F B3
-        add     sp, 6                                          ;#1ECE: 83 C4 06
-        cmp     byte [bp+4], 5                                 ;#1ED1: 80 7E 04 05
-        jnz     short BUILD_DIR_TRY_CMD_0D                     ;#1ED5: 75 06
-        mov     byte [bp-1Ah], 0Eh                             ;#1ED7: C6 46 E6 0E
-        jmp     short BUILD_DIRECTORY_ENTRY_FILL               ;#1EDB: EB 10
+BUILD_DRIVER_REQUEST:
+        ; Build a device-driver request header (len/unit/cmd/status), dispatch to driver
+        ;@compiled build_driver_request 1EBC 116
+        /*
+         * BUILD_DRIVER_REQUEST @ 0x1EBC in SISNE.SIS (116 bytes).
+         *
+         * Build a DOS-style device-driver request header on the stack and dispatch it
+         * via CALL_DRIVER_WITH_PACKET (which passes the header in ES:BX).  The header
+         * fields set here are: +0 request length (0x0E/0x0D/0x14 by command), +1 unit,
+         * +2 command code, +0x0E command data (a long), and +0x12 the FCB's word-4.
+         * The driver fills the +3 status word, which is returned; the (possibly updated)
+         * word-4 slot is copied back into the FCB header.
+         */
 
-BUILD_DIR_TRY_CMD_0D:
-        ; Cmd != 5 — branch: 0Dh sets attribute 0Dh, else fall to default 14h path
-        cmp     byte [bp+4], 0Dh                               ;#1EDD: 80 7E 04 0D
-        jnz     short BUILD_DIR_DEFAULT_ATTR                   ;#1EE1: 75 06
-        mov     byte [bp-1Ah], 0Dh                             ;#1EE3: C6 46 E6 0D
-        jmp     short BUILD_DIRECTORY_ENTRY_FILL               ;#1EE7: EB 04
+        unsigned int build_driver_request(unsigned char cmd, unsigned char unit,
+                                          unsigned char far *fcb, unsigned int p_0c,
+                                          unsigned int p_0e, unsigned long data) __addr__(0x1EBC)
+        {
+            unsigned char req[26];
 
-BUILD_DIR_DEFAULT_ATTR:
-        ; Default — set scratch attribute byte to 14h then fill remaining fields
-        mov     byte [bp-1Ah], 14h                             ;#1EE9: C6 46 E6 14
-BUILD_DIRECTORY_ENTRY_FILL:
-        ; After attribute byte set — copy [bp+4..0Eh] args, CALL_DRIVER_WITH_PACKET
-        mov     al, [bp+4]                                     ;#1EED: 8A 46 04
-        mov     [bp-18h], al                                   ;#1EF0: 88 46 E8
-        mov     al, [bp+6]                                     ;#1EF3: 8A 46 06
-        mov     [bp-19h], al                                   ;#1EF6: 88 46 E7
-        les     bx, [bp+8]                                     ;#1EF9: C4 5E 08
-        mov     ax, [es:bx+4]                                  ;#1EFC: 26 8B 47 04
-        mov     [bp-8], ax                                     ;#1F00: 89 46 F8
-        mov     ax, [bp+10h]                                   ;#1F03: 8B 46 10
-        mov     dx, [bp+12h]                                   ;#1F06: 8B 56 12
-        mov     [bp-0Ch], ax                                   ;#1F09: 89 46 F4
-        mov     [bp-0Ah], dx                                   ;#1F0C: 89 56 F6
-        push    word [bp+0Eh]                                  ;#1F0F: FF 76 0E
-        push    word [bp+0Ch]                                  ;#1F12: FF 76 0C
-        lea     ax, [bp-1Ah]                                   ;#1F15: 8D 46 E6
-        push    ss                                             ;#1F18: 16
-        push    ax                                             ;#1F19: 50
-        call    near CALL_DRIVER_WITH_PACKET                   ;#1F1A: E8 86 B6
-        add     sp, 8                                          ;#1F1D: 83 C4 08
-        les     bx, [bp+8]                                     ;#1F20: C4 5E 08
-        mov     ax, [bp-8]                                     ;#1F23: 8B 46 F8
-        mov     [es:bx], ax                                    ;#1F26: 26 89 07
-        mov     ax, [bp-17h]                                   ;#1F29: 8B 46 E9
-        mov     sp, bp                                         ;#1F2C: 8B E5
-        pop     bp                                             ;#1F2E: 5D
-        ret                                                    ;#1F2F: C3
+            mem_fill_zero((unsigned char far *)req, 0x13);
+            if (cmd == 5) {
+                req[0] = 0x0E;
+            } else if (cmd == 0x0D) {
+                req[0] = 0x0D;
+            } else {
+                req[0] = 0x14;
+            }
+            req[2] = cmd;
+            req[1] = unit;
+            *(unsigned int *)(req + 18) = *(unsigned int far *)(fcb + 4);
+            *(unsigned long *)(req + 14) = data;
+            call_driver_with_packet((unsigned char far *)req, p_0c, p_0e);
+            *(unsigned int far *)fcb = *(unsigned int *)(req + 18);
+            return *(unsigned int *)(req + 3);
+        }
+        ;@endcompiled
 
 GET_DELETED_FCB_ATTR:
         ; Return attribute byte from a "deleted" (FFh-marked) FCB entry
@@ -3218,15 +3123,13 @@ GET_FCB_DATETIME_OR_NOW:
          * (and writes back) the resulting value.
          */
 
-        extern long DOS_DATETIME __addr__(0x1564);
-
         long get_fcb_datetime_or_now(unsigned char far *fcb) __addr__(0x1F5D)
         {
-            long t_fcb;   /* bp-4 */
-            long now;     /* bp-8 */
+            long t_fcb; /* bp-4 */
+            long now;   /* bp-8 */
 
-            if (*(unsigned int far *)(fcb + 0x0E) < 0x40
-                    && *(unsigned int far *)(fcb + 0x0E) != 0) {
+            if (*(unsigned int far *)(fcb + 0x0E) < 0x40 &&
+                *(unsigned int far *)(fcb + 0x0E) != 0) {
                 *(long far *)(fcb + 0x21) = DOS_DATETIME;
                 return DOS_DATETIME;
             } else {
@@ -3252,12 +3155,13 @@ GET_FCB_DATETIME:
 
         long get_fcb_datetime(unsigned char far *fcb) __addr__(0x1FB3)
         {
-            long t;     /* bp-4 */
+            long t; /* bp-4 */
 
             t = *(long far *)(fcb + 0x21);
-            if (*(unsigned int far *)(fcb + 0x0E) >= 0x40
-                    || *(unsigned int far *)(fcb + 0x0E) == 0)
+            if (*(unsigned int far *)(fcb + 0x0E) >= 0x40 ||
+                *(unsigned int far *)(fcb + 0x0E) == 0) {
                 ((unsigned char *)&t)[3] = 0;
+            }
             return t;
         }
         ;@endcompiled
@@ -3288,24 +3192,26 @@ SET_FCB_TIME_FIELDS:
         pop     bp                                             ;#201F: 5D
         ret                                                    ;#2020: C3
 
-LOOKUP_DRIVER_BY_NAME_LOOP:
+COMPARE_NAME_WILDCARD:
         ; Walk DEVICE_ARGS_LOOP driver chain comparing 8-byte device names
-        ;@compiled lookup_driver_by_name_loop 2021 62
+        ;@compiled compare_name_wildcard 2021 62
         /*
-         * LOOKUP_DRIVER_BY_NAME_LOOP @ 0x2021 in SISNE.SIS (62 bytes).
+         * COMPARE_NAME_WILDCARD @ 0x2021 in SISNE.SIS (62 bytes).
          *
          * Compare two device-name byte strings of length `len` with '?' wildcard support
          * (a '?' on either side matches any byte).  Return 1 on full match, 0 on the
          * first mismatch.
          */
 
-        int lookup_driver_by_name_loop(unsigned char far *a, unsigned char far *b, unsigned char len) __addr__(0x2021)
+        int compare_name_wildcard(unsigned char far *a, unsigned char far *b, unsigned char len)
+            __addr__(0x2021)
         {
             register unsigned int si;
 
             for (si = 0; len > si; si++) {
-                if (a[si] == b[si] || a[si] == 0x3F || b[si] == 0x3F)
+                if (a[si] == b[si] || a[si] == 0x3F || b[si] == 0x3F) {
                     continue;
+                }
                 return 0;
             }
             return 1;
@@ -3525,30 +3431,23 @@ READ_OR_FOLLOW_FAT_CHAIN_RET:
         pop     bp                                             ;#21F5: 5D
         ret                                                    ;#21F6: C3
 
-COMPUTE_CLUSTER_START:
+ALIGN_IO_TO_SECTOR:
         ; Compute aligned cluster+offset from FCB position [0EFEh] using [0F1Ch] mask
-        ;@compiled compute_cluster_start 21F7 73
+        ;@compiled align_io_to_sector 21F7 73
         /*
-         * COMPUTE_CLUSTER_START @ 0x21F7 in SISNE.SIS (73 bytes).
+         * ALIGN_IO_TO_SECTOR @ 0x21F7 in SISNE.SIS (73 bytes).
          *
-         * Fill the cluster work block at [0F26h] from the current FCB byte position
-         * [0EFEh]: the cluster-aligned start (position & ~(sector_size-1) via the
-         * negated [0F1Ch] mask), the aligned end of the `bytes`-long run, and the
-         * cached DPB field [0F34h].
+         * Fill the work block at [0F26h] from the current FCB byte position [0EFEh]:
+         * the SECTOR-aligned start (position & ~(sector_size-1) via the negated [0F1Ch]
+         * mask), the sector-aligned end of the `bytes`-long run, and the cached DPB
+         * field [0F34h].
          */
 
-        extern unsigned int DPB_SECTOR_SIZE __addr__(0x0F1C);
-        extern long         IO_START        __addr__(0x0EFE);
-        extern long         CLUSTER_ALIGNED __addr__(0x0F26);
-        extern unsigned int CLUSTER_ALIGNED_LO __addr__(0x0F26);
-        extern long         CLUSTER_END     __addr__(0x0F2A);
-        extern unsigned int CLUSTER_END_LO  __addr__(0x0F2A);
-        extern unsigned int CLUSTER_DPB     __addr__(0x0F2E);
-        extern unsigned int DPB_FIELD_F34   __addr__(0x0F34);
+        extern long IO_START __addr__(0x0EFE);
 
-        void compute_cluster_start(unsigned int bytes) __addr__(0x21F7)
+        void align_io_to_sector(unsigned int bytes) __addr__(0x21F7)
         {
-            register unsigned int mask;     /* SI */
+            register unsigned int mask; /* SI */
 
             mask = -DPB_SECTOR_SIZE;
             CLUSTER_ALIGNED = IO_START;
@@ -3558,172 +3457,91 @@ COMPUTE_CLUSTER_START:
             CLUSTER_DPB = DPB_FIELD_F34;
         }
         ;@endcompiled
+        ;@compiled char_device_io 2240 343
+        /*
+         * CHAR_DEVICE_IO @ 0x2240 in SISNE.SIS (343 bytes).
+         *
+         * Device I/O for a CON/character device (driver far ptr DRIVER_VEC).  flags bit 5
+         * selects output: a "0x46-class" CON polls CHECK_CON_BUSY per byte, else one
+         * DEVICE_OUTPUT_PACKET.  Bit 5 clear selects input: bit 0 picks line-buffered mode
+         * (prompt + line buffer at 0x1464, flushed via MEM_COPY_FAR with a trailing
+         * newline) vs raw byte reads via READ_CON_OR_FCB.  Returns the byte count (SI).
+         */
 
-WRITE_DIRTY_BUFFER_TO_DISK:
-        ; Flush dirty buffer (bit 5) before reuse; CON_BUSY check + driver write
-        push    bp                                             ;#2240: 55
-        mov     bp, sp                                         ;#2241: 8B EC
-        sub     sp, 6                                          ;#2243: 83 EC 06
-        push    si                                             ;#2246: 56
-        test    byte [bp+4], 20h                               ;#2247: F6 46 04 20
-        jz      short DEVICE_IO_READ_PATH                      ;#224B: 74 52
-        cmp     word [0F0Ch], 46h                              ;#224D: 83 3E 0C 0F 46
-        jnz     short DEVICE_IO_PACKET_WRITE                   ;#2252: 75 2F
-        xor     si, si                                         ;#2254: 33 F6
-DEVICE_IO_CON_LOOP_TEST:
-        ; Loop test — cmp [bp+6] count vs SI; jnbe to body, else exit
-        cmp     [bp+6], si                                     ;#2256: 39 76 06
-        jnbe    short DEVICE_IO_CON_READ_BODY                  ;#2259: 77 03
-        jmp     near LOOKUP_TOKEN_RET_AX                       ;#225B: E9 32 01
+        extern unsigned char far *DRIVER_VEC __addr__(0x0F0A);
+        extern unsigned char LINE_BUF[] __addr__(0x1464);
 
-DEVICE_IO_CON_READ_BODY:
-        ; Body — CHECK_CON_BUSY into [bp-4]; if 0 exit, else store byte into buffer
-        lea     ax, [bp-4]                                     ;#225E: 8D 46 FC
-        push    ax                                             ;#2261: 50
-        push    word [0F0Ch]                                   ;#2262: FF 36 0C 0F
-        push    word [0F0Ah]                                   ;#2266: FF 36 0A 0F
-        call    near CHECK_CON_BUSY                            ;#226A: E8 BC 8E
-        add     sp, 6                                          ;#226D: 83 C4 06
-        or      al, al                                         ;#2270: 0A C0
-        jnz     short DEVICE_IO_CON_STORE_BYTE                 ;#2272: 75 03
-        jmp     near LOOKUP_TOKEN_RET_AX                       ;#2274: E9 19 01
+        unsigned int char_device_io(unsigned char flags, unsigned int count,
+                                    unsigned char far *buf) __addr__(0x2240)
+        {
+            unsigned char eof;        /* bp-2 */
+            unsigned char ch;         /* bp-4 */
+            register unsigned int si; /* SI */
 
-DEVICE_IO_CON_STORE_BYTE:
-        ; Store byte read from CON via CHECK_CON_BUSY into [bp+8] buffer at index SI
-        les     bx, [bp+8]                                     ;#2277: C4 5E 08
-        mov     al, [bp-4]                                     ;#227A: 8A 46 FC
-        mov     [es:bx+si], al                                 ;#227D: 26 88 00
-        inc     si                                             ;#2280: 46
-        jmp     short DEVICE_IO_CON_LOOP_TEST                  ;#2281: EB D3
-
-DEVICE_IO_PACKET_WRITE:
-        ; Bit-5 + non-CON path — call DEVICE_OUTPUT_PACKET with caller buffer and length
-        push    word [bp+6]                                    ;#2283: FF 76 06
-        push    word [bp+0Ah]                                  ;#2286: FF 76 0A
-        push    word [bp+8]                                    ;#2289: FF 76 08
-        push    word [0F0Ch]                                   ;#228C: FF 36 0C 0F
-        push    word [0F0Ah]                                   ;#2290: FF 36 0A 0F
-        call    near DEVICE_OUTPUT_PACKET                      ;#2294: E8 5D 8F
-        add     sp, 0Ah                                        ;#2297: 83 C4 0A
-        mov     si, ax                                         ;#229A: 8B F0
-        jmp     near LOOKUP_TOKEN_RET_AX                       ;#229C: E9 F1 00
-
-DEVICE_IO_READ_PATH:
-        ; Bit-5 clear path — init [bp-2]=0 and SI=0; dispatch on bit-0 line/byte mode
-        mov     byte [bp-2], 0                                 ;#229F: C6 46 FE 00
-        xor     si, si                                         ;#22A3: 33 F6
-        test    byte [bp+4], 1                                 ;#22A5: F6 46 04 01
-        jnz     short DEVICE_IO_LINE_PROMPT                    ;#22A9: 75 03
-        jmp     near DEVICE_IO_READ_FIRST_CHAR                 ;#22AB: E9 97 00
-
-DEVICE_IO_LINE_PROMPT:
-        ; Line-mode read — flush line buf via SET_INPUT_BUFFERS_AND_DESC
-        cmp     [1576h], si                                    ;#22AE: 39 36 76 15
-        jnz     short WRITE_DIRTY_BUFFER_AFTER_CR              ;#22B2: 75 40
-        mov     ax, 1464h                                      ;#22B4: B8 64 14
-        push    ds                                             ;#22B7: 1E
-        push    ax                                             ;#22B8: 50
-        push    word [0F0Ch]                                   ;#22B9: FF 36 0C 0F
-        push    word [0F0Ah]                                   ;#22BD: FF 36 0A 0F
-        push    word [0F0Ch]                                   ;#22C1: FF 36 0C 0F
-        push    word [0F0Ah]                                   ;#22C5: FF 36 0A 0F
-        call    near SET_INPUT_BUFFERS_AND_DESC                ;#22C9: E8 B4 81
-        add     sp, 0Ch                                        ;#22CC: 83 C4 0C
-        mov     ax, 0Ah                                        ;#22CF: B8 0A 00
-        push    ax                                             ;#22D2: 50
-        push    word [0F0Ch]                                   ;#22D3: FF 36 0C 0F
-        push    word [0F0Ah]                                   ;#22D7: FF 36 0A 0F
-        call    near CON_WRITE_CHAR                            ;#22DB: E8 8A 8F
-        add     sp, 6                                          ;#22DE: 83 C4 06
-        cmp     byte [1466h], 1Ah                              ;#22E1: 80 3E 66 14 1A
-        jnz     short WRITE_FCB_CHAR_RESET_COUNT               ;#22E6: 75 06
-        mov     byte [bp-2], 1                                 ;#22E8: C6 46 FE 01
-        jmp     short WRITE_DIRTY_BUFFER_AFTER_CR              ;#22EC: EB 06
-
-WRITE_FCB_CHAR_RESET_COUNT:
-        ; Non-CR/Ctrl-Z byte — reset line-buffer count [1576h] to 2 and continue
-        mov     word [1576h], 2                                ;#22EE: C7 06 76 15 02 00
-WRITE_DIRTY_BUFFER_AFTER_CR:
-        ; After CR/EOF check (1Ah) — early exit if EOF flag set, else loop body
-        cmp     byte [bp-2], 0                                 ;#22F4: 80 7E FE 00
-        jz      short WRITE_FCB_COPY_BUFFERED_BYTES            ;#22F8: 74 03
-        jmp     near LOOKUP_TOKEN_RET_AX                       ;#22FA: E9 93 00
-
-WRITE_FCB_COPY_BUFFERED_BYTES:
-        ; Compute remaining line-buf bytes; copy to caller via MEM_COPY_FAR
-        mov     al, [1465h]                                    ;#22FD: A0 65 14
-        sub     ah, ah                                         ;#2300: 2A E4
-        mov     si, ax                                         ;#2302: 8B F0
-        sub     si, [1576h]                                    ;#2304: 2B 36 76 15
-        add     si, 3                                          ;#2308: 83 C6 03
-        or      si, si                                         ;#230B: 0B F6
-        jbe     short WRITE_FCB_APPEND_NEWLINE                 ;#230D: 76 21
-        cmp     [bp+6], si                                     ;#230F: 39 76 06
-        jnb     short WRITE_FCB_FLUSH_LINE_BUFFER              ;#2312: 73 03
-        mov     si, [bp+6]                                     ;#2314: 8B 76 06
-WRITE_FCB_FLUSH_LINE_BUFFER:
-        ; MEM_COPY_FAR from ds:[1464h]+offset to caller; bump line-buf position
-        push    si                                             ;#2317: 56
-        push    word [bp+0Ah]                                  ;#2318: FF 76 0A
-        push    word [bp+8]                                    ;#231B: FF 76 08
-        mov     ax, [1576h]                                    ;#231E: A1 76 15
-        add     ax, 1464h                                      ;#2321: 05 64 14
-        push    ds                                             ;#2324: 1E
-        push    ax                                             ;#2325: 50
-        call    near MEM_COPY_FAR                              ;#2326: E8 AA 95
-        add     sp, 0Ah                                        ;#2329: 83 C4 0A
-        add     [1576h], si                                    ;#232C: 01 36 76 15
-WRITE_FCB_APPEND_NEWLINE:
-        ; Caller has room — append 0Ah newline byte and reset line-buf position to 0
-        cmp     [bp+6], si                                     ;#2330: 39 76 06
-        jbe     short LOOKUP_TOKEN_RET_AX                      ;#2333: 76 5B
-        les     bx, [bp+8]                                     ;#2335: C4 5E 08
-        mov     byte [es:bx+si], 0Ah                           ;#2338: 26 C6 00 0A
-        mov     word [1576h], 0                                ;#233C: C7 06 76 15 00 00
-        inc     si                                             ;#2342: 46
-        jmp     short LOOKUP_TOKEN_RET_AX                      ;#2343: EB 4B
-
-DEVICE_IO_READ_FIRST_CHAR:
-        ; Read first char via READ_CON_OR_FCB; if EOF (1Ah) exit, else store at FCB+0
-        lea     ax, [bp-4]                                     ;#2345: 8D 46 FC
-        push    ax                                             ;#2348: 50
-        push    word [0F0Ch]                                   ;#2349: FF 36 0C 0F
-        push    word [0F0Ah]                                   ;#234D: FF 36 0A 0F
-        call    near READ_CON_OR_FCB                           ;#2351: E8 CE 8C
-        add     sp, 6                                          ;#2354: 83 C4 06
-        cmp     byte [bp-4], 1Ah                               ;#2357: 80 7E FC 1A
-        jz      short LOOKUP_TOKEN_RET_AX                      ;#235B: 74 33
-        les     bx, [bp+8]                                     ;#235D: C4 5E 08
-        mov     al, [bp-4]                                     ;#2360: 8A 46 FC
-        mov     [es:bx], al                                    ;#2363: 26 88 07
-        mov     si, 1                                          ;#2366: BE 01 00
-        jmp     short DEVICE_IO_READ_LOOP_TEST                 ;#2369: EB 20
-
-DEVICE_IO_READ_LOOP_BODY:
-        ; Body — READ_CON_OR_FCB next byte; if 0 exit, else store at [es:bx+si]
-        lea     ax, [bp-4]                                     ;#236B: 8D 46 FC
-        push    ax                                             ;#236E: 50
-        push    word [0F0Ch]                                   ;#236F: FF 36 0C 0F
-        push    word [0F0Ah]                                   ;#2373: FF 36 0A 0F
-        call    near READ_CON_OR_FCB                           ;#2377: E8 A8 8C
-        add     sp, 6                                          ;#237A: 83 C4 06
-        or      al, al                                         ;#237D: 0A C0
-        jz      short LOOKUP_TOKEN_RET_AX                      ;#237F: 74 0F
-        les     bx, [bp+8]                                     ;#2381: C4 5E 08
-        mov     al, [bp-4]                                     ;#2384: 8A 46 FC
-        mov     [es:bx+si], al                                 ;#2387: 26 88 00
-        inc     si                                             ;#238A: 46
-DEVICE_IO_READ_LOOP_TEST:
-        ; Loop test — cmp [bp+6] count vs SI; jnbe back to body
-        cmp     [bp+6], si                                     ;#238B: 39 76 06
-        jnbe    short DEVICE_IO_READ_LOOP_BODY                 ;#238E: 77 DB
-LOOKUP_TOKEN_RET_AX:
-        ; Common tail — AX = SI (matched index or 0), pop si, ret
-        mov     ax, si                                         ;#2390: 8B C6
-        pop     si                                             ;#2392: 5E
-        mov     sp, bp                                         ;#2393: 8B E5
-        pop     bp                                             ;#2395: 5D
-        ret                                                    ;#2396: C3
+            if ((flags & 0x20) != 0) {
+                if (FP_SEG(DRIVER_VEC) == 0x46) {
+                    si = 0;
+                con_loop:
+                    if (count <= si) {
+                        goto ret;
+                    }
+                    if (check_con_busy(DRIVER_VEC, &ch) == 0) {
+                        goto ret;
+                    }
+                    buf[si] = ch;
+                    si++;
+                    goto con_loop;
+                }
+                si = device_output_packet(DRIVER_VEC, buf, count);
+                goto ret;
+            }
+            eof = 0;
+            si = 0;
+            if ((flags & 1) != 0) {
+                if (LINE_POS == 0) {
+                    set_input_buffers_and_desc(DRIVER_VEC, DRIVER_VEC,
+                                               (unsigned char far *)LINE_BUF);
+                    con_write_char(DRIVER_VEC, 0x0A);
+                    if (LINE_BUF[2] == 0x1A) {
+                        eof = 1;
+                    } else {
+                        LINE_POS = 2;
+                    }
+                }
+                if (eof != 0) {
+                    goto ret;
+                }
+                si = LINE_BUF[1] - LINE_POS + 3;
+                if (si > 0) {
+                    if (count < si) {
+                        si = count;
+                    }
+                    mem_copy_far((unsigned char far *)&LINE_BUF[LINE_POS], buf, si);
+                    LINE_POS += si;
+                }
+                if (count <= si) {
+                    goto ret;
+                }
+                buf[si] = 0x0A;
+                LINE_POS = 0;
+                si++;
+                goto ret;
+            }
+            read_con_or_fcb(DRIVER_VEC, &ch);
+            if (ch == 0x1A) {
+                goto ret;
+            }
+            buf[0] = ch;
+            for (si = 1; count > si; si++) {
+                if (read_con_or_fcb(DRIVER_VEC, &ch) == 0) {
+                    goto ret;
+                }
+                buf[si] = ch;
+            }
+        ret:
+            return si;
+        }
+        ;@endcompiled
         ;@compiled set_dir_fcb_position 2397 88
         /*
          * SET_DIR_FCB_POSITION @ 0x2397 in SISNE.SIS (88 bytes).
@@ -3735,15 +3553,8 @@ LOOKUP_TOKEN_RET_AX:
          * page is cleared.
          */
 
-        extern void retry_network_loop(unsigned char far *driver, unsigned int bytes, unsigned int z) __addr__(0x1DDC);
-        extern void shift_driver_records_flag(unsigned char far *driver) __addr__(0x1CDB);
-
-        extern unsigned char NETWORK_ACTIVE __addr__(0x02E0);
-        extern unsigned int  DIR_FIELD_LO   __addr__(0x0F34);
-        extern unsigned int  DIR_FIELD_HI   __addr__(0x0F1E);
-        extern unsigned int  DIR_FAT_PAGE   __addr__(0x0F18);
-
-        void set_dir_fcb_position(unsigned char far *driver, unsigned int bytes, unsigned char z, unsigned char far *fcb) __addr__(0x2397)
+        void set_dir_fcb_position(unsigned char far *driver, unsigned int bytes, unsigned char z,
+                                  unsigned char far *fcb) __addr__(0x2397)
         {
             if (NETWORK_ACTIVE != 0) {
                 DIR_FIELD_LO = *(int far *)(driver + 0x0B);
@@ -3766,75 +3577,55 @@ READ_FCB_WITH_NETWORK:
          * READ_FCB_WITH_NETWORK @ 0x23EF in SISNE.SIS (908 bytes).
          *
          * The FCB read driver. When the network/SHARE flag [2E0h] is set it first
-         * resolves the owning driver (FIND_DRIVER_BY_PSP); then it bounds the caller's
+         * resolves the owning driver (RESOLVE_FCB_DRIVER); then it bounds the caller's
          * record count against the FCB record size and the file's EOF anchor, computes
          * the byte window, and dispatches either the local-disk aligned path
-         * (SET_DIR_FCB_POSITION + ALIGNED_DPB_CALC + COMPUTE_CLUSTER_START +
+         * (SET_DIR_FCB_POSITION + ALIGNED_DPB_CALC + ALIGN_IO_TO_SECTOR +
          * WRITE_AT_FCB_POSITION) or the driver/network path (GET_DPB_DRIVER_VECTOR +
-         * RETRY_NETWORK_LOOP + WRITE_DIRTY_BUFFER_TO_DISK), updating the caller's count
+         * RETRY_NETWORK_LOOP + CHAR_DEVICE_IO), updating the caller's count
          * and position, zero-padding short reads, and returning a status byte in AL.
          * DS-relative globals. The three short-read exits (`*count = 0; return 1;`) are
          * written inline; tiny_cc cross-jumps the identical blocks into one.
          */
 
-        extern unsigned char far *find_driver_by_psp(unsigned char far *fcb) __addr__(0x1D26);
         extern unsigned char far *get_dpb_by_drive_index(unsigned char drive) __addr__(0xB9E1);
-        extern unsigned char far *get_dpb_driver_vector(unsigned char far *fcb) __addr__(0x17F8);
-        extern unsigned int  div_ax_by_bx_capped(unsigned int rsize, unsigned char far *buf, unsigned int cnt) __addr__(0xD1E3);
-        extern long pascal   mul32_by_word(long a, long b) __addr__(0xEC0D);
-        extern long pascal   divmod32(long n, long d) __addr__(0xEC33);
-        extern void          set_dir_fcb_position(unsigned char far *driver, unsigned int bytes, unsigned int z, unsigned char far *fcb) __addr__(0x2397);
-        extern unsigned int  aligned_dpb_calc(unsigned int z, unsigned char drive, unsigned int f34, long start, unsigned int bytes, unsigned char far *buf, unsigned int csize) __addr__(0xBA93);
-        extern long __lshr() __addr__(0xECC1);   /* >> helper; pins SHR_DXAX_BY_CL */
-        extern unsigned int  read_next_buffer_chunk(void) __addr__(0x205F);
-        extern void          compute_cluster_start(unsigned int bytes) __addr__(0x21F7);
-        extern unsigned int  write_at_fcb_position(unsigned char drive, unsigned int chunk, unsigned int coff, unsigned int bytes, unsigned char far *buf, unsigned int *work) __addr__(0x15CA);
-        extern void          retry_network_loop(unsigned char far *driver, unsigned int bytes, unsigned int z) __addr__(0x1DDC);
-        extern void          shift_driver_records_flag(unsigned char far *driver) __addr__(0x1CDB);
-        extern unsigned int  write_dirty_buffer_to_disk(unsigned char attr, unsigned int bytes, unsigned char far *buf) __addr__(0x2240);
+        extern long pascal divmod32(long n, long d) __addr__(0xEC33);
 
-        extern unsigned char      NETWORK_ACTIVE  __addr__(0x02E0);
-        extern unsigned char      FCB_DRIVE       __addr__(0x0F20);
-        extern unsigned int       DPB_SECTOR_SIZE __addr__(0x0F1C);
-        extern unsigned int       CLUSTER_SHIFT   __addr__(0x0F06);
-        extern unsigned long      EOF_ANCHOR      __addr__(0x0F14);
-        extern unsigned long      IO_START        __addr__(0x0EFE);
-        extern unsigned int       IO_SECTOR       __addr__(0x0F02);
-        extern unsigned int       BUF_CHUNK       __addr__(0x0F0E);
-        extern unsigned long      DRIVER_VEC      __addr__(0x0F0A);
-        extern unsigned int       WRITE_RESULT    __addr__(0x0F1E);
-        extern unsigned int       DPB_FIELD_F34   __addr__(0x0F34);
-        extern unsigned int       CLUSTER_WORK    __addr__(0x0F26);
-        extern unsigned long      FCB_POS         __addr__(0x1564);
+        extern unsigned long EOF_ANCHOR __addr__(0x0F14);
+        extern unsigned long IO_START __addr__(0x0EFE);
+        extern unsigned long DRIVER_VEC __addr__(0x0F0A);
 
-        int read_fcb_with_network(unsigned char far *fcb, unsigned char far *buf, unsigned int *count) __addr__(0x23EF)
+        int read_fcb_with_network(unsigned char far *fcb, unsigned char far *buf,
+                                  unsigned int *count) __addr__(0x23EF)
         {
-            unsigned char far *driver;       /* [bp-4]  */
-            unsigned char far *buf_save;     /* [bp-8]  */
-            unsigned int cluster_off;        /* [bp-0Ah] */
-            unsigned int byte_count;         /* [bp-0Ch] */
-            unsigned char attr_flag;         /* [bp-0Eh] */
-            register unsigned int si_xfer;   /* SI, home slot [bp-10h] */
-            unsigned int capped;             /* [bp-12h] */
-            unsigned char result;            /* [bp-14h] */
-            unsigned char far *dpb;          /* [bp-18h] */
+            unsigned char far *driver;     /* [bp-4]  */
+            unsigned char far *buf_save;   /* [bp-8]  */
+            unsigned int cluster_off;      /* [bp-0Ah] */
+            unsigned int byte_count;       /* [bp-0Ch] */
+            unsigned char attr_flag;       /* [bp-0Eh] */
+            register unsigned int si_xfer; /* SI, home slot [bp-10h] */
+            unsigned int capped;           /* [bp-12h] */
+            unsigned char result;          /* [bp-14h] */
+            unsigned char far *dpb;        /* [bp-18h] */
 
             buf_save = buf;
-            if (NETWORK_ACTIVE != 0)
-                driver = find_driver_by_psp(fcb);
+            if (NETWORK_ACTIVE != 0) {
+                driver = resolve_fcb_driver(fcb);
+            }
             result = 0;
             if (*count == 0) {
                 return 0;
             }
-            if (*(int far *)(fcb + 0x0E) == 0)
+            if (*(int far *)(fcb + 0x0E) == 0) {
                 *(int far *)(fcb + 0x0E) = 0x80;
+            }
             capped = div_ax_by_bx_capped(*(unsigned int far *)(fcb + 0x0E), buf, *count);
-            if (*count > capped)
+            if (*count > capped) {
                 result = 2;
+            }
             *count = capped;
             if ((*(unsigned char far *)(fcb + 0x1A) & 0x80) == 0) {
-
-            /* local-disk path */
+                /* local-disk path */
                 FCB_DRIVE = fcb[0x19];
                 dpb = get_dpb_by_drive_index(fcb[0x19]);
                 DPB_SECTOR_SIZE = *(int far *)(dpb + 2);
@@ -3843,7 +3634,8 @@ READ_FCB_WITH_NETWORK:
                     *count = 0;
                     return 1;
                 }
-                EOF_ANCHOR = divmod32(*(long far *)(fcb + 0x10) - 1, (long)*(unsigned int far *)(fcb + 0x0E));
+                EOF_ANCHOR = divmod32(*(long far *)(fcb + 0x10) - 1,
+                                      (long)*(unsigned int far *)(fcb + 0x0E));
                 if (FCB_POS > EOF_ANCHOR) {
                     *count = 0;
                     return 1;
@@ -3852,17 +3644,19 @@ READ_FCB_WITH_NETWORK:
                 if (*count + FCB_POS - 1 >= EOF_ANCHOR) {
                     capped = (unsigned int)EOF_ANCHOR - (unsigned int)FCB_POS + 1;
                     byte_count = *(unsigned int far *)(fcb + 0x10) - (unsigned int)IO_START;
-                    if ((byte_count % *(unsigned int far *)(fcb + 0x0E)) != 0)
-                    result = 3;
-                    else if (*count > capped)
-                    result = 1;
+                    if ((byte_count % *(unsigned int far *)(fcb + 0x0E)) != 0) {
+                        result = 3;
+                    } else if (*count > capped) {
+                        result = 1;
+                    }
                     *count = capped;
                 } else {
                     byte_count = *(unsigned int far *)(fcb + 0x0E) * *count;
                 }
 
                 set_dir_fcb_position(driver, byte_count, 0, fcb);
-                si_xfer = aligned_dpb_calc(0, FCB_DRIVE, DPB_FIELD_F34, IO_START, byte_count, buf, DPB_SECTOR_SIZE);
+                si_xfer = aligned_dpb_calc(0, FCB_DRIVE, DPB_FIELD_F34, IO_START, byte_count, buf,
+                                           DPB_SECTOR_SIZE);
                 if (byte_count > si_xfer) {
                     byte_count -= si_xfer;
                     IO_START += si_xfer;
@@ -3873,12 +3667,14 @@ READ_FCB_WITH_NETWORK:
                         *count = 0;
                         return 3;
                     }
-                    compute_cluster_start(byte_count);
+                    align_io_to_sector(byte_count);
                     cluster_off = ((DPB_SECTOR_SIZE << dpb[5]) - 1) & (unsigned int)IO_START;
-                    WRITE_RESULT = write_at_fcb_position(FCB_DRIVE, BUF_CHUNK, cluster_off, byte_count, buf, &CLUSTER_WORK);
+                    WRITE_RESULT = write_at_fcb_position(FCB_DRIVE, BUF_CHUNK, cluster_off,
+                                                         byte_count, buf, &CLUSTER_WORK);
                     if (NETWORK_ACTIVE != 0 && WRITE_RESULT != 0xFFFF) {
                         *(int far *)(driver + 0x1B) = WRITE_RESULT;
-                        *(int far *)(driver + 0x19) = (unsigned int)((byte_count + IO_START - 1) >> CLUSTER_SHIFT);
+                        *(int far *)(driver + 0x19) =
+                            (unsigned int)((byte_count + IO_START - 1) >> CLUSTER_SHIFT);
                     }
                     byte_count += si_xfer;
                 }
@@ -3894,26 +3690,30 @@ READ_FCB_WITH_NETWORK:
                     retry_network_loop(driver, byte_count, 0);
                     shift_driver_records_flag(driver);
                 }
-                si_xfer = write_dirty_buffer_to_disk(fcb[0x1A], byte_count, buf);
+                si_xfer = char_device_io(fcb[0x1A], byte_count, buf);
                 if (attr_flag == 0) {
-                    if (si_xfer == 0)
-                    *(unsigned char far *)(fcb + 0x1A) &= 0xBF;
+                    if (si_xfer == 0) {
+                        *(unsigned char far *)(fcb + 0x1A) &= 0xBF;
+                    }
                     if (byte_count > si_xfer) {
-                        if ((si_xfer % *(unsigned int far *)(fcb + 0x0E)) == 0)
-                        result = 1;
-                        else
-                        result = 3;
+                        if ((si_xfer % *(unsigned int far *)(fcb + 0x0E)) == 0) {
+                            result = 1;
+                        } else {
+                            result = 3;
+                        }
                     }
                 }
                 byte_count = si_xfer;
                 *count = si_xfer / *(unsigned int far *)(fcb + 0x0E);
-                if ((si_xfer % *(unsigned int far *)(fcb + 0x0E)) != 0)
-                (*count)++;
+                if ((si_xfer % *(unsigned int far *)(fcb + 0x0E)) != 0) {
+                    (*count)++;
+                }
             }
             if (result == 3) {
-                for (si_xfer = byte_count;
-                *(unsigned int far *)(fcb + 0x0E) * *count > si_xfer; si_xfer++)
+                for (si_xfer = byte_count; *(unsigned int far *)(fcb + 0x0E) * *count > si_xfer;
+                     si_xfer++) {
                     buf_save[si_xfer] = 0;
+                }
             }
             return result;
         }
@@ -3927,7 +3727,7 @@ WRITE_FCB_WITH_NETWORK:
          *
          * The FCB write driver — the symmetric sibling of READ_FCB_WITH_NETWORK
          * (0x23EF), which sits immediately before it. When the network/SHARE flag
-         * [2E0h] is set it resolves the owning driver (FIND_DRIVER_BY_PSP), bounds the
+         * [2E0h] is set it resolves the owning driver (RESOLVE_FCB_DRIVER), bounds the
          * caller's record count against the FCB record size, then splits on FCB+1Ah
          * bit-7: the local-disk path extends the file (SET_DIR_FCB_POSITION +
          * READ_OR_FOLLOW_FAT_CHAIN + cluster-field sync + ALIGNED_DPB_CALC +
@@ -3940,66 +3740,40 @@ WRITE_FCB_WITH_NETWORK:
          * MSC layout (shared return blocks, dup-block cross-jumps).
          */
 
-        extern unsigned char far *find_driver_by_psp(unsigned char far *fcb) __addr__(0x1D26);
         extern unsigned char far *get_dpb_by_drive_index(unsigned char drive) __addr__(0xB9E1);
-        extern unsigned char far *get_dpb_driver_vector(unsigned char far *fcb) __addr__(0x17F8);
-        extern unsigned int  div_ax_by_bx_capped(unsigned int rsize, unsigned char far *buf, unsigned int cnt) __addr__(0xD1E3);
-        extern long pascal   mul32_by_word(long a, long b) __addr__(0xEC0D);
-        extern long __lshr() __addr__(0xECC1);   /* >> helper; pins SHR_DXAX_BY_CL */
-        extern void          set_dir_fcb_position(unsigned char far *driver, unsigned int bytes, unsigned int z, unsigned char far *fcb) __addr__(0x2397);
-        extern int           read_or_follow_fat_chain(long pos) __addr__(0x2170);
-        extern int           read_back_fat_entry(void) __addr__(0x20A0);
-        extern unsigned int  aligned_dpb_calc(unsigned int z, unsigned char drive, unsigned int f34, long start, unsigned int bytes, unsigned char far *buf, unsigned int csize) __addr__(0xBA93);
-        extern unsigned int  read_next_buffer_chunk(void) __addr__(0x205F);
-        extern void          compute_cluster_start(unsigned int bytes) __addr__(0x21F7);
-        extern unsigned int  read_at_fcb_position(unsigned char drive, unsigned int chunk, unsigned int coff, unsigned int bytes, unsigned char far *buf, unsigned char ext, unsigned int *work) __addr__(0x166F);
-        extern void          retry_network_loop(unsigned char far *driver, unsigned int bytes, unsigned int z) __addr__(0x1DDC);
-        extern void          shift_driver_records_flag(unsigned char far *driver) __addr__(0x1CDB);
-        extern unsigned int  scan_for_ctrl_z(unsigned char far *buf, unsigned int bytes) __addr__(0xD241);
-        extern void          con_write_string(unsigned long drv, unsigned char far *buf, unsigned int bytes) __addr__(0xB34F);
-        extern void          build_dos_datetime(unsigned int *date, unsigned int *time) __addr__(0xD1A6);
-        extern void          int2f_network_1086(unsigned char far *driver, unsigned int flag) __addr__(0xEAFE);
 
-        extern unsigned char      NETWORK_ACTIVE  __addr__(0x02E0);
-        extern unsigned char      FCB_DRIVE       __addr__(0x0F20);
-        extern unsigned int       DPB_SECTOR_SIZE __addr__(0x0F1C);
-        extern unsigned int       CLUSTER_SHIFT   __addr__(0x0F06);
-        extern unsigned int       CURRENT_CLUSTER __addr__(0x0EFC);
-        extern unsigned int       SECTOR_INDEX    __addr__(0x0F1A);
-        extern unsigned long      IO_START        __addr__(0x0EFE);
-        extern unsigned int       IO_SECTOR       __addr__(0x0F02);
-        extern unsigned long      EOF_ANCHOR      __addr__(0x0F10);
-        extern unsigned int       F18_GEOMETRY    __addr__(0x0F18);
-        extern unsigned int       WRITE_RESULT    __addr__(0x0F1E);
-        extern unsigned int       BUF_CHUNK       __addr__(0x0F0E);
-        extern unsigned long      DRIVER_VEC      __addr__(0x0F0A);
-        extern unsigned int       DPB_FIELD_F34   __addr__(0x0F34);
-        extern unsigned int       CLUSTER_WORK    __addr__(0x0F26);
-        extern unsigned long      FCB_POS         __addr__(0x1564);
+        extern unsigned long IO_START __addr__(0x0EFE);
+        extern unsigned long EOF_ANCHOR __addr__(0x0F10);
+        extern unsigned long DRIVER_VEC __addr__(0x0F0A);
 
-        int write_fcb_with_network(unsigned char far *fcb, unsigned char far *buf, unsigned int *count) __addr__(0x277B)
+        int write_fcb_with_network(unsigned char far *fcb, unsigned char far *buf,
+                                   unsigned int *count) __addr__(0x277B)
         {
-            unsigned char far *driver;       /* [bp-4]  */
-            unsigned char extend_flag;       /* [bp-6]  */
-            unsigned int cluster_off;        /* [bp-8]  */
-            unsigned int byte_count;         /* [bp-0Ah] */
-            unsigned int dt_date;            /* [bp-0Ch] */
-            unsigned int xfer;               /* [bp-0Eh] */
-            unsigned int rec_count;          /* [bp-10h] */
-            unsigned char result;            /* [bp-12h] */
-            unsigned char far *dpb;          /* [bp-16h] */
-            unsigned int dt_time;            /* [bp-18h] */
+            unsigned char far *driver; /* [bp-4]  */
+            unsigned char extend_flag; /* [bp-6]  */
+            unsigned int cluster_off;  /* [bp-8]  */
+            unsigned int byte_count;   /* [bp-0Ah] */
+            unsigned int dt_date;      /* [bp-0Ch] */
+            unsigned int xfer;         /* [bp-0Eh] */
+            unsigned int rec_count;    /* [bp-10h] */
+            unsigned char result;      /* [bp-12h] */
+            unsigned char far *dpb;    /* [bp-16h] */
+            unsigned int dt_time;      /* [bp-18h] */
 
-            if (NETWORK_ACTIVE != 0)
-                driver = find_driver_by_psp(fcb);
+            if (NETWORK_ACTIVE != 0) {
+                driver = resolve_fcb_driver(fcb);
+            }
             result = 0;
-            if (*(int far *)(fcb + 0x0E) == 0)
+            if (*(int far *)(fcb + 0x0E) == 0) {
                 *(int far *)(fcb + 0x0E) = 0x80;
+            }
             rec_count = *count;
             if (rec_count != 0) {
-                rec_count = div_ax_by_bx_capped(*(unsigned int far *)(fcb + 0x0E), buf, rec_count);
-                if (*count > rec_count)
+                rec_count =
+                    div_ax_by_bx_capped(*(unsigned int far *)(fcb + 0x0E), buf, rec_count);
+                if (*count > rec_count) {
                     result = 2;
+                }
             }
             if ((*(unsigned char far *)(fcb + 0x1A) & 0x80) == 0) {
                 /* ---- local-disk path ---- */
@@ -4009,37 +3783,45 @@ WRITE_FCB_WITH_NETWORK:
                 CLUSTER_SHIFT = dpb[0x20] + dpb[5];
                 IO_START = mul32_by_word((long)*(unsigned int far *)(fcb + 0x0E), FCB_POS);
                 if (*(long far *)(fcb + 0x10) != 0) {
-                    CURRENT_CLUSTER = (unsigned int)((unsigned long)(*(long far *)(fcb + 0x10) - 1) >> CLUSTER_SHIFT) + 1;
-                    if (((unsigned long)(*(long far *)(fcb + 0x10) - 1) >> dpb[0x20]) >= (IO_START >> dpb[0x20]))
-                    extend_flag = 1;
-                    else
-                    extend_flag = 0;
+                    CURRENT_CLUSTER =
+                        (unsigned int)((unsigned long)(*(long far *)(fcb + 0x10) - 1) >>
+                                       CLUSTER_SHIFT) +
+                        1;
+                    if (((unsigned long)(*(long far *)(fcb + 0x10) - 1) >> dpb[0x20]) >=
+                        (IO_START >> dpb[0x20])) {
+                        extend_flag = 1;
+                    } else {
+                        extend_flag = 0;
+                    }
                 } else {
                     CURRENT_CLUSTER = 0;
                     extend_flag = 0;
                 }
                 set_dir_fcb_position(driver, byte_count, 1, fcb);
                 if (*count == 0) {
-
-                    if (IO_START != 0)
-                    SECTOR_INDEX = (unsigned int)((IO_START - 1) >> CLUSTER_SHIFT) + 1;
-                    else
-                    SECTOR_INDEX = 0;
-                    if (read_or_follow_fat_chain(IO_START) != 0)
-                    return 1;
+                    if (IO_START != 0) {
+                        SECTOR_INDEX = (unsigned int)((IO_START - 1) >> CLUSTER_SHIFT) + 1;
+                    } else {
+                        SECTOR_INDEX = 0;
+                    }
+                    if (read_or_follow_fat_chain(IO_START) != 0) {
+                        return 1;
+                    }
                     if (NETWORK_ACTIVE != 0) {
-                        if (DPB_FIELD_F34 == 0)
-                    *(int far *)(driver + 0x0B) = 0;
-                        else if (*(int far *)(driver + 0x0B) == 0)
-                    *(int far *)(driver + 0x0B) = DPB_FIELD_F34;
+                        if (DPB_FIELD_F34 == 0) {
+                            *(int far *)(driver + 0x0B) = 0;
+                        } else if (*(int far *)(driver + 0x0B) == 0) {
+                            *(int far *)(driver + 0x0B) = DPB_FIELD_F34;
+                        }
                         *(int far *)(driver + 0x1B) = DPB_FIELD_F34;
                         *(int far *)(driver + 0x19) = 0;
                         *(long far *)(driver + 0x11) = IO_START;
                     } else {
-                        if (DPB_FIELD_F34 == 0)
-                    *(int far *)(fcb + 0x1B) = 0;
-                        else if (*(int far *)(fcb + 0x1B) == 0)
-                    *(int far *)(fcb + 0x1B) = DPB_FIELD_F34;
+                        if (DPB_FIELD_F34 == 0) {
+                            *(int far *)(fcb + 0x1B) = 0;
+                        } else if (*(int far *)(fcb + 0x1B) == 0) {
+                            *(int far *)(fcb + 0x1B) = DPB_FIELD_F34;
+                        }
                     }
                     *(long far *)(fcb + 0x10) = IO_START;
                 } else {
@@ -4073,7 +3855,8 @@ WRITE_FCB_WITH_NETWORK:
                             }
                             *(long far *)(fcb + 0x10) = EOF_ANCHOR;
                         }
-                        xfer = aligned_dpb_calc(1, FCB_DRIVE, DPB_FIELD_F34, IO_START, byte_count, buf, DPB_SECTOR_SIZE);
+                        xfer = aligned_dpb_calc(1, FCB_DRIVE, DPB_FIELD_F34, IO_START, byte_count,
+                                                buf, DPB_SECTOR_SIZE);
                         if (xfer < byte_count) {
                             byte_count -= xfer;
                             IO_START += xfer;
@@ -4084,12 +3867,17 @@ WRITE_FCB_WITH_NETWORK:
                                 *count = 0;
                                 return 1;
                             }
-                            compute_cluster_start(byte_count);
-                            cluster_off = ((DPB_SECTOR_SIZE << dpb[5]) - 1) & (unsigned int)IO_START;
-                            WRITE_RESULT = read_at_fcb_position(FCB_DRIVE, BUF_CHUNK, cluster_off, byte_count, buf, extend_flag, &CLUSTER_WORK);
+                            align_io_to_sector(byte_count);
+                            cluster_off =
+                                ((DPB_SECTOR_SIZE << dpb[5]) - 1) & (unsigned int)IO_START;
+                            WRITE_RESULT =
+                                read_at_fcb_position(FCB_DRIVE, BUF_CHUNK, cluster_off,
+                                                     byte_count, buf, extend_flag, &CLUSTER_WORK);
                             if (NETWORK_ACTIVE != 0 && WRITE_RESULT != 0xFFFF) {
                                 *(int far *)(driver + 0x1B) = WRITE_RESULT;
-                                *(int far *)(driver + 0x19) = (unsigned int)(((unsigned long)byte_count + IO_START - 1) >> CLUSTER_SHIFT);
+                                *(int far *)(driver + 0x19) =
+                                    (unsigned int)(((unsigned long)byte_count + IO_START - 1) >>
+                                                   CLUSTER_SHIFT);
                             }
                             byte_count += xfer;
                         }
@@ -4104,364 +3892,157 @@ WRITE_FCB_WITH_NETWORK:
                         retry_network_loop(driver, byte_count, 1);
                         shift_driver_records_flag(driver);
                     }
-                    if ((fcb[0x1A] & 4) == 0 && (fcb[0x1A] & 0x20) == 0)
+                    if ((fcb[0x1A] & 4) == 0 && (fcb[0x1A] & 0x20) == 0) {
                         byte_count = scan_for_ctrl_z(buf, byte_count);
-                    if (byte_count != 0)
+                    }
+                    if (byte_count != 0) {
                         con_write_string(DRIVER_VEC, buf, byte_count);
+                    }
 
                     *count = byte_count / *(unsigned int far *)(fcb + 0x0E);
-                    if ((byte_count % *(unsigned int far *)(fcb + 0x0E)) != 0)
+                    if ((byte_count % *(unsigned int far *)(fcb + 0x0E)) != 0) {
                         (*count)++;
+                    }
                 }
             }
             build_dos_datetime(&dt_date, &dt_time);
             *(int far *)(fcb + 0x14) = dt_date;
             *(int far *)(fcb + 0x16) = dt_time;
-            if (NETWORK_ACTIVE != 0)
+            if (NETWORK_ACTIVE != 0) {
                 int2f_network_1086(driver, 1);
+            }
             return result;
         }
         ;@endcompiled
 
 FCB_RANDOM_BLOCK_IO:
-        ; FCB random-block I/O — dispatch by mode, load DPB/dir globals, aligned R/W loop
-        ; Compiled signature:
-        ;
-        ; unsigned char fcb_random_block_io(
-        ; unsigned int   mode,         // [bp+4]    word — FCB+2 mode/type byte
-        ; unsigned char far *buffer,   // [bp+6:8]  far ptr — data buffer (in/out)
-        ; unsigned int  *count         // [bp+0Ah]  near ptr to in/out record count
-        ; );
-        ;
-        ; @param mode    FCB+2 mode/type byte (& 7). Mode 1 (sequential) is rejected
-        ; with error 2 or 5 depending on FCB+5 bit 7.
-        ; @param buffer  Far pointer to the data buffer. Normalized in place to
-        ; paragraph-aligned form on entry (seg += off>>4; off &= 0Fh),
-        ; then passed to DIV_AX_BY_BX_CAPPED as two words (cdecl
-        ; far-ptr ABI).
-        ; @param count   In/out. Caller sets to the requested record count; callee
-        ; writes back the count actually processed. 0 on failure.
-        ; @return        Status byte (in AL). 0 on success; non-zero is the DOS
-        ; error code raised via LOOKUP_ERROR_MSG.
-        push    bp                                             ;#2C5A: 55
-        mov     bp, sp                                         ;#2C5B: 8B EC
-        sub     sp, 16h                                        ;#2C5D: 83 EC 16
-        push    si                                             ;#2C60: 56
-        lea     ax, [bp-8]                                     ;#2C61: 8D 46 F8
-        push    ax                                             ;#2C64: 50
-        push    word [bp+4]                                    ;#2C65: FF 76 04
-        call    near FIND_FCB_FOR_DRIVE                        ;#2C68: E8 51 EF
-        add     sp, 4                                          ;#2C6B: 83 C4 04
-        or      al, al                                         ;#2C6E: 0A C0
-        jz      short FCB_OP_DISPATCH_BY_TYPE                  ;#2C70: 74 0D
-        mov     ax, 6                                          ;#2C72: B8 06 00
-FCB_OP_RAISE_ERROR_CODE:
-        ; Call LOOKUP_ERROR_MSG with AX as error code, jmp to RENAME_FILE_RET
-        push    ax                                             ;#2C75: 50
-        call    near LOOKUP_ERROR_MSG                          ;#2C76: E8 87 A6
-        add     sp, 2                                          ;#2C79: 83 C4 02
-        jmp     near RENAME_FILE_RET                           ;#2C7C: E9 A5 02
+        ; FCB random-block I/O — find FCB, extend+write or CON/network path
+        ;@compiled fcb_random_block_io 2C5A 719
+        /*
+         * FCB_RANDOM_BLOCK_IO @ 0x2C5A in SISNE.SIS (719 bytes).
+         *
+         * FCB random-block I/O — the extend-on-write driver reached by the random/block
+         * record dispatch. It resolves the drive's directory FCB (FIND_FCB_FOR_DRIVE),
+         * rejects sequential-type records (FCB+2 type & 7 == 1) with a 4-code
+         * LOOKUP_ERROR_MSG, bounds the caller's record count (paragraph-normalizing the
+         * far buffer, then DIV_AX_BY_BX_CAPPED), and splits on FCB+5 bit-7. The
+         * local-disk path loads the DPB/dir globals (LOAD_DIR_FCB_INTO_GLOBALS), clamps
+         * the window to EOF, runs the optional network retry (RETRY_NETWORK_LOOP), then
+         * extends and writes the file (ALIGNED_DPB_CALC + ALIGN_IO_TO_SECTOR +
+         * WRITE_AT_FCB_POSITION). The CON/network path (bit-7 set) runs the retry loop
+         * and CHAR_DEVICE_IO. Both converge on the directory size update at FCB+0x15.
+         * DS-relative globals; the shared error/zero exits cross-jump into one block.
+         */
 
-FCB_OP_DISPATCH_BY_TYPE:
-        ; Inspect FCB+2 (type byte & 7) and branch by file-table entry type
-        les     bx, [bp-8]                                     ;#2C7F: C4 5E F8
-        mov     al, [es:bx+2]                                  ;#2C82: 26 8A 47 02
-        and     al, 7                                          ;#2C86: 24 07
-        mov     [bp-4], al                                     ;#2C88: 88 46 FC
-        cmp     al, 1                                          ;#2C8B: 3C 01
-        jnz     short FCB_RANDOM_BLOCK_IO_RECORD_TEST          ;#2C8D: 75 27
-        test    byte [es:bx+5], 80h                            ;#2C8F: 26 F6 47 05 80
-        jz      short FCB_OP_ERROR_2_3_RAISE                   ;#2C94: 74 16
-        mov     ax, 3                                          ;#2C96: B8 03 00
-        push    ax                                             ;#2C99: 50
-        push    ax                                             ;#2C9A: 50
-        mov     ax, 4                                          ;#2C9B: B8 04 00
-FCB_OP_ERROR_4_5_RAISE:
-        ; Common 4-arg LOOKUP_ERROR_MSG tail (codes 4,5 then 3,3 args)
-        push    ax                                             ;#2C9E: 50
-        mov     ax, 5                                          ;#2C9F: B8 05 00
-        push    ax                                             ;#2CA2: 50
-        call    near LOOKUP_ERROR_MSG                          ;#2CA3: E8 5A A6
-        add     sp, 8                                          ;#2CA6: 83 C4 08
-        jmp     near RENAME_FILE_RET                           ;#2CA9: E9 78 02
+        extern int lookup_error_msg() __addr__(0xD300);
+        extern unsigned char retry_network_loop(unsigned char far *driver, unsigned int bytes,
+                                                unsigned int z) __addr__(0x1DDC);
 
-FCB_OP_ERROR_2_3_RAISE:
-        ; Type 1 without bit 7 — raise error 2 then falls into 4/5 path
-        mov     ax, 3                                          ;#2CAC: B8 03 00
-        push    ax                                             ;#2CAF: 50
-        push    ax                                             ;#2CB0: 50
-        mov     ax, 2                                          ;#2CB1: B8 02 00
-        jmp     short FCB_OP_ERROR_4_5_RAISE                   ;#2CB4: EB E8
+        extern unsigned long IO_START __addr__(0x0EFE);
+        extern unsigned long EOF_ANCHOR __addr__(0x0F14);
+        extern unsigned long DRIVER_VEC __addr__(0x0F0A);
 
-FCB_RANDOM_BLOCK_IO_RECORD_TEST:
-        ; Initial record-count check — bx=[bp+0Ah]; if [bx]==0 → ret zero
-        mov     bx, [bp+0Ah]                                   ;#2CB6: 8B 5E 0A
-        cmp     word [bx], 0                                   ;#2CB9: 83 3F 00
-        jnz     short FCB_OP_NONZERO_RECCNT                    ;#2CBC: 75 03
-        jmp     near RENAME_FAIL_RET_ZERO_AX                   ;#2CBE: E9 0F 02
+        int fcb_random_block_io(int drive, unsigned char far *buffer, unsigned int *count)
+            __addr__(0x2C5A)
+        {
+            unsigned int buf_chunk;   /* [bp-2]     */
+            unsigned char type;       /* [bp-4]     */
+            unsigned char far *rec;   /* [bp-8/-6]  */
+            unsigned char net_result; /* [bp-0Ah]   */
+            unsigned int cluster_off; /* [bp-0Ch]   */
+            unsigned int xfer;        /* [bp-0Eh]   */
+            unsigned char attr_flag;  /* [bp-10h]   */
+            unsigned int written;     /* [bp-12h]   */
+            unsigned char far *dpb;   /* [bp-16h/-14h] */
 
-FCB_OP_NONZERO_RECCNT:
-        ; Records>0 — convert byte/record offsets via DIV_AX_BY_BX_CAPPED
-        mov     ax, [bp+6]                                     ;#2CC1: 8B 46 06
-        mov     cl, 4                                          ;#2CC4: B1 04
-        shr     ax, cl                                         ;#2CC6: D3 E8
-        add     [bp+8], ax                                     ;#2CC8: 01 46 08
-        and     word [bp+6], 0Fh                               ;#2CCB: 81 66 06 0F 00
-        push    word [bx]                                      ;#2CD0: FF 37
-        push    word [bp+8]                                    ;#2CD2: FF 76 08
-        push    word [bp+6]                                    ;#2CD5: FF 76 06
-        mov     ax, 1                                          ;#2CD8: B8 01 00
-        push    ax                                             ;#2CDB: 50
-        call    near DIV_AX_BY_BX_CAPPED                       ;#2CDC: E8 04 A5
-        add     sp, 8                                          ;#2CDF: 83 C4 08
-        mov     [bp-0Eh], ax                                   ;#2CE2: 89 46 F2
-        les     bx, [bp-8]                                     ;#2CE5: C4 5E F8
-        test    byte [es:bx+5], 80h                            ;#2CE8: 26 F6 47 05 80
-        jz      short RENAME_LOAD_DIR_GLOBALS                  ;#2CED: 74 03
-        jmp     near RENAME_BIT7_NETWORK_PATH                  ;#2CEF: E9 A2 01
-
-RENAME_LOAD_DIR_GLOBALS:
-        ; Bit 7 clear — load FCB DPB pointers and call LOAD_DIR_FCB_INTO_GLOBALS
-        mov     ax, [es:bx+7]                                  ;#2CF2: 26 8B 47 07
-        mov     dx, [es:bx+9]                                  ;#2CF6: 26 8B 57 09
-        mov     [bp-16h], ax                                   ;#2CFA: 89 46 EA
-        mov     [bp-14h], dx                                   ;#2CFD: 89 56 EC
-        les     bx, [bp-16h]                                   ;#2D00: C4 5E EA
-        mov     ax, [es:bx+2]                                  ;#2D03: 26 8B 47 02
-        mov     [0F1Ch], ax                                    ;#2D07: A3 1C 0F
-        mov     al, [es:bx+20h]                                ;#2D0A: 26 8A 47 20
-        sub     ah, ah                                         ;#2D0E: 2A E4
-        mov     cl, [es:bx+5]                                  ;#2D10: 26 8A 4F 05
-        sub     ch, ch                                         ;#2D14: 2A ED
-        add     ax, cx                                         ;#2D16: 03 C1
-        mov     [0F06h], ax                                    ;#2D18: A3 06 0F
-        push    word [bp-6]                                    ;#2D1B: FF 76 FA
-        push    word [bp-8]                                    ;#2D1E: FF 76 F8
-        call    near LOAD_DIR_FCB_INTO_GLOBALS                 ;#2D21: E8 9F EA
-        add     sp, 4                                          ;#2D24: 83 C4 04
-        les     bx, [bp-8]                                     ;#2D27: C4 5E F8
-        mov     ax, [es:bx+11h]                                ;#2D2A: 26 8B 47 11
-        or      ax, [es:bx+13h]                                ;#2D2E: 26 0B 47 13
-        jnz     short RENAME_LOAD_DIR_SIZE                     ;#2D32: 75 03
-        jmp     near RENAME_FAIL_RET_ZERO                      ;#2D34: E9 92 01
-
-RENAME_LOAD_DIR_SIZE:
-        ; Read 32-bit dir size at FCB+11h/13h, decrement, store in [0F14h]/[0F16h]
-        mov     ax, [es:bx+11h]                                ;#2D37: 26 8B 47 11
-        mov     dx, [es:bx+13h]                                ;#2D3B: 26 8B 57 13
-        sub     ax, 1                                          ;#2D3F: 2D 01 00
-        sbb     dx, 0                                          ;#2D42: 83 DA 00
-        mov     [0F14h], ax                                    ;#2D45: A3 14 0F
-        mov     [0F16h], dx                                    ;#2D48: 89 16 16 0F
-        cmp     [0F00h], dx                                    ;#2D4C: 39 16 00 0F
-        jb      short RENAME_COMPUTE_EXTEND                    ;#2D50: 72 0E
-        jbe     short RENAME_CHECK_LOW_WORD                    ;#2D52: 76 03
-        jmp     near RENAME_FAIL_RET_ZERO                      ;#2D54: E9 72 01
-
-RENAME_CHECK_LOW_WORD:
-        ; High word equal — fall through to compare low word vs cluster offset
-        cmp     [0EFEh], ax                                    ;#2D57: 39 06 FE 0E
-        jbe     short RENAME_COMPUTE_EXTEND                    ;#2D5B: 76 03
-        jmp     near RENAME_FAIL_RET_ZERO                      ;#2D5D: E9 69 01
-
-RENAME_COMPUTE_EXTEND:
-        ; Add caller record count to current pos, compare to end-of-file marker
-        mov     bx, [bp+0Ah]                                   ;#2D60: 8B 5E 0A
-        mov     ax, [bx]                                       ;#2D63: 8B 07
-        sub     dx, dx                                         ;#2D65: 2B D2
-        add     ax, [0EFEh]                                    ;#2D67: 03 06 FE 0E
-        adc     dx, [0F00h]                                    ;#2D6B: 13 16 00 0F
-        sub     ax, 1                                          ;#2D6F: 2D 01 00
-        sbb     dx, 0                                          ;#2D72: 83 DA 00
-        cmp     dx, [0F16h]                                    ;#2D75: 3B 16 16 0F
-        jb      short RENAME_STORE_EXTEND                      ;#2D79: 72 13
-        jnbe    short RENAME_COMPUTE_TRUNCATE                  ;#2D7B: 77 06
-        cmp     ax, [0F14h]                                    ;#2D7D: 3B 06 14 0F
-        jb      short RENAME_STORE_EXTEND                      ;#2D81: 72 0B
-RENAME_COMPUTE_TRUNCATE:
-        ; Compute records-to-EOF = (dir_size - cur_pos) + 1 — clamp extend size
-        mov     ax, [0F14h]                                    ;#2D83: A1 14 0F
-        sub     ax, [0EFEh]                                    ;#2D86: 2B 06 FE 0E
-        inc     ax                                             ;#2D8A: 40
-        mov     [bp-0Eh], ax                                   ;#2D8B: 89 46 F2
-RENAME_STORE_EXTEND:
-        ; Store [bp-0Eh] extend-size at [bp+0Ah]; network retry or fall to disk write
-        mov     bx, [bp+0Ah]                                   ;#2D8E: 8B 5E 0A
-        mov     ax, [bp-0Eh]                                   ;#2D91: 8B 46 F2
-        mov     [bx], ax                                       ;#2D94: 89 07
-        cmp     byte [2E0h], 0                                 ;#2D96: 80 3E E0 02 00
-        jz      short RENAME_DO_ALIGNED_WRITE                  ;#2D9B: 74 1E
-        xor     ax, ax                                         ;#2D9D: 33 C0
-        push    ax                                             ;#2D9F: 50
-        push    word [bp-0Eh]                                  ;#2DA0: FF 76 F2
-        push    word [bp-6]                                    ;#2DA3: FF 76 FA
-        push    word [bp-8]                                    ;#2DA6: FF 76 F8
-        call    near RETRY_NETWORK_LOOP                        ;#2DA9: E8 30 F0
-        add     sp, 8                                          ;#2DAC: 83 C4 08
-        mov     [bp-0Ah], al                                   ;#2DAF: 88 46 F6
-        or      al, al                                         ;#2DB2: 0A C0
-        jz      short RENAME_DO_ALIGNED_WRITE                  ;#2DB4: 74 05
-RENAME_NET_RETRY_ERROR:
-        ; Network retry returned nonzero — raise as DOS error via FCB_OP_RAISE_ERROR_CODE
-        sub     ah, ah                                         ;#2DB6: 2A E4
-        jmp     near FCB_OP_RAISE_ERROR_CODE                   ;#2DB8: E9 BA FE
-
-RENAME_DO_ALIGNED_WRITE:
-        ; ALIGNED_DPB_CALC for first aligned chunk; loop until WRITE_AT_FCB_POSITION exits
-        push    word [0F1Ch]                                   ;#2DBB: FF 36 1C 0F
-        push    word [bp+8]                                    ;#2DBF: FF 76 08
-        push    word [bp+6]                                    ;#2DC2: FF 76 06
-        push    word [bp-0Eh]                                  ;#2DC5: FF 76 F2
-        push    word [0F00h]                                   ;#2DC8: FF 36 00 0F
-        push    word [0EFEh]                                   ;#2DCC: FF 36 FE 0E
-        push    word [0F34h]                                   ;#2DD0: FF 36 34 0F
-        mov     al, [0F20h]                                    ;#2DD4: A0 20 0F
-        sub     ah, ah                                         ;#2DD7: 2A E4
-        push    ax                                             ;#2DD9: 50
-        xor     ax, ax                                         ;#2DDA: 33 C0
-        push    ax                                             ;#2DDC: 50
-        call    near ALIGNED_DPB_CALC                          ;#2DDD: E8 B3 8C
-        add     sp, 12h                                        ;#2DE0: 83 C4 12
-        mov     [bp-12h], ax                                   ;#2DE3: 89 46 EE
-        mov     ax, [bp-0Eh]                                   ;#2DE6: 8B 46 F2
-        cmp     [bp-12h], ax                                   ;#2DE9: 39 46 EE
-        jb      short RENAME_WRITE_CHUNK_LOOP                  ;#2DEC: 72 03
-        jmp     near RENAME_UPDATE_DIR_SIZE                    ;#2DEE: E9 1F 01
-
-RENAME_WRITE_CHUNK_LOOP:
-        ; Outer write-chunk loop body — subtract written size and read next buffer
-        mov     ax, [bp-12h]                                   ;#2DF1: 8B 46 EE
-        sub     [bp-0Eh], ax                                   ;#2DF4: 29 46 F2
-        sub     dx, dx                                         ;#2DF7: 2B D2
-        add     [0EFEh], ax                                    ;#2DF9: 01 06 FE 0E
-        adc     [0F00h], dx                                    ;#2DFD: 11 16 00 0F
-        add     [bp+6], ax                                     ;#2E01: 01 46 06
-        mov     ax, [0EFEh]                                    ;#2E04: A1 FE 0E
-        mov     dx, [0F00h]                                    ;#2E07: 8B 16 00 0F
-        mov     cl, [0F06h]                                    ;#2E0B: 8A 0E 06 0F
-        call    near SHR_DXAX_BY_CL                            ;#2E0F: E8 AF BE
-        mov     [0F02h], ax                                    ;#2E12: A3 02 0F
-        call    near READ_NEXT_BUFFER_CHUNK                    ;#2E15: E8 47 F2
-        mov     [bp-2], ax                                     ;#2E18: 89 46 FE
-        cmp     ax, 0FFFFh                                     ;#2E1B: 3D FF FF
-        jnz     short RENAME_WRITE_ALIGNED_RUN                 ;#2E1E: 75 03
-        jmp     near RENAME_FAIL_RET_ZERO                      ;#2E20: E9 A6 00
-
-RENAME_WRITE_ALIGNED_RUN:
-        ; Aligned cluster — set up WRITE_AT_FCB_POSITION arg block and call
-        push    word [bp-0Eh]                                  ;#2E23: FF 76 F2
-        call    near COMPUTE_CLUSTER_START                     ;#2E26: E8 CE F3
-        add     sp, 2                                          ;#2E29: 83 C4 02
-        mov     ax, [0F1Ch]                                    ;#2E2C: A1 1C 0F
-        les     bx, [bp-16h]                                   ;#2E2F: C4 5E EA
-        mov     cl, [es:bx+5]                                  ;#2E32: 26 8A 4F 05
-        shl     ax, cl                                         ;#2E36: D3 E0
-        dec     ax                                             ;#2E38: 48
-        and     ax, [0EFEh]                                    ;#2E39: 23 06 FE 0E
-        mov     [bp-0Ch], ax                                   ;#2E3D: 89 46 F4
-        mov     ax, 0F26h                                      ;#2E40: B8 26 0F
-        push    ax                                             ;#2E43: 50
-        push    word [bp+8]                                    ;#2E44: FF 76 08
-        push    word [bp+6]                                    ;#2E47: FF 76 06
-        push    word [bp-0Eh]                                  ;#2E4A: FF 76 F2
-        push    word [bp-0Ch]                                  ;#2E4D: FF 76 F4
-        push    word [bp-2]                                    ;#2E50: FF 76 FE
-        mov     al, [0F20h]                                    ;#2E53: A0 20 0F
-        sub     ah, ah                                         ;#2E56: 2A E4
-        push    ax                                             ;#2E58: 50
-        call    near WRITE_AT_FCB_POSITION                     ;#2E59: E8 6E E7
-        add     sp, 0Eh                                        ;#2E5C: 83 C4 0E
-        mov     [0F1Eh], ax                                    ;#2E5F: A3 1E 0F
-        cmp     ax, 0FFFFh                                     ;#2E62: 3D FF FF
-        jnz     short RENAME_WRITE_UPDATE_FCB                  ;#2E65: 75 03
-        jmp     near RENAME_UPDATE_DIR_SIZE                    ;#2E67: E9 A6 00
-
-RENAME_WRITE_UPDATE_FCB:
-        ; Successful write — update FCB +19h/+1Bh size words from new position
-        les     bx, [bp-8]                                     ;#2E6A: C4 5E F8
-        mov     [es:bx+1Bh], ax                                ;#2E6D: 26 89 47 1B
-        mov     ax, [bp-0Eh]                                   ;#2E71: 8B 46 F2
-        sub     dx, dx                                         ;#2E74: 2B D2
-        add     ax, [0EFEh]                                    ;#2E76: 03 06 FE 0E
-        adc     dx, [0F00h]                                    ;#2E7A: 13 16 00 0F
-        sub     ax, 1                                          ;#2E7E: 2D 01 00
-        sbb     dx, 0                                          ;#2E81: 83 DA 00
-        mov     cl, [0F06h]                                    ;#2E84: 8A 0E 06 0F
-        call    near SHR_DXAX_BY_CL                            ;#2E88: E8 36 BE
-        les     bx, [bp-8]                                     ;#2E8B: C4 5E F8
-        mov     [es:bx+19h], ax                                ;#2E8E: 26 89 47 19
-        jmp     short RENAME_UPDATE_DIR_SIZE                   ;#2E92: EB 7C
-
-RENAME_BIT7_NETWORK_PATH:
-        ; FCB bit 7 set — drive via RETRY_NETWORK_LOOP instead of disk
-        cmp     byte [2E0h], 0                                 ;#2E94: 80 3E E0 02 00
-        jz      short RENAME_AFTER_NETWORK                     ;#2E99: 74 1C
-        xor     ax, ax                                         ;#2E9B: 33 C0
-        push    ax                                             ;#2E9D: 50
-        push    word [bp-0Eh]                                  ;#2E9E: FF 76 F2
-        push    word [bp-6]                                    ;#2EA1: FF 76 FA
-        push    word [bp-8]                                    ;#2EA4: FF 76 F8
-        call    near RETRY_NETWORK_LOOP                        ;#2EA7: E8 32 EF
-        add     sp, 8                                          ;#2EAA: 83 C4 08
-        mov     [bp-0Ah], al                                   ;#2EAD: 88 46 F6
-        or      al, al                                         ;#2EB0: 0A C0
-        jz      short RENAME_AFTER_NETWORK                     ;#2EB2: 74 03
-        jmp     near RENAME_NET_RETRY_ERROR                    ;#2EB4: E9 FF FE
-
-RENAME_AFTER_NETWORK:
-        ; After RETRY_NETWORK_LOOP — read FCB+5h flag, branch on extend-size > 0
-        les     bx, [bp-8]                                     ;#2EB7: C4 5E F8
-        mov     al, [es:bx+5]                                  ;#2EBA: 26 8A 47 05
-        and     al, 20h                                        ;#2EBE: 24 20
-        mov     [bp-10h], al                                   ;#2EC0: 88 46 F0
-        cmp     word [bp-0Eh], 0                               ;#2EC3: 83 7E F2 00
-        jnz     short RENAME_FLUSH_BUFFER                      ;#2EC7: 75 0B
-RENAME_FAIL_RET_ZERO:
-        ; Store 0 at [bp+0Ah] result pointer; AX=0 (no match found)
-        mov     bx, [bp+0Ah]                                   ;#2EC9: 8B 5E 0A
-        mov     word [bx], 0                                   ;#2ECC: C7 07 00 00
-RENAME_FAIL_RET_ZERO_AX:
-        ; xor ax,ax common entry — fall to RENAME_FILE_RET (no match found)
-        xor     ax, ax                                         ;#2ED0: 33 C0
-        jmp     short RENAME_FILE_RET                          ;#2ED2: EB 50
-
-RENAME_FLUSH_BUFFER:
-        ; Extend size > 0 — call WRITE_DIRTY_BUFFER_TO_DISK to commit pending writes
-        les     bx, [bp-8]                                     ;#2ED4: C4 5E F8
-        mov     ax, [es:bx+7]                                  ;#2ED7: 26 8B 47 07
-        mov     dx, [es:bx+9]                                  ;#2EDB: 26 8B 57 09
-        mov     [0F0Ah], ax                                    ;#2EDF: A3 0A 0F
-        mov     [0F0Ch], dx                                    ;#2EE2: 89 16 0C 0F
-        push    word [bp+8]                                    ;#2EE6: FF 76 08
-        push    word [bp+6]                                    ;#2EE9: FF 76 06
-        push    word [bp-0Eh]                                  ;#2EEC: FF 76 F2
-        mov     al, [es:bx+5]                                  ;#2EEF: 26 8A 47 05
-        sub     ah, ah                                         ;#2EF3: 2A E4
-        push    ax                                             ;#2EF5: 50
-        call    near WRITE_DIRTY_BUFFER_TO_DISK                ;#2EF6: E8 47 F3
-        add     sp, 8                                          ;#2EF9: 83 C4 08
-        mov     [bp-12h], ax                                   ;#2EFC: 89 46 EE
-        mov     bx, [bp+0Ah]                                   ;#2EFF: 8B 5E 0A
-        mov     [bx], ax                                       ;#2F02: 89 07
-        or      ax, ax                                         ;#2F04: 0B C0
-        jnz     short RENAME_UPDATE_DIR_SIZE                   ;#2F06: 75 08
-        les     bx, [bp-8]                                     ;#2F08: C4 5E F8
-        and     byte [es:bx+5], 0BFh                           ;#2F0B: 26 80 67 05 BF
-RENAME_UPDATE_DIR_SIZE:
-        ; Update dir entry +15h/+17h size words after rename
-        les     bx, [bp-8]                                     ;#2F10: C4 5E F8
-        mov     si, [bp+0Ah]                                   ;#2F13: 8B 76 0A
-        mov     ax, [si]                                       ;#2F16: 8B 04
-        sub     dx, dx                                         ;#2F18: 2B D2
-        add     [es:bx+15h], ax                                ;#2F1A: 26 01 47 15
-        adc     [es:bx+17h], dx                                ;#2F1E: 26 11 57 17
-        mov     ax, dx                                         ;#2F22: 8B C2
-RENAME_FILE_RET:
-        ; RENAME_FILE_BY_FCB tail — pop si, ret
-        pop     si                                             ;#2F24: 5E
-        mov     sp, bp                                         ;#2F25: 8B E5
-        pop     bp                                             ;#2F27: 5D
-        ret                                                    ;#2F28: C3
+            if (find_fcb_for_drive(drive, &rec) != 0) {
+                return lookup_error_msg(6);
+            }
+            type = rec[2] & 7;
+            if (type == 1) {
+                if ((*(unsigned char far *)(rec + 5) & 0x80) != 0) {
+                    return lookup_error_msg(5, 4, 3, 3);
+                } else {
+                    return lookup_error_msg(5, 2, 3, 3);
+                }
+            }
+            if (*count == 0) {
+                goto ret_zero;
+            }
+            FP_SEG(buffer) += FP_OFF(buffer) >> 4;
+            FP_OFF(buffer) &= 0x0F;
+            xfer = div_ax_by_bx_capped(1, buffer, *count);
+            if ((*(unsigned char far *)(rec + 5) & 0x80) == 0) {
+                /* ---- local-disk path ---- */
+                dpb = *(unsigned char far *far *)(rec + 7);
+                DPB_SECTOR_SIZE = *(int far *)(dpb + 2);
+                CLUSTER_SHIFT = dpb[0x20] + dpb[5];
+                load_dir_fcb_into_globals(rec);
+                if ((*(unsigned int far *)(rec + 0x11) | *(unsigned int far *)(rec + 0x13)) ==
+                    0) {
+                    goto fail_ret_zero;
+                }
+                EOF_ANCHOR = *(unsigned long far *)(rec + 0x11) - 1;
+                if (IO_START > EOF_ANCHOR) {
+                    goto fail_ret_zero;
+                }
+                if ((unsigned long)*count + IO_START - 1 >= EOF_ANCHOR) {
+                    xfer = (unsigned int)EOF_ANCHOR - (unsigned int)IO_START + 1;
+                }
+                *count = xfer;
+                if (NETWORK_ACTIVE != 0) {
+                    net_result = retry_network_loop(rec, xfer, 0);
+                    if (net_result != 0) {
+                        return lookup_error_msg(net_result);
+                    }
+                }
+                written = aligned_dpb_calc(0, FCB_DRIVE, DPB_FIELD_F34, IO_START, xfer, buffer,
+                                           DPB_SECTOR_SIZE);
+                if (written < xfer) {
+                    xfer -= written;
+                    IO_START += written;
+                    FP_OFF(buffer) += written;
+                    IO_SECTOR = (unsigned int)(IO_START >> CLUSTER_SHIFT);
+                    buf_chunk = read_next_buffer_chunk();
+                    if (buf_chunk == 0xFFFF) {
+                        goto fail_ret_zero;
+                    }
+                    align_io_to_sector(xfer);
+                    cluster_off = ((DPB_SECTOR_SIZE << dpb[5]) - 1) & (unsigned int)IO_START;
+                    WRITE_RESULT = write_at_fcb_position(FCB_DRIVE, buf_chunk, cluster_off, xfer,
+                                                         buffer, &CLUSTER_WORK);
+                    if (WRITE_RESULT != 0xFFFF) {
+                        *(int far *)(rec + 0x1B) = WRITE_RESULT;
+                        *(int far *)(rec + 0x19) =
+                            (unsigned int)(((unsigned long)xfer + IO_START - 1) >> CLUSTER_SHIFT);
+                    }
+                }
+            } else {
+                /* ---- CON / network path ---- */
+                if (NETWORK_ACTIVE != 0) {
+                    net_result = retry_network_loop(rec, xfer, 0);
+                    if (net_result != 0) {
+                        return lookup_error_msg(net_result);
+                    }
+                }
+                attr_flag = *(unsigned char far *)(rec + 5) & 0x20;
+                if (xfer == 0) {
+                fail_ret_zero:
+                    *count = 0;
+                ret_zero:
+                    return 0;
+                }
+                DRIVER_VEC = *(unsigned long far *)(rec + 7);
+                written = char_device_io(*(unsigned char far *)(rec + 5), xfer, buffer);
+                *count = written;
+                if (written == 0) {
+                    *(unsigned char far *)(rec + 5) &= 0xBF;
+                }
+            }
+            *(unsigned long far *)(rec + 0x15) += *count;
+            return 0;
+        }
+        ;@endcompiled
 
 RENAME_FILE_BY_FCB:
         ; FIND_FCB_FOR_DRIVE then walk directory entries renaming the matched file
@@ -4796,7 +4377,7 @@ RENAME_READ_FAIL_STORE_ZERO:
 RENAME_READ_DO_FCB_READ:
         ; Read returned valid — compute cluster offset, call READ_AT_FCB_POSITION
         push    word [bp-0Eh]                                  ;#3216: FF 76 F2
-        call    near COMPUTE_CLUSTER_START                     ;#3219: E8 DB EF
+        call    near ALIGN_IO_TO_SECTOR                        ;#3219: E8 DB EF
         add     sp, 2                                          ;#321C: 83 C4 02
         mov     ax, [0F1Ch]                                    ;#321F: A1 1C 0F
         les     bx, [bp-16h]                                   ;#3222: C4 5E EA
@@ -5883,18 +5464,18 @@ FCB_OP_03_CALL_WRITE_FCB:
         push    word [bp+4]                                    ;#3B36: FF 76 04
         xor     ax, ax                                         ;#3B39: 33 C0
 FCB_OP_BUILD_DIR_ENTRY:
-        ; Push op byte and AX status, call BUILD_DIRECTORY_ENTRY tail
+        ; Push op byte and AX status, call BUILD_DRIVER_REQUEST tail
         push    ax                                             ;#3B3B: 50
         mov     al, [bp-2]                                     ;#3B3C: 8A 46 FE
         sub     ah, ah                                         ;#3B3F: 2A E4
         push    ax                                             ;#3B41: 50
-        call    near BUILD_DIRECTORY_ENTRY                     ;#3B42: E8 77 E3
+        call    near BUILD_DRIVER_REQUEST                      ;#3B42: E8 77 E3
         add     sp, 10h                                        ;#3B45: 83 C4 10
         mov     [bp-26h], ax                                   ;#3B48: 89 46 DA
         jmp     near WRITE_FCB_TO_HANDLE_TAIL                  ;#3B4B: E9 11 03
 
 FCB_OP_4_HANDLER:
-        ; Op 4 (delete FCB) — idx 4/5 alias; check buf flag then BUILD_DIRECTORY_ENTRY
+        ; Op 4 (delete FCB) — idx 4/5 alias; check buf flag then BUILD_DRIVER_REQUEST
         cmp     byte [bp-8], 0                                 ;#3B4E: 80 7E F8 00
         jnz     short FCB_OP_04_NO_BUFFER                      ;#3B52: 75 0C
         les     bx, [0F0Ah]                                    ;#3B54: C4 1E 0A 0F
@@ -5932,7 +5513,7 @@ FCB_OP_04_CALL_DPB1:
         jmp     short FCB_OP_BUILD_DIR_ENTRY                   ;#3B9B: EB 9E
 
 FCB_OP_6_HANDLER:
-        ; Op 6 (find next) — table idx 6/7; LOCAL_CHECK then BUILD_DIRECTORY_ENTRY
+        ; Op 6 (find next) — table idx 6/7; LOCAL_CHECK then BUILD_DRIVER_REQUEST
         cmp     byte [bp-8], 0                                 ;#3B9D: 80 7E F8 00
         jz      short FCB_OP_06_LOCAL_CHECK                    ;#3BA1: 74 4C
         cmp     byte [bp-38h], 6                               ;#3BA3: 80 7E C8 06
@@ -5944,7 +5525,7 @@ FCB_OP_06_SET_BYTE_0A:
         ; Op != 6 — store byte 0Ah as status code
         mov     byte [bp-2], 0Ah                               ;#3BAF: C6 46 FE 0A
 FCB_OP_06_CALL_BUILD:
-        ; Common — push FCB attr and DPB args, call BUILD_DIRECTORY_ENTRY
+        ; Common — push FCB attr and DPB args, call BUILD_DRIVER_REQUEST
         mov     al, [bp-34h]                                   ;#3BB3: 8A 46 CC
         sub     ah, ah                                         ;#3BB6: 2A E4
         push    ax                                             ;#3BB8: 50
@@ -5957,7 +5538,7 @@ FCB_OP_06_CALL_BUILD:
         mov     al, [bp-2]                                     ;#3BCA: 8A 46 FE
         sub     ah, ah                                         ;#3BCD: 2A E4
         push    ax                                             ;#3BCF: 50
-        call    near BUILD_DIRECTORY_ENTRY                     ;#3BD0: E8 E9 E2
+        call    near BUILD_DRIVER_REQUEST                      ;#3BD0: E8 E9 E2
         add     sp, 0Eh                                        ;#3BD3: 83 C4 0E
         mov     [bp-26h], ax                                   ;#3BD6: 89 46 DA
         test    word [bp-26h], 200h                            ;#3BD9: F7 46 DA 00 02
@@ -6305,24 +5886,23 @@ SAVE_DOS_RETURN_FRAME:
         pop     bp                                             ;#3EE3: 5D
         ret                                                    ;#3EE4: C3
 
-SHRINK_FCB_VIA_FIND:
+SET_FCB_FILE_POSITION:
         ; FIND_FCB_FOR_DRIVE then issue shrink/truncate via the dispatch tail
-        ;@compiled shrink_fcb_via_find 3EE5 44
+        ;@compiled set_fcb_file_position 3EE5 44
         /*
-         * SHRINK_FCB_VIA_FIND @ 0x3EE5 in SISNE.SIS (44 bytes).
+         * SET_FCB_FILE_POSITION @ 0x3EE5 in SISNE.SIS (44 bytes).
          *
          * Look up the SDA file record for `drive` (FIND_FCB_FOR_DRIVE) and, when found,
          * overwrite its 32-bit size/position field at record+0x15 with `value`.
          */
 
-        extern unsigned char find_fcb_for_drive(int drive, unsigned char far **out_rec) __addr__(0x1BBC);
-
-        void shrink_fcb_via_find(int drive, long value) __addr__(0x3EE5)
+        void set_fcb_file_position(int drive, long value) __addr__(0x3EE5)
         {
-            unsigned char far *rec;     /* bp-4 */
+            unsigned char far *rec; /* bp-4 */
 
-            if (find_fcb_for_drive(drive, &rec) != 0)
+            if (find_fcb_for_drive(drive, &rec) != 0) {
                 return;
+            }
             *(long far *)(rec + 0x15) = value;
         }
         ;@endcompiled
@@ -8220,7 +7800,7 @@ PARSE_FILENAME_TYPE2_CHECK:
         jmp     near OPEN_FILE_TYPE_DISPATCH                   ;#4D2B: E9 85 00
 
 OPEN_FILE_BIN_TYPE_PATH:
-        ; Path type=2 — UPCASE_FCB_FILENAME, LOOKUP_DRIVER_BY_NAME_LOOP, PROCESS_PATH_DOT
+        ; Path type=2 — UPCASE_FCB_FILENAME, COMPARE_NAME_WILDCARD, PROCESS_PATH_DOT
         mov     ax, 11A8h                                      ;#4D2E: B8 A8 11
         push    ds                                             ;#4D31: 1E
         push    ax                                             ;#4D32: 50
@@ -8234,7 +7814,7 @@ OPEN_FILE_BIN_TYPE_PATH:
         mov     ax, 11A8h                                      ;#4D42: B8 A8 11
         push    ds                                             ;#4D45: 1E
         push    ax                                             ;#4D46: 50
-        call    near LOOKUP_DRIVER_BY_NAME_LOOP                ;#4D47: E8 D7 D2
+        call    near COMPARE_NAME_WILDCARD                     ;#4D47: E8 D7 D2
         add     sp, 0Ah                                        ;#4D4A: 83 C4 0A
         or      al, al                                         ;#4D4D: 0A C0
         jz      short OPEN_FILE_TYPE_DISPATCH                  ;#4D4F: 74 62
@@ -8509,7 +8089,7 @@ OPEN_FILE_CLEAR_FLAGS:
         push    word [bx]                                      ;#4F82: FF 37
         push    es                                             ;#4F84: 06
         push    word [bp+8]                                    ;#4F85: FF 76 08
-        call    near COMPUTE_FAT_SECTOR                        ;#4F88: E8 82 2C
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#4F88: E8 82 2C
         add     sp, 8                                          ;#4F8B: 83 C4 08
         mov     [bp-14h], ax                                   ;#4F8E: 89 46 EC
         mov     [bp-12h], dx                                   ;#4F91: 89 56 EE
@@ -8910,7 +8490,7 @@ RESOLVE_LOGICAL_INDEX_INTO_TABLE:
         mov     ax, 11F7h                                      ;#5284: B8 F7 11
         push    ds                                             ;#5287: 1E
         push    ax                                             ;#5288: 50
-        call    near LOOKUP_DRIVER_BY_NAME_LOOP                ;#5289: E8 95 CD
+        call    near COMPARE_NAME_WILDCARD                     ;#5289: E8 95 CD
         add     sp, 0Ah                                        ;#528C: 83 C4 0A
         mov     [bp-0Ah], al                                   ;#528F: 88 46 F6
         or      al, al                                         ;#5292: 0A C0
@@ -9175,7 +8755,7 @@ GET_FCB_FILE_SIZE_USER_PATH:
         mov     ax, 11A8h                                      ;#5484: B8 A8 11
         push    ds                                             ;#5487: 1E
         push    ax                                             ;#5488: 50
-        call    near LOOKUP_DRIVER_BY_NAME_LOOP                ;#5489: E8 95 CB
+        call    near COMPARE_NAME_WILDCARD                     ;#5489: E8 95 CB
         add     sp, 0Ah                                        ;#548C: 83 C4 0A
         or      al, al                                         ;#548F: 0A C0
         jz      short PATH_FIND_LAST_BSLASH                    ;#5491: 74 35
@@ -9437,12 +9017,12 @@ GET_FCB_FILE_SIZE_RAISE_2:
         jmp     near GET_FCB_FILE_SIZE_RET                     ;#56C4: E9 92 00
 
 GET_FCB_FILE_SIZE_COMPUTE_FAT:
-        ; Push args, call COMPUTE_FAT_SECTOR; store result far ptr to caller
+        ; Push args, call LOCATE_DIR_ENTRY_IN_SECTOR; store result far ptr to caller
         push    word [bp-8]                                    ;#56C7: FF 76 F8
         push    word [bp-0Ah]                                  ;#56CA: FF 76 F6
         push    word [bp+0Ch]                                  ;#56CD: FF 76 0C
         push    word [bp+0Ah]                                  ;#56D0: FF 76 0A
-        call    near COMPUTE_FAT_SECTOR                        ;#56D3: E8 37 25
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#56D3: E8 37 25
         add     sp, 8                                          ;#56D6: 83 C4 08
         mov     bx, [bp+0Eh]                                   ;#56D9: 8B 5E 0E
         mov     [bx], ax                                       ;#56DC: 89 07
@@ -9763,7 +9343,7 @@ DOS_FN_39_INIT_LOOP_SI:
         jmp     short DOS_FN_39_FAT_LOOP_TEST                  ;#5970: EB 31
 
 DOS_FN_39_FAT_WRITE_LOOP_BODY:
-        ; Body — WRITE_SECTORS_FROM_DPB cluster, MEM_FILL_ZERO it, MARK_MCB_BIT7
+        ; Body — GET_DATA_SECTOR_BUFFER cluster, MEM_FILL_ZERO it, MARK_MCB_BIT7
         lea     ax, [bp-0Ah]                                   ;#5972: 8D 46 F6
         push    ax                                             ;#5975: 50
         push    si                                             ;#5976: 56
@@ -9771,7 +9351,7 @@ DOS_FN_39_FAT_WRITE_LOOP_BODY:
         mov     al, [1434h]                                    ;#597A: A0 34 14
         sub     ah, ah                                         ;#597D: 2A E4
         push    ax                                             ;#597F: 50
-        call    near WRITE_SECTORS_FROM_DPB                    ;#5980: E8 12 B4
+        call    near GET_DATA_SECTOR_BUFFER                    ;#5980: E8 12 B4
         add     sp, 8                                          ;#5983: 83 C4 08
         push    word [bp-18h]                                  ;#5986: FF 76 E8
         push    word [bp-8]                                    ;#5989: FF 76 F8
@@ -9796,7 +9376,7 @@ DOS_FN_39_FAT_LOOP_TEST:
         mov     al, [1434h]                                    ;#59B2: A0 34 14
         sub     ah, ah                                         ;#59B5: 2A E4
         push    ax                                             ;#59B7: 50
-        call    near WRITE_SECTORS_FROM_DPB                    ;#59B8: E8 DA B3
+        call    near GET_DATA_SECTOR_BUFFER                    ;#59B8: E8 DA B3
         add     sp, 8                                          ;#59BB: 83 C4 08
         push    word [bp-18h]                                  ;#59BE: FF 76 E8
         push    word [bp-8]                                    ;#59C1: FF 76 F8
@@ -9888,13 +9468,13 @@ DOS_FN_39_FAT_LOOP_TEST:
         jmp     near DOS_FN_39_RAISE_52                        ;#5AA1: E9 C3 FE
 
 DOS_FN_39_COMPUTE_FAT_PUSH:
-        ; Push cluster + 0F36h dir-fcb; call COMPUTE_FAT_SECTOR for new dir entry
+        ; Push cluster + 0F36h dir-fcb; call LOCATE_DIR_ENTRY_IN_SECTOR for new dir entry
         push    word [bp-8]                                    ;#5AA4: FF 76 F8
         push    word [bp-0Ah]                                  ;#5AA7: FF 76 F6
         mov     ax, 0F36h                                      ;#5AAA: B8 36 0F
         push    ds                                             ;#5AAD: 1E
         push    ax                                             ;#5AAE: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#5AAF: E8 5B 21
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#5AAF: E8 5B 21
         add     sp, 8                                          ;#5AB2: 83 C4 08
         mov     [bp-10h], ax                                   ;#5AB5: 89 46 F0
         mov     [bp-0Eh], dx                                   ;#5AB8: 89 56 F2
@@ -10010,7 +9590,7 @@ OPEN_FILE_LOAD_DRIVE:
         mov     ax, 0F36h                                      ;#5BA4: B8 36 0F
         push    ds                                             ;#5BA7: 1E
         push    ax                                             ;#5BA8: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#5BA9: E8 61 20
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#5BA9: E8 61 20
         add     sp, 8                                          ;#5BAC: 83 C4 08
         mov     [bp-14h], ax                                   ;#5BAF: 89 46 EC
         mov     [bp-12h], dx                                   ;#5BB2: 89 56 EE
@@ -10169,7 +9749,7 @@ RENAME_COMPARE_NEW_NAME:
         mov     ax, 11F7h                                      ;#5D06: B8 F7 11
         push    ds                                             ;#5D09: 1E
         push    ax                                             ;#5D0A: 50
-        call    near LOOKUP_DRIVER_BY_NAME_LOOP                ;#5D0B: E8 13 C3
+        call    near COMPARE_NAME_WILDCARD                     ;#5D0B: E8 13 C3
         add     sp, 0Ah                                        ;#5D0E: 83 C4 0A
         or      al, al                                         ;#5D11: 0A C0
         jz      short ADV_DIR_OR_END_REACHED                   ;#5D13: 74 2F
@@ -10219,7 +9799,7 @@ OPEN_FILE_END_OF_DIR:
         mov     ax, 0F36h                                      ;#5D69: B8 36 0F
         push    ds                                             ;#5D6C: 1E
         push    ax                                             ;#5D6D: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#5D6E: E8 9C 1E
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#5D6E: E8 9C 1E
         add     sp, 8                                          ;#5D71: 83 C4 08
         mov     [bp-14h], ax                                   ;#5D74: 89 46 EC
         mov     [bp-12h], dx                                   ;#5D77: 89 56 EE
@@ -10358,7 +9938,7 @@ OPEN_DIR_LOCAL_PARSE:
         mov     ax, 1434h                                      ;#5EAF: B8 34 14
         push    ds                                             ;#5EB2: 1E
         push    ax                                             ;#5EB3: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#5EB4: E8 56 1D
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#5EB4: E8 56 1D
         add     sp, 8                                          ;#5EB7: 83 C4 08
         mov     [bp-12h], ax                                   ;#5EBA: 89 46 EE
         mov     [bp-10h], dx                                   ;#5EBD: 89 56 F0
@@ -10804,13 +10384,13 @@ RENAME_COPY_NAME_TO_FCB:
         jmp     near CREATE_FILE_RAISE_52                      ;#6253: E9 0C FE
 
 RENAME_COMPUTE_FAT_SECTOR:
-        ; Push [bp-16h]/[bp-18h] cluster; COMPUTE_FAT_SECTOR for new dir entry
+        ; Push [bp-16h]/[bp-18h] cluster; LOCATE_DIR_ENTRY_IN_SECTOR for new dir entry
         push    word [bp-16h]                                  ;#6256: FF 76 EA
         push    word [bp-18h]                                  ;#6259: FF 76 E8
         mov     ax, 1434h                                      ;#625C: B8 34 14
         push    ds                                             ;#625F: 1E
         push    ax                                             ;#6260: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#6261: E8 A9 19
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#6261: E8 A9 19
         add     sp, 8                                          ;#6264: 83 C4 08
         mov     [bp-1Eh], ax                                   ;#6267: 89 46 E2
         mov     [bp-1Ch], dx                                   ;#626A: 89 56 E4
@@ -10838,7 +10418,7 @@ RENAME_STORE_FLAG:
         mov     ax, 1434h                                      ;#6291: B8 34 14
         push    ds                                             ;#6294: 1E
         push    ax                                             ;#6295: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#6296: E8 74 19
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#6296: E8 74 19
         add     sp, 8                                          ;#6299: 83 C4 08
         mov     [bp-1Eh], ax                                   ;#629C: 89 46 E2
         mov     [bp-1Ch], dx                                   ;#629F: 89 56 E4
@@ -11426,7 +11006,7 @@ OPEN_FILE_RETRY_NETWORK_OP:
         or      al, al                                         ;#6769: 0A C0
         jz      short OPEN_FILE_COMMIT_HANDLE                  ;#676B: 74 11
         push    word [bp-6Eh]                                  ;#676D: FF 76 92
-        call    near MARK_FCB_INVALID                          ;#6770: E8 32 B4
+        call    near RELEASE_FILE_HANDLE_SLOT                  ;#6770: E8 32 B4
         add     sp, 2                                          ;#6773: 83 C4 02
         mov     al, [bp-5Ch]                                   ;#6776: 8A 46 A4
         sub     ah, ah                                         ;#6779: 2A E4
@@ -11777,13 +11357,13 @@ FCB_WRITE_RAISE_5_X_3_3:
         jmp     near FCB_WRITE_RET_OK                          ;#6A4B: E9 FD 00
 
 FCB_WRITE_PROBE_EXISTING_DIR_ENTRY:
-        ; COMPUTE_FAT_SECTOR, load attr byte; mirror into caller FCB [+0] and [+4]
+        ; LOCATE_DIR_ENTRY_IN_SECTOR, load attr byte; mirror into caller FCB [+0] and [+4]
         push    word [bp-6]                                    ;#6A4E: FF 76 FA
         push    word [bp-8]                                    ;#6A51: FF 76 F8
         mov     ax, 1434h                                      ;#6A54: B8 34 14
         push    ds                                             ;#6A57: 1E
         push    ax                                             ;#6A58: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#6A59: E8 B1 11
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#6A59: E8 B1 11
         add     sp, 8                                          ;#6A5C: 83 C4 08
         mov     [bp-0Ch], ax                                   ;#6A5F: 89 46 F4
         mov     [bp-0Ah], dx                                   ;#6A62: 89 56 F6
@@ -11850,13 +11430,13 @@ FCB_WRITE_PROMPT_OR_SKIP:
         call    near INVOKE_DOS_ERROR_PROMPT                   ;#6ADF: E8 FB 24
         add     sp, 2                                          ;#6AE2: 83 C4 02
 FCB_WRITE_REFRESH_DIR_ENTRY:
-        ; COMPUTE_FAT_SECTOR for FCB at 1434h and load attr byte from dir entry
+        ; LOCATE_DIR_ENTRY_IN_SECTOR for FCB at 1434h and load attr byte from dir entry
         push    word [bp-6]                                    ;#6AE5: FF 76 FA
         push    word [bp-8]                                    ;#6AE8: FF 76 F8
         mov     ax, 1434h                                      ;#6AEB: B8 34 14
         push    ds                                             ;#6AEE: 1E
         push    ax                                             ;#6AEF: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#6AF0: E8 1A 11
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#6AF0: E8 1A 11
         add     sp, 8                                          ;#6AF3: 83 C4 08
         mov     [bp-0Ch], ax                                   ;#6AF6: 89 46 F4
         mov     [bp-0Ah], dx                                   ;#6AF9: 89 56 F6
@@ -12226,13 +11806,13 @@ DELETE_FCB_CHECK_REDIRECTOR:
         call    near INT2F_REDIRECTOR_4603                     ;#6DE3: E8 CD 7D
         add     sp, 4                                          ;#6DE6: 83 C4 04
 DELETE_FCB_MARK_E5:
-        ; COMPUTE_FAT_SECTOR then mark dir-entry FCB[0]=0E5h (deleted marker)
+        ; LOCATE_DIR_ENTRY_IN_SECTOR then mark dir-entry FCB[0]=0E5h (deleted marker)
         push    word [bp-0Ah]                                  ;#6DE9: FF 76 F6
         push    word [bp-0Ch]                                  ;#6DEC: FF 76 F4
         mov     ax, 1434h                                      ;#6DEF: B8 34 14
         push    ds                                             ;#6DF2: 1E
         push    ax                                             ;#6DF3: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#6DF4: E8 16 0E
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#6DF4: E8 16 0E
         add     sp, 8                                          ;#6DF7: 83 C4 08
         mov     [bp-12h], ax                                   ;#6DFA: 89 46 EE
         mov     [bp-10h], dx                                   ;#6DFD: 89 56 F0
@@ -12506,13 +12086,13 @@ RENAME_RAISE_ERROR:
         jmp     near SET_FCB_HANDLE_AND_RET                    ;#701A: E9 61 01
 
 RENAME_LOAD_OLD_SECTOR:
-        ; State == 2 — COMPUTE_FAT_SECTOR for old FCB before redirector sync
+        ; State == 2 — LOCATE_DIR_ENTRY_IN_SECTOR for old FCB before redirector sync
         push    word [bp-0Eh]                                  ;#701D: FF 76 F2
         push    word [bp-10h]                                  ;#7020: FF 76 F0
         mov     ax, 1434h                                      ;#7023: B8 34 14
         push    ds                                             ;#7026: 1E
         push    ax                                             ;#7027: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#7028: E8 E2 0B
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#7028: E8 E2 0B
         add     sp, 8                                          ;#702B: 83 C4 08
         mov     [bp-14h], ax                                   ;#702E: 89 46 EC
         mov     [bp-12h], dx                                   ;#7031: 89 56 EE
@@ -12593,7 +12173,7 @@ RENAME_UPDATE_OLD_ENTRY:
         mov     ax, 11CCh                                      ;#70D5: B8 CC 11
         push    ds                                             ;#70D8: 1E
         push    ax                                             ;#70D9: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#70DA: E8 30 0B
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#70DA: E8 30 0B
         add     sp, 8                                          ;#70DD: 83 C4 08
         mov     [bp-14h], ax                                   ;#70E0: 89 46 EC
         mov     [bp-12h], dx                                   ;#70E3: 89 56 EE
@@ -12633,7 +12213,7 @@ RENAME_UPDATE_OLD_ENTRY:
         mov     ax, 1434h                                      ;#7134: B8 34 14
         push    ds                                             ;#7137: 1E
         push    ax                                             ;#7138: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#7139: E8 D1 0A
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#7139: E8 D1 0A
         add     sp, 8                                          ;#713C: 83 C4 08
         mov     [bp-14h], ax                                   ;#713F: 89 46 EC
         mov     [bp-12h], dx                                   ;#7142: 89 56 EE
@@ -12642,7 +12222,7 @@ RENAME_UPDATE_OLD_ENTRY:
         jmp     short RENAME_MARK_AND_COPY                     ;#714C: EB 15
 
 RENAME_COPY_NEW_NAME:
-        ; MEM_COPY_FAR 11 bytes from ds:11CDh into FCB found by COMPUTE_FAT_SECTOR
+        ; MEM_COPY_FAR 11 bytes from ds:11CDh into FCB found by LOCATE_DIR_ENTRY_IN_SECTOR
         mov     ax, 0Bh                                        ;#714E: B8 0B 00
         push    ax                                             ;#7151: 50
         push    word [bp-12h]                                  ;#7152: FF 76 EE
@@ -12790,7 +12370,7 @@ RMDIR_PARSE_PATH_BODY:
         mov     ax, 1434h                                      ;#7298: B8 34 14
         push    ds                                             ;#729B: 1E
         push    ax                                             ;#729C: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#729D: E8 6D 09
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#729D: E8 6D 09
         add     sp, 8                                          ;#72A0: 83 C4 08
         mov     [bp-8], ax                                     ;#72A3: 89 46 F8
         mov     [bp-6], dx                                     ;#72A6: 89 56 FA
@@ -12984,7 +12564,7 @@ JOIN_CONFIGURE_DPB:
         mov     ax, 1434h                                      ;#745D: B8 34 14
         push    ds                                             ;#7460: 1E
         push    ax                                             ;#7461: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#7462: E8 A8 07
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#7462: E8 A8 07
         add     sp, 8                                          ;#7465: 83 C4 08
         mov     [bp-8], ax                                     ;#7468: 89 46 F8
         mov     [bp-6], dx                                     ;#746B: 89 56 FA
@@ -13523,19 +13103,16 @@ GET_DRIVE_TYPE:
          * or a different class returns 0xFF.
          */
 
-        extern unsigned char get_current_drive(void) __addr__(0xBA01);
-
-        extern unsigned int       CFG_LASTDRIVE __addr__(0x01CC);
-        extern unsigned char far *DPB_TABLE     __addr__(0x0414);
-
         int get_drive_type(unsigned char drive) __addr__(0x7895)
         {
-            if (drive == 0)
+            if (drive == 0) {
                 return get_current_drive();
+            }
             drive--;
-            if (drive >= CFG_LASTDRIVE
-                    || (*(unsigned int far *)(DPB_TABLE + 0x51 * drive + 0x43) & 0x6000) != 0x4000)
+            if (drive >= CFG_LASTDRIVE ||
+                (*(unsigned int far *)(DPB_TABLE + 0x51 * drive + 0x43) & 0x6000) != 0x4000) {
                 return 0xFF;
+            }
             return drive;
         }
         ;@endcompiled
@@ -13693,12 +13270,10 @@ INIT_FCB_TIMESTAMP:
          * current DOS time/date into FCB+0x14/0x16, and set the dirty bit (FCB+0x1A |= 0x40).
          */
 
-        extern void build_dos_datetime(unsigned int *t, unsigned int *d) __addr__(0xD1A6);
-
         void init_fcb_timestamp(unsigned char far *fcb) __addr__(0x7A44)
         {
-            unsigned int t;     /* bp-2 */
-            unsigned int d;     /* bp-4 */
+            unsigned int t; /* bp-2 */
+            unsigned int d; /* bp-4 */
 
             *(unsigned int far *)(fcb + 0x0C) = 0;
             *(unsigned int far *)(fcb + 0x10) = *(unsigned int far *)(fcb + 0x12) = 0;
@@ -13719,17 +13294,12 @@ RESET_FCB_FLAGS:
          * request header at [1464h] (flag 0x80, unit 0, command 0x0D).
          */
 
-        extern unsigned int  RENAME_STATE   __addr__(0x1576);
-        extern unsigned char CON_REQ_FLAG   __addr__(0x1464);
-        extern unsigned char CON_REQ_UNIT   __addr__(0x1465);
-        extern unsigned char CON_REQ_CMD    __addr__(0x1466);
-
         void reset_fcb_flags(void) __addr__(0x7A85)
         {
             RENAME_STATE = 0;
             CON_REQ_FLAG = 0x80;
             CON_REQ_UNIT = 0;
-            CON_REQ_CMD  = 0x0D;
+            CON_REQ_CMD = 0x0D;
         }
         ;@endcompiled
 
@@ -13797,12 +13367,11 @@ FIND_WILDCARD_QUESTION_MARK:
         {
             unsigned char i;
 
-            i = 0;
-            do {
-                if (fcb[i] == 0x3F)
+            for (i = 0; i < 0xB; i++) {
+                if (fcb[i] == 0x3F) {
                     return 1;
-                i++;
-            } while (i < 0x0B);
+                }
+            }
             return 0;
         }
         ;@endcompiled
@@ -13905,7 +13474,7 @@ COMPARE_DIR_ENTRY_REAL:
         cmp     byte [bp-4], 8                                 ;#7BE4: 80 7E FC 08
         jnz     short SET_ERR_AX_0                             ;#7BE8: 75 1D
 COMPARE_DIR_LOOKUP_DRIVER:
-        ; Names matched — invoke LOOKUP_DRIVER_BY_NAME_LOOP for driver alias check
+        ; Names matched — invoke COMPARE_NAME_WILDCARD for driver alias check
         mov     ax, 0Bh                                        ;#7BEA: B8 0B 00
         push    ax                                             ;#7BED: 50
         mov     ax, [bp+4]                                     ;#7BEE: 8B 46 04
@@ -13915,7 +13484,7 @@ COMPARE_DIR_LOOKUP_DRIVER:
         push    ax                                             ;#7BF6: 50
         push    word [bp+0Ah]                                  ;#7BF7: FF 76 0A
         push    word [bp+8]                                    ;#7BFA: FF 76 08
-        call    near LOOKUP_DRIVER_BY_NAME_LOOP                ;#7BFD: E8 21 A4
+        call    near COMPARE_NAME_WILDCARD                     ;#7BFD: E8 21 A4
         add     sp, 0Ah                                        ;#7C00: 83 C4 0A
         or      al, al                                         ;#7C03: 0A C0
         jnz     short COMPARE_DIR_RET_MATCH                    ;#7C05: 75 A7
@@ -13928,24 +13497,25 @@ COMPARE_DIR_ENTRY_RET:
         pop     bp                                             ;#7C0B: 5D
         ret                                                    ;#7C0C: C3
 
-COMPUTE_FAT_SECTOR:
+LOCATE_DIR_ENTRY_IN_SECTOR:
         ; From FCB at [bp+4] — compute (cluster *shifted+base) cluster-to-sector
-        ;@compiled compute_fat_sector 7C0D 66
+        ;@compiled locate_dir_entry_in_sector 7C0D 66
         /*
-         * COMPUTE_FAT_SECTOR @ 0x7C0D in SISNE.SIS (66 bytes).
+         * LOCATE_DIR_ENTRY_IN_SECTOR @ 0x7C0D in SISNE.SIS (66 bytes).
          *
-         * From an FCB position, compute the byte pointer of the intra-cluster sector:
-         * the cluster size (DPB+2 >> 5) divides the FCB byte offset (FCB+0x0D); the
-         * remainder, scaled back by 32, is added to the caller's base far pointer.
+         * Compute the byte pointer of a 32-byte directory entry within a sector buffer:
+         * entries-per-sector = (bytes/sector at DPB+2) >> 5; the dir index (FCB+0x0D)
+         * modulo that gives the slot, scaled by 32 and added to the caller's `base`.
          */
 
-        unsigned char far *compute_fat_sector(unsigned char far *fcb, unsigned char far *base) __addr__(0x7C0D)
+        unsigned char far *locate_dir_entry_in_sector(unsigned char far *fcb,
+                                                      unsigned char far *base) __addr__(0x7C0D)
         {
-            unsigned int offset;           /* bp-2 */
-            unsigned int clustersize;      /* bp-4 */
-            unsigned char far *dpb;        /* bp-8 */
+            unsigned int offset;      /* bp-2 */
+            unsigned int clustersize; /* bp-4 */
+            unsigned char far *dpb;   /* bp-8 */
 
-            dpb = *(unsigned char far * far *)(fcb + 0x11);
+            dpb = *(unsigned char far *far *)(fcb + 0x11);
             clustersize = *(unsigned int far *)(dpb + 2) >> 5;
             offset = *(unsigned int far *)(fcb + 0x0D) % clustersize;
             return base + (offset << 5);
@@ -14043,7 +13613,7 @@ SUBST_WALK_LOOP:
         mov     ax, 11F7h                                      ;#7D09: B8 F7 11
         push    ds                                             ;#7D0C: 1E
         push    ax                                             ;#7D0D: 50
-        call    near LOOKUP_DRIVER_BY_NAME_LOOP                ;#7D0E: E8 10 A3
+        call    near COMPARE_NAME_WILDCARD                     ;#7D0E: E8 10 A3
         add     sp, 0Ah                                        ;#7D11: 83 C4 0A
         or      al, al                                         ;#7D14: 0A C0
         jz      short OPEN_FCB_NAME_NOT_DRIVER                 ;#7D16: 74 2B
@@ -14064,7 +13634,7 @@ MARK_FCB_DIR_TYPE:
         jmp     near WRITE_DIR_ENTRY_OK_RET                    ;#7D40: E9 22 04
 
 OPEN_FCB_NAME_NOT_DRIVER:
-        ; LOOKUP_DRIVER_BY_NAME_LOOP returned 0; restore BL drive code, retry
+        ; COMPARE_NAME_WILDCARD returned 0; restore BL drive code, retry
         mov     bl, [bp-4]                                     ;#7D43: 8A 5E FC
         jmp     near SUBST_WALK_LOOP                           ;#7D46: E9 7D FF
 
@@ -14316,7 +13886,7 @@ DIR_OPEN_RESUME_PARTIAL_PATH:
         div     word [bp-1Eh]                                  ;#7F64: F7 76 E2
         mov     [bp-12h], dx                                   ;#7F67: 89 56 EE
 LOAD_DATA_VIA_TWO_CLUSTERS:
-        ; Load data block via READ_2_CLUSTERS_AT_OFFSET when [0F8Eh] != FFFFh
+        ; Load data block via READ_CLUSTER_SECTOR when [0F8Eh] != FFFFh
         cmp     word [0F8Eh], 0FFFFh                           ;#7F6A: 83 3E 8E 0F FF
         jz      short DIR_SEARCH_MATCH_FOUND                   ;#7F6F: 74 6D
         push    word [bp+8]                                    ;#7F71: FF 76 08
@@ -14325,7 +13895,7 @@ LOAD_DATA_VIA_TWO_CLUSTERS:
         mov     al, [bp-14h]                                   ;#7F7B: 8A 46 EC
         sub     ah, ah                                         ;#7F7E: 2A E4
         push    ax                                             ;#7F80: 50
-        call    near READ_2_CLUSTERS_AT_OFFSET                 ;#7F81: E8 B8 8D
+        call    near READ_CLUSTER_SECTOR                       ;#7F81: E8 B8 8D
         add     sp, 8                                          ;#7F84: 83 C4 08
         mov     ax, [bp-8]                                     ;#7F87: 8B 46 F8
         sub     dx, dx                                         ;#7F8A: 2B D2
@@ -14338,7 +13908,7 @@ LOAD_DATA_VIA_TWO_CLUSTERS:
         mov     [bp-0Eh], dx                                   ;#7F9B: 89 56 F2
         mov     [bp-0Ch], cx                                   ;#7F9E: 89 4E F4
 DIR_SCAN_COMPARE_TWO_CLUSTER_LOOP:
-        ; Compare loop entry after READ_2_CLUSTERS_AT_OFFSET path
+        ; Compare loop entry after READ_CLUSTER_SECTOR path
         les     bx, [bp-0Eh]                                   ;#7FA1: C4 5E F2
         mov     al, [es:bx]                                    ;#7FA4: 26 8A 07
         mov     [bp-26h], al                                   ;#7FA7: 88 46 DA
@@ -14449,7 +14019,7 @@ DIR_SCAN_WRITE_CLUSTER_LOOP:
         mov     al, [bp-14h]                                   ;#807E: 8A 46 EC
         sub     ah, ah                                         ;#8081: 2A E4
         push    ax                                             ;#8083: 50
-        call    near WRITE_SECTORS_FROM_DPB                    ;#8084: E8 0E 8D
+        call    near GET_DATA_SECTOR_BUFFER                    ;#8084: E8 0E 8D
         add     sp, 8                                          ;#8087: 83 C4 08
         push    word [bp-20h]                                  ;#808A: FF 76 E0
         push    word [bp-0Ch]                                  ;#808D: FF 76 F4
@@ -14475,7 +14045,7 @@ DIR_SCAN_WRITE_LOOP_TEST:
         mov     al, [bp-14h]                                   ;#80BC: 8A 46 EC
         sub     ah, ah                                         ;#80BF: 2A E4
         push    ax                                             ;#80C1: 50
-        call    near WRITE_SECTORS_FROM_DPB                    ;#80C2: E8 D0 8C
+        call    near GET_DATA_SECTOR_BUFFER                    ;#80C2: E8 D0 8C
         add     sp, 8                                          ;#80C5: 83 C4 08
         push    word [bp-20h]                                  ;#80C8: FF 76 E0
         push    word [bp-0Ch]                                  ;#80CB: FF 76 F4
@@ -14774,7 +14344,7 @@ SET_FCB_FAT_SECTOR_LOAD:
         push    word [bp-0Ch]                                  ;#83AC: FF 76 F4
         push    es                                             ;#83AF: 06
         push    bx                                             ;#83B0: 53
-        call    near COMPUTE_FAT_SECTOR                        ;#83B1: E8 59 F8
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#83B1: E8 59 F8
         add     sp, 8                                          ;#83B4: 83 C4 08
         mov     [bp-14h], ax                                   ;#83B7: 89 46 EC
         mov     [bp-12h], dx                                   ;#83BA: 89 56 EE
@@ -15964,7 +15534,7 @@ PROCESS_DIR_FINAL_FILL:
         mov     ax, 1434h                                      ;#8D94: B8 34 14
         push    ds                                             ;#8D97: 1E
         push    ax                                             ;#8D98: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#8D99: E8 71 EE
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#8D99: E8 71 EE
         add     sp, 8                                          ;#8D9C: 83 C4 08
         mov     [bp-22h], ax                                   ;#8D9F: 89 46 DE
         mov     [bp-20h], dx                                   ;#8DA2: 89 56 E0
@@ -16506,13 +16076,13 @@ DIR_OP_RAISE_2:
         jmp     near DIR_OP_RAISE_DRIVE_ERR                    ;#9155: E9 59 FF
 
 DIR_OP_COMPUTE_FAT_SECTOR:
-        ; Push [bp-10h]/[bp-12h] cluster; COMPUTE_FAT_SECTOR for dir
+        ; Push [bp-10h]/[bp-12h] cluster; LOCATE_DIR_ENTRY_IN_SECTOR for dir
         push    word [bp-10h]                                  ;#9158: FF 76 F0
         push    word [bp-12h]                                  ;#915B: FF 76 EE
         mov     ax, 1434h                                      ;#915E: B8 34 14
         push    ds                                             ;#9161: 1E
         push    ax                                             ;#9162: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#9163: E8 A7 EA
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#9163: E8 A7 EA
         add     sp, 8                                          ;#9166: 83 C4 08
         mov     [bp-16h], ax                                   ;#9169: 89 46 EA
         mov     [bp-14h], dx                                   ;#916C: 89 56 EC
@@ -16762,13 +16332,13 @@ DOS_FN_16_INIT_DIR_HANDLE:
         jmp     near FCB_OPEN_RAISE_DRIVE_ERR                  ;#934C: E9 44 FF
 
 DOS_FN_16_NEW_FILE_FAT:
-        ; Push [bp-1Eh]/[bp-20h] cluster; COMPUTE_FAT_SECTOR for new file
+        ; Push [bp-1Eh]/[bp-20h] cluster; LOCATE_DIR_ENTRY_IN_SECTOR for new file
         push    word [bp-1Eh]                                  ;#934F: FF 76 E2
         push    word [bp-20h]                                  ;#9352: FF 76 E0
         mov     ax, 1434h                                      ;#9355: B8 34 14
         push    ds                                             ;#9358: 1E
         push    ax                                             ;#9359: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#935A: E8 B0 E8
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#935A: E8 B0 E8
         add     sp, 8                                          ;#935D: 83 C4 08
         mov     [bp-24h], ax                                   ;#9360: 89 46 DC
         mov     [bp-22h], dx                                   ;#9363: 89 56 DE
@@ -16785,13 +16355,13 @@ DOS_FN_16_NEW_FILE_FAT:
         jmp     near INIT_NEW_FCB_METADATA                     ;#937E: E9 AA 00
 
 DOS_FN_16_EXISTING_FAT:
-        ; Push [bp-1Eh]/[bp-20h] cluster; COMPUTE_FAT_SECTOR for existing
+        ; Push [bp-1Eh]/[bp-20h] cluster; LOCATE_DIR_ENTRY_IN_SECTOR for existing
         push    word [bp-1Eh]                                  ;#9381: FF 76 E2
         push    word [bp-20h]                                  ;#9384: FF 76 E0
         mov     ax, 1434h                                      ;#9387: B8 34 14
         push    ds                                             ;#938A: 1E
         push    ax                                             ;#938B: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#938C: E8 7E E8
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#938C: E8 7E E8
         add     sp, 8                                          ;#938F: 83 C4 08
         mov     [bp-24h], ax                                   ;#9392: 89 46 DC
         mov     [bp-22h], dx                                   ;#9395: 89 56 DE
@@ -17351,13 +16921,13 @@ EXEC_PROG_CHECK_TYPE_8:
         jmp     near EXEC_PROG_RAISE_ERR_2                     ;#9841: E9 C0 02
 
 EXEC_PROG_TYPE_8_COMPUTE_FAT:
-        ; Type 8 — push cluster; COMPUTE_FAT_SECTOR; MEM_COPY_FAR header bytes
+        ; Type 8 — push cluster; LOCATE_DIR_ENTRY_IN_SECTOR; MEM_COPY_FAR header bytes
         push    word [bp-12h]                                  ;#9844: FF 76 EE
         push    word [bp-14h]                                  ;#9847: FF 76 EC
         mov     ax, 1434h                                      ;#984A: B8 34 14
         push    ds                                             ;#984D: 1E
         push    ax                                             ;#984E: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#984F: E8 BB E3
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#984F: E8 BB E3
         add     sp, 8                                          ;#9852: 83 C4 08
         mov     [bp-1Ah], ax                                   ;#9855: 89 46 E6
         mov     [bp-18h], dx                                   ;#9858: 89 56 E8
@@ -17588,13 +17158,13 @@ EXEC_PROG_CHECK_MATCH_FLAG:
         jmp     near RAISE_ERR_5_MODE2                         ;#9A04: E9 F3 00
 
 EXEC_PROG_RENAME_FOUND_FAT:
-        ; Push args; COMPUTE_FAT_SECTOR for renamed file; NETWORK_OR_LOCAL_COPY
+        ; Push args; LOCATE_DIR_ENTRY_IN_SECTOR for renamed file; NETWORK_OR_LOCAL_COPY
         push    word [bp-12h]                                  ;#9A07: FF 76 EE
         push    word [bp-14h]                                  ;#9A0A: FF 76 EC
         mov     ax, 1434h                                      ;#9A0D: B8 34 14
         push    ds                                             ;#9A10: 1E
         push    ax                                             ;#9A11: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#9A12: E8 F8 E1
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#9A12: E8 F8 E1
         add     sp, 8                                          ;#9A15: 83 C4 08
         mov     [bp-1Ah], ax                                   ;#9A18: 89 46 E6
         mov     [bp-18h], dx                                   ;#9A1B: 89 56 E8
@@ -17871,13 +17441,13 @@ DOS_FN_23_RESUME_SCAN:
         cmp     ax, 1                                          ;#9C1D: 3D 01 00
         jnz     short DOS_FN_23_RESUME_SCAN                    ;#9C20: 75 C9
 DOS_FN_23_FOUND_COMPUTE_FAT:
-        ; Found entry — push [bp-1Ah]/[bp-1Ch] cluster; COMPUTE_FAT_SECTOR
+        ; Found entry — push [bp-1Ah]/[bp-1Ch] cluster; LOCATE_DIR_ENTRY_IN_SECTOR
         push    word [bp-1Ah]                                  ;#9C22: FF 76 E6
         push    word [bp-1Ch]                                  ;#9C25: FF 76 E4
         mov     ax, 1434h                                      ;#9C28: B8 34 14
         push    ds                                             ;#9C2B: 1E
         push    ax                                             ;#9C2C: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#9C2D: E8 DD DF
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#9C2D: E8 DD DF
         add     sp, 8                                          ;#9C30: 83 C4 08
         mov     [bp-22h], ax                                   ;#9C33: 89 46 DE
         mov     [bp-20h], dx                                   ;#9C36: 89 56 E0
@@ -18143,7 +17713,7 @@ DOS_FN_0F_WRITE_DIR_ENTRY:
         mov     ax, 1434h                                      ;#9E48: B8 34 14
         push    ds                                             ;#9E4B: 1E
         push    ax                                             ;#9E4C: 50
-        call    near COMPUTE_FAT_SECTOR                        ;#9E4D: E8 BD DD
+        call    near LOCATE_DIR_ENTRY_IN_SECTOR                ;#9E4D: E8 BD DD
         add     sp, 8                                          ;#9E50: 83 C4 08
         mov     [bp-7Ah], ax                                   ;#9E53: 89 46 86
         mov     [bp-78h], dx                                   ;#9E56: 89 56 88
@@ -18881,12 +18451,11 @@ IS_CTRL_CHAR_PRINTABLE:
          * literal keys 0x14 and 0x15; otherwise 0.
          */
 
-        extern unsigned char CUR_CHAR __addr__(0x1088);
-
         int is_ctrl_char_printable(void) __addr__(0xA3C6)
         {
-            if (CUR_CHAR < 0x20 && CUR_CHAR != 0x15 && CUR_CHAR != 0x14)
+            if (CUR_CHAR < 0x20 && CUR_CHAR != 0x15 && CUR_CHAR != 0x14) {
                 return 1;
+            }
             return 0;
         }
         ;@endcompiled
@@ -20719,9 +20288,6 @@ CON_INPUT_DRIVER_SIGNAL:
         ; Critical-section special — return AL=3 (signal pseudo-char)
         mov     al, 3                                          ;#B1F1: B0 03
         ret                                                    ;#B1F3: C3
-
-DEVICE_OUTPUT_PACKET:
-        ; Build 1Ah-byte cmd 4 (output) packet from caller args; CALL_DRIVER
         push    bp                                             ;#B1F4: 55
         mov     bp, sp                                         ;#B1F5: 8B EC
         push    di                                             ;#B1F7: 57
@@ -21531,7 +21097,7 @@ READ_FAT12_ENTRY:
         push    ax                                             ;#B7B8: 50
         inc     si                                             ;#B7B9: 46
         push    si                                             ;#B7BA: 56
-        call    near FAT_WRITE_DIRTY_MCB                       ;#B7BB: E8 92 54
+        call    near FAT_RELOAD_SECTOR_WINDOW                  ;#B7BB: E8 92 54
         add     sp, 4                                          ;#B7BE: 83 C4 04
         pop     ax                                             ;#B7C1: 58
         les     di, [14E6h]                                    ;#B7C2: C4 3E E6 14
@@ -21598,12 +21164,12 @@ WRITE_FAT12_ODD_CLUSTER:
         or      al, dl                                         ;#B835: 0A C2
         mov     [es:bx+di], al                                 ;#B837: 26 88 01
 WRITE_FAT12_FLUSH_RELOAD:
-        ; After half-byte write, FAT_WRITE_DIRTY_MCB to flush + reload pointer
+        ; After half-byte write, FAT_RELOAD_SECTOR_WINDOW to flush + reload pointer
         xor     ax, ax                                         ;#B83A: 33 C0
         push    ax                                             ;#B83C: 50
         inc     si                                             ;#B83D: 46
         push    si                                             ;#B83E: 56
-        call    near FAT_WRITE_DIRTY_MCB                       ;#B83F: E8 0E 54
+        call    near FAT_RELOAD_SECTOR_WINDOW                  ;#B83F: E8 0E 54
         add     sp, 4                                          ;#B842: 83 C4 04
         les     di, [14E6h]                                    ;#B845: C4 3E E6 14
         mov     dx, [bp+6]                                     ;#B849: 8B 56 06
@@ -21675,10 +21241,10 @@ FAT_SECTOR_ADDR_RANGE_HI:
         cmp     si, [1540h]                                    ;#B8BA: 3B 36 40 15
         jbe     short FAT_LOCATE_ENTRY_PTR                     ;#B8BE: 76 08
 FAT_CACHE_FLUSH_RELOAD:
-        ; FAT sector out of cached range — FAT_WRITE_DIRTY_MCB to reload
+        ; FAT sector out of cached range — FAT_RELOAD_SECTOR_WINDOW to reload
         push    dx                                             ;#B8C0: 52
         push    si                                             ;#B8C1: 56
-        call    near FAT_WRITE_DIRTY_MCB                       ;#B8C2: E8 8B 53
+        call    near FAT_RELOAD_SECTOR_WINDOW                  ;#B8C2: E8 8B 53
         add     sp, 4                                          ;#B8C5: 83 C4 04
 FAT_LOCATE_ENTRY_PTR:
         ; Pointer setup — ES:DI = [14E6h], BX = SI - [14EAh] (FAT entry offset)
@@ -21940,12 +21506,7 @@ SET_CURRENT_DRIVE:
          * Store the default drive index into the SDA current-drive byte at [2E4h].
          */
 
-        extern unsigned char CURRENT_DRIVE __addr__(0x02E4);
-
-        void set_current_drive(unsigned char drive) __addr__(0xBA05)
-        {
-            CURRENT_DRIVE = drive;
-        }
+        void set_current_drive(unsigned char drive) __addr__(0xBA05) { CURRENT_DRIVE = drive; }
         ;@endcompiled
 
 BUILD_DPB_FROM_BPB:
@@ -23446,7 +23007,7 @@ INT2F_WRITE_DELETE_RETF:
         push    cx                                             ;#C520: 51
         push    dx                                             ;#C521: 52
         push    bx                                             ;#C522: 53
-        call    near SHRINK_FCB_VIA_FIND                       ;#C523: E8 BF 79
+        call    near SET_FCB_FILE_POSITION                     ;#C523: E8 BF 79
         add     sp, 6                                          ;#C526: 83 C4 06
         retf                                                   ;#C529: CB
 
@@ -29027,9 +28588,6 @@ NOTIFY_SHARE_FCB:
         int     2Fh                                            ;#EADA: CD 2F
         pop     bp                                             ;#EADC: 5D
         ret                                                    ;#EADD: C3
-
-INT2F_NETWORK_1085:
-        ; INT 2Fh AX=1085h — SHARE/network function with FCB/buffer triple
         push    bp                                             ;#EADE: 55
         mov     bp, sp                                         ;#EADF: 8B EC
         push    si                                             ;#EAE1: 56
