@@ -67,6 +67,39 @@ into one shared block.
 > placed *below* its alternative (e.g. a loop body below its exit code), no
 > `if/else` arrangement produces it — that requires a `goto`.
 
+### Cross-jumped `if` blocks — first- vs last-occurrence placement
+
+Identical terminating `if (c) { body }` blocks (>= 2 occurrences) share ONE
+cold copy. Default: the copy is placed inline at the **first** occurrence and
+later ones JCC **back** to it (read_fcb_with_network's three
+`{ *count = 0; return 1; }`).
+
+**Defer-to-last** variant: when the shared body is `{ X = n; …; return K; }`
+and a bare guard `if (X == n2) { return K; }` exists — one that **tests the
+very lvalue the block stores** (the hand-written "skip the redundant store
+into the return-suffix" pattern) — the copy is anchored at the **last**
+occurrence instead: earlier occurrences jump **forward** to it, and the guard
+jumps **into** its `return K` suffix (past the store). This is
+FCB_RANDOM_BLOCK_IO's fail/ret-zero block, placed mid-CON-path:
+
+```
+        cmp word [bx], 0    ; if (*count == 0)  — the guard
+        jnz +3 / jmp RZ     ;   → forward, INTO the block's return
+        …
+        jmp FZ              ; earlier { *count = 0; return 0; } sites
+        …
+        cmp word [bp-0Eh], 0 ; the LAST occurrence (CON path)
+        jnz skip
+FZ:     mov word [bx], 0    ; *count = 0
+RZ:     xor ax, ax          ; return 0
+        jmp epilogue
+skip:   …
+```
+
+A guard testing something else (write_fcb's `if (fat_chain(…) != 0) return 1`)
+or returning a different K (read_fcb's `return 0` guard vs `{…; return 1}`
+blocks) keeps the default first-occurrence placement.
+
 ---
 
 ## `while`
@@ -101,6 +134,35 @@ condition). `break` → `exit`, `continue` → `loop` (the top).
 > `while (cond)`. Every simple-`while` in the codebase was converted this way
 > (atoi_decimal, dos_fn_09, invalidate_cached_fcb, lookup_token,
 > read_line_to_buffer).
+
+### Deferred reg-var return — `return si` exits share the tail block
+
+When the function's **last** statement is `return <reg-var>` (SI/DI) and the
+same `return` appears in **>= 2** places, the one shared `mov ax,si` block is
+emitted **at the tail**, falling into the epilogue; every earlier exit reaches
+it with a jump instead of loading AX locally:
+
+- a plain mid-function `return si;` → `jmp RET` (no `mov ax,si` at the site);
+- `if (cond) return si;` → a single JCC to RET (relaxation rewrites it to
+  `jcc +3; jmp RET` when out of short range);
+- a `while (cond) { … }` **immediately followed by** `return si;` fuses: the
+  loop's false test jumps straight to RET, and the (unreachable) `return`
+  after the loop emits nothing.
+
+```
+top:    cmp [bp+6], si    ; while (count > si)
+        ja  body
+        jmp RET           ; loop exit IS the return
+body:   …
+        jmp top
+        …                 ; other paths: jcc/jmp RET
+RET:    mov ax, si        ; the tail `return si` (falls into the epilogue)
+```
+
+This is CHAR_DEVICE_IO's layout (RET at 0x2390). Before this idiom every exit
+needed an explicit `goto ret`; now they are all structured `return si`. The
+placement differs from the ordinary shared-return rule (block at the first
+plain occurrence) — the reg-var gate defers it to the tail.
 
 ---
 
