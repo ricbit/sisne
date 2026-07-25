@@ -1,6 +1,6 @@
 ; SISNE (PC/8086, SCOPUS, 1983) — disk 1 main program (SISNE.SIS, loaded by init)
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-07-23
+; Last update at 2026-07-25
 ;
         .8086
         .model tiny
@@ -77,8 +77,8 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
             unsigned char s_res;         /* 06:  ... high byte of the flags word       */
             struct drive_param_block far *s_devptr; /* 07: driver / DPB pointer       */
             unsigned int  s_firclu;      /* 0B: first cluster                         */
-            unsigned int  s_date;        /* 0D: date                                  */
-            unsigned int  s_time;        /* 0F: time                                  */
+            unsigned int  s_time;        /* 0D: time                                  */
+            unsigned int  s_date;        /* 0F: date                                  */
             union { long s_size;         /* 11: file size                             */
                     struct { unsigned int s_sizelo;    /* 11: its low word           */
                              unsigned int s_sizehi; };};   /* 13: its high word      */
@@ -163,7 +163,9 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
             unsigned int  de_time;             /* 16 */
             unsigned int  de_date;             /* 18 */
             unsigned int  de_cluster;          /* 1A: first cluster                 */
-            unsigned long de_size;             /* 1C: file size in bytes            */
+            union { unsigned long de_size;     /* 1C: file size in bytes            */
+                    struct { unsigned int de_sizelo;   /* 1C: its low word          */
+                             unsigned int de_sizehi; };};  /* 1E: its high word     */
         };
         /* SISNE file control block.  Matches DOS 2.x sys_fcb (DOSSYM_v211.ASM, verified
          * against microsoft/MS-DOS v2.0) through @18; f_size is FILSIZ+DRVBP as one
@@ -201,12 +203,36 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
             unsigned char f_curec;             /* 20: current record (DOS fcb_NR)     */
             long          f_datetime;          /* 21: packed date/time; DOS fcb_RR    */
         };                                     /*     (random record) reused as d/t   */
+        /* DOS extended FCB: a 7-byte prefix (FFh flag, 5 reserved bytes, an attribute
+         * byte) in front of a normal FCB.  Callers hand these to the FCB handlers, which
+         * skip the prefix via GET_EXTENDED_FCB_ATTR to reach the embedded FCB. */
+        struct fcb_ext {
+            unsigned char x_flag;              /* 00: FFh marks an extended FCB */
+            unsigned char x_resv[5];           /* 01: reserved                  */
+            unsigned char x_attr;              /* 06: attribute byte            */
+            struct fcb    x_fcb;               /* 07: the normal FCB            */
+        };
+        /* DOS directory-search record (SDA @ 1434h): the parsed 8.3 search pattern (an
+         * FCB name area) plus the directory-scan working state that overlays what a
+         * plain FCB would use for its extent/size/date/cluster bytes. */
+        struct dir_search {
+            unsigned char f_drvcode;           /* 00: search drive designator          */
+            unsigned char f_name[11];          /* 01: parsed 8.3 search pattern         */
+            unsigned char s_attr;              /* 0C: search attribute mask             */
+            unsigned int  s_cluster;           /* 0D: current directory cluster scanned */
+            unsigned int  s_parent;            /* 0F: parent directory cluster          */
+            struct drive_param_block far *s_dpb; /* 11: request DPB pointer             */
+            unsigned char s_fcbattr;           /* 15: matched entry's attribute byte    */
+            unsigned char s_resv16[8];         /* 16: reserved (overlays FCB time/pos)  */
+        };                                     /* 1E: DELETE_PATH_1452 buffer follows    */
         /* Near fragment descriptor passed to READ/WRITE_AT_FCB_POSITION: the leading
          * and trailing partial-fragment cluster/LBAs plus the caller's buffer segment. */
         struct frag_desc {
-            long          fr_cluster0;         /* 00: leading-fragment cluster       */
-            long          fr_cluster1;         /* 04: trailing-fragment cluster      */
-            unsigned int  fr_seg;              /* 08: buffer segment                 */
+            union { long fr_cluster0;          /* 00: leading-fragment cluster        */
+                    unsigned int fr_cluster0_lo; };  /* its low word (sector-align)   */
+            union { long fr_cluster1;          /* 04: trailing-fragment cluster       */
+                    unsigned int fr_cluster1_lo; };  /* its low word (sector-align)   */
+            unsigned int  fr_seg;              /* 08: buffer segment                  */
         };
         /* DOS device-driver request packet (near, built on the stack).  Padded to the
          * 26-byte buffer BUILD_DRIVER_REQUEST reserves so the stack frame is unchanged. */
@@ -288,58 +314,7 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
         /* ---- functions (address order) ---- */
         extern int read_byte(void) __addr__(0x00F9);
         extern void print_nul_string(char *msg) __addr__(0x01B7);
-        extern void print_error(int code) __addr__(0x089D);
-        extern int dos_fn_01_char_input_with_echo(unsigned char far *fcb) __addr__(0x08DB);
-        extern void dos_fn_06_direct_console_io(unsigned char far *fcb) __addr__(0x095A);
-        extern void dos_fn_07_direct_console_input(unsigned char far *fcb) __addr__(0x09AE);
-        extern void dos_fn_08_console_input_no_echo(unsigned char far *fcb) __addr__(0x09C4);
-        extern void dos_fn_0a_buffered_kbd_input(unsigned char far *fcb) __addr__(0x0A0F);
-        extern long disk_request_dispatch(unsigned char op, long buf, unsigned char x, unsigned char far *lba) __addr__(0x0AAB);
-        extern void reset_dpb_probe_drive(unsigned char drive) __addr__(0x0B14);
-        extern void init_fcb_from_drive(unsigned char drive, int start) __addr__(0x0C06);
-        extern void sector_read_at_dpb_offset(unsigned char drive, long rel, unsigned char far **out) __addr__(0x0CF5);
-        extern void get_data_sector_buffer(unsigned char drive, int cluster, int extra, unsigned char far **out) __addr__(0x0D95);
-        extern int read_path_chars(unsigned char drive, int start, unsigned int n) __addr__(0x0E00);
-        extern int reserve_sector_for_drive(unsigned char drive, int hint) __addr__(0x0E49);
-        extern void invalidate_cached_fcb(unsigned char drive, int start, int flag, long size) __addr__(0x0F31);
-        extern void compute_fcb_sector_number(void) __addr__(0x1220);
-        extern void init_fcb_and_cache_dpb(unsigned char drive, int start, unsigned int file_off, unsigned int length) __addr__(0x124A);
-        extern void advance_sector_and_refresh_mcb(void) __addr__(0x1363);
-        extern void build_fat_request(unsigned int seg, long val) __addr__(0x13B4);
-        extern void copy_fcb_fragment_and_advance(unsigned int len, unsigned char far **bufp, unsigned char wflag) __addr__(0x13F3);
-        extern void read_or_write_fcb_data(unsigned char far **bufp, unsigned char wflag) __addr__(0x1474);
-        extern long read_fat_via_dispatch(unsigned int seg, long val) __addr__(0x15A3);
-        extern unsigned int write_at_fcb_position(unsigned char drive, unsigned int chunk, unsigned int coff, unsigned int bytes, unsigned char far *buf, unsigned int *work) __addr__(0x15CA);
-        extern unsigned int read_at_fcb_position(unsigned char drive, unsigned int chunk, unsigned int coff, unsigned int bytes, unsigned char far *buf, unsigned char ext, unsigned int *work) __addr__(0x166F);
-        extern void init_sda_driver_links(void) __addr__(0x176B);
-        extern unsigned int get_sda_preserved_size(void) __addr__(0x178E);
-        extern void load_dir_fcb_into_globals(unsigned char far *fcb) __addr__(0x17C3);
-        extern unsigned char far *get_fcb_driver_vector(struct fcb far *fcb) __addr__(0x17F8);
-        extern unsigned char find_fcb_for_drive(int drive, unsigned char far **out_rec) __addr__(0x1BBC);
-        extern int open_fcb_by_drive(int drive) __addr__(0x1C36);
-        extern void shift_driver_records_flag(unsigned char far *driver) __addr__(0x1CDB);
-        extern unsigned char far *resolve_fcb_driver(unsigned char far *fcb) __addr__(0x1D26);
-        extern unsigned int retry_network_loop(struct system_file_table far *driver, unsigned int bytes, unsigned int z) __addr__(0x1DDC);
-        extern int set_fcb_handle_or_clear(struct int21_regs far *rec, int code) __addr__(0x1E96);
-        extern unsigned int build_driver_request(unsigned char cmd, unsigned char unit, struct fcb far *fcb, unsigned int p_0c, unsigned int p_0e, unsigned long data) __addr__(0x1EBC);
-        extern unsigned char get_deleted_fcb_attr(unsigned char far **rec) __addr__(0x1F30);
-        extern long get_fcb_datetime_or_now(unsigned char far *rec) __addr__(0x1F5D);
-        extern long get_fcb_datetime(unsigned char far *rec) __addr__(0x1FB3);
-        extern void set_fcb_time_fields(unsigned char far *rec) __addr__(0x1FE6);
-        extern unsigned char compare_name_wildcard(unsigned char far *a, unsigned char far *b, unsigned char len) __addr__(0x2021);
-        extern unsigned int read_next_buffer_chunk(void) __addr__(0x205F);
-        extern int read_back_fat_entry(void) __addr__(0x20A0);
-        extern int read_or_follow_fat_chain(long pos) __addr__(0x2170);
-        extern void align_io_to_sector(unsigned int bytes) __addr__(0x21F7);
-        extern unsigned int char_device_io(unsigned char attr, unsigned int bytes, unsigned char far *buf) __addr__(0x2240);
-        extern void set_dir_fcb_position(unsigned char far *driver, unsigned int bytes, unsigned int z, unsigned char far *fcb) __addr__(0x2397);
-        extern unsigned char read_fcb_with_network(unsigned char far *rec, unsigned char far *dta, unsigned int *count) __addr__(0x23EF);
-        extern unsigned char write_fcb_with_network(unsigned char far *rec, unsigned char far *dta, unsigned int *count) __addr__(0x277B);
-        extern int fcb_random_block_io(int drive, unsigned char far *buffer, unsigned int *count) __addr__(0x2C5A);
         extern int fcb_random_block_write(int drive, unsigned char far *buffer, unsigned int *count) __addr__(0x2F29);
-        extern void write_fcb_to_con_or_driver(int op, unsigned char far *rec) __addr__(0x4134);
-        extern void trim_trailing_name_spaces(unsigned char far *name) __addr__(0x48DD);
-        extern unsigned char parse_filespec_to_fcb(unsigned char far **pp, unsigned char far *dst) __addr__(0x495A);
         extern unsigned char check_file_attr_bits(int a, int b, unsigned char attr) __addr__(0x4AF9);
         extern unsigned char parse_filename_to_fcb(unsigned char far *path, struct fcb far *fcb, unsigned char far **work) __addr__(0x4C4E);
         extern void copy_dpb_entry_to_sda(int drive, unsigned char far *path) __addr__(0x5160);
@@ -347,61 +322,18 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
         extern unsigned char process_path_lookup_drive(unsigned char far *src, unsigned char far *dst, unsigned int *work) __addr__(0x52E6);
         extern int process_driver_request(unsigned char far *fcb, int cmd) __addr__(0x5FC4);
         extern unsigned char load_exe_header_or_com(unsigned char far *path, unsigned int *handle, unsigned char drive) __addr__(0x64F7);
-        extern unsigned int copy_dpb_and_lookup(unsigned char drive) __addr__(0x77B3);
-        extern void network_or_local_copy(unsigned char far *dst, int idx) __addr__(0x7837);
-        extern unsigned char get_drive_type(unsigned char drive) __addr__(0x7895);
         extern void compute_cluster_info_for_fcb(unsigned char far *name, unsigned int far *cluster, unsigned char far *out) __addr__(0x78D8);
-        extern void copy_fcb_fields(unsigned char far *fcb, unsigned char far *src, unsigned char far *name) __addr__(0x7987);
-        extern void init_fcb_timestamp(struct fcb far *fcb) __addr__(0x7A44);
-        extern void reset_fcb_flags(void) __addr__(0x7A85);
-        extern unsigned char find_wildcard_question_mark(unsigned char far *fcb) __addr__(0x7AF9);
-        extern unsigned char open_file_by_fcb_name(unsigned char far *name) __addr__(0x7B27);
-        extern unsigned char far *locate_dir_entry_in_sector(struct fcb far *fcb, unsigned char far *base) __addr__(0x7C0D);
         extern unsigned char write_dir_entry(struct fcb far *fcb, unsigned char far **work) __addr__(0x7C4F);
         extern unsigned char fcb_bit15_check(struct fcb far *fcb, unsigned int flag) __addr__(0x816C);
-        extern unsigned char set_fcb_drive_type(struct fcb far *fcb, struct fcb far *out, unsigned char attr) __addr__(0x843A);
         extern unsigned char dispatch_fcb_open(unsigned char far *rec) __addr__(0x85AB);
-        extern unsigned int bind_fcb_to_driver(unsigned char far *fcb) __addr__(0x86E2);
         extern void fill_device_fcb_request(unsigned char far *fcb, unsigned char flag, unsigned int fn) __addr__(0x8938);
         extern int process_directory_entry(unsigned char far *fcb, int mode) __addr__(0x8B2E);
-        extern void invoke_dos_error_prompt(int mode) __addr__(0x8FDD);
         extern void net_delete_notify(int flag) __addr__(0x8FDD);
-        extern int con_getc(int dev) __addr__(0xA0FA);
-        extern int con_getc_brk(int dev) __addr__(0xA145);
-        extern int con_putc(int dev, int c) __addr__(0xA193);
-        extern void con_flush_or_fcb_close(void) __addr__(0xA1D4);
-        extern int find_fcb_logical_limit(void) __addr__(0xA1FB);
         extern int con_putc_or_fcb1(int c) __addr__(0xA22C);
-        extern int read_line_buffered(void) __addr__(0xA2CF);
-        extern void echo_or_buffer_char(unsigned char c) __addr__(0xA312);
-        extern int get_terminal_column_count(void) __addr__(0xA36F);
-        extern int get_cursor_row_or_1(void) __addr__(0xA38C);
-        extern int get_cursor_col_or_cached(void) __addr__(0xA3A9);
-        extern int is_ctrl_char_printable(void) __addr__(0xA3C6);
-        extern void key_typed_dispatch(int row, int col) __addr__(0xA3E9);
-        extern void init_line_buffer(unsigned char far *buf) __addr__(0xA433);
         extern void set_input_buffers_and_desc(unsigned char far *a, unsigned char far *b, unsigned char far *tmpl) __addr__(0xA480);
         extern void set_input_buffers_and_desc(unsigned char far *buf, unsigned char far *tmpl, int a, int b) __addr__(0xA480);
-        extern void backspace_last_char(void) __addr__(0xA720);
-        extern void process_typed_char(void) __addr__(0xA769);
         extern void replay_input_history(void) __addr__(0xA80A);
-        extern void echo_input_for_new_line(void) __addr__(0xA916);
-        extern void delete_char_from_buffer(void) __addr__(0xA97B);
-        extern void insert_char_at_cursor(void) __addr__(0xA9CF);
-        extern void init_line_edit(void) __addr__(0xAA0F);
-        extern void flush_input_typed(void) __addr__(0xAA3C);
-        extern void process_char_unless_cr(void) __addr__(0xAA77);
-        extern void process_typed_chars_until_cr(void) __addr__(0xAAA4);
-        extern void recall_from_input_buffer(void) __addr__(0xAAE8);
-        extern void handle_insert_mode(void) __addr__(0xAB1D);
         extern void edit_template_process(int template) __addr__(0xAB87);
-        extern void echo_input_char_or_cr(void) __addr__(0xAC76);
-        extern void read_input_double(void) __addr__(0xACA5);
-        extern void find_next_char_match(void) __addr__(0xACBE);
-        extern void find_prev_char_match(void) __addr__(0xAD17);
-        extern void echo_input_loop(void) __addr__(0xAD59);
-        extern void copy_prompt_template(void) __addr__(0xAD9C);
-        extern void init_input_cursor(void) __addr__(0xADED);
         extern int lookup_fcb_by_index(int index, unsigned char far **out) __addr__(0xAE67);
         extern unsigned char lookup_error_code_table(int c) __addr__(0xAEBE);
         extern void check_ctrl_break_flags(void) __addr__(0xAF6A);
@@ -440,7 +372,7 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
         extern void disk_read_request(unsigned char *pkt) __addr__(0xBFC8);
         extern void disk_write_request(unsigned char *pkt) __addr__(0xBFD2);
         extern void abort_program(void) __addr__(0xC8E0);
-        extern void build_dos_datetime(unsigned int *t, unsigned int *d) __addr__(0xD1A6);
+        extern void build_dos_datetime(unsigned int *date, unsigned int *time) __addr__(0xD1A6);
         extern unsigned int div_ax_by_bx_capped(unsigned int rsize, unsigned char far *buf, unsigned int cnt) __addr__(0xD1E3);
         extern void upcase_fcb_filename(unsigned char far *fcb) __addr__(0xD20F);
         extern unsigned int scan_for_ctrl_z(unsigned char far *buf, unsigned int bytes) __addr__(0xD241);
@@ -453,7 +385,7 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
         extern int lookup_default_error(unsigned int status, int which) __addr__(0xD372);
         extern void call_driver_with_packet(unsigned char far *req, unsigned int a, unsigned int b) __addr__(0xD5A3);
         extern int build_device_cmd_block(unsigned char far *fcb) __addr__(0xD5DB);
-        extern void notify_share_fcb(unsigned char far *rec) __addr__(0xEAD1);
+        extern void notify_share_fcb(struct system_file_table far *rec) __addr__(0xEAD1);
         extern unsigned char int2f_network_1085(unsigned char far *driver, unsigned long io, unsigned int bytes) __addr__(0xEADE);
         extern void int2f_network_1086(unsigned char far *driver, unsigned int flag) __addr__(0xEAFE);
         extern unsigned char int2f_network_1087(unsigned char far *rec, unsigned int flag) __addr__(0xEB0E);
@@ -477,10 +409,7 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
         extern char MSG_ERROR_IN_COMMAND[] __addr__(0x27A);
         extern char MSG_INVALID_COMMAND[] __addr__(0x28B);
         extern char MSG_IN_CONFIG_FILE[] __addr__(0x29C);
-        extern long SDA_DTA_LONG __addr__(0x02DA);
         extern unsigned char far *SDA_DTA __addr__(0x02DA);
-        extern unsigned int SDA_DTA_OFF __addr__(0x02DA);
-        extern unsigned int SDA_DTA_SEG __addr__(0x02DC);
         extern unsigned int SDA_SRC_SEG __addr__(0x02DE);
         extern unsigned char NETWORK_ACTIVE __addr__(0x02E0);
         extern unsigned char REDIRECTOR_ACTIVE __addr__(0x02E1);
@@ -531,11 +460,7 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
         extern unsigned int DPB_SECTOR_SIZE __addr__(0x0F1C);
         extern unsigned int FCB_LAST_CLUSTER __addr__(0x0F1E);
         extern unsigned char FCB_DRIVE __addr__(0x0F20);
-        extern long CLUSTER_ALIGNED __addr__(0x0F26);
-        extern unsigned int CLUSTER_ALIGNED_LO __addr__(0x0F26);
-        extern long CLUSTER_END __addr__(0x0F2A);
-        extern unsigned int CLUSTER_END_LO __addr__(0x0F2A);
-        extern unsigned int CLUSTER_DPB __addr__(0x0F2E);
+        extern struct frag_desc FCB_FRAG_REQ __addr__(0x0F26);
         extern unsigned int FCB_FIRST_CLUSTER __addr__(0x0F34);
         extern struct fcb NEW_DIR_FCB __addr__(0x0F36);
         extern unsigned int NEW_DIR_SECTOR __addr__(0x0F43);
@@ -589,13 +514,7 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
         extern unsigned int RETRY_PAUSE __addr__(0x142C);
         extern unsigned char far *SDA_FILE_TABLE __addr__(0x142E);
         extern unsigned int SHIFT_STICKY __addr__(0x1432);
-        extern struct fcb DIR_SEARCH_FCB __addr__(0x1434);
-        extern unsigned char DIR_SEARCH_NAME[] __addr__(0x1435);
-        extern unsigned char SDA_SEARCH_ATTR __addr__(0x1440);
-        extern unsigned int DIR_SEARCH_CLUSTER __addr__(0x1441);
-        extern unsigned int PARENT_DIR_CLUSTER __addr__(0x1443);
-        extern struct drive_param_block far *SDA_REQ_DPB __addr__(0x1445);
-        extern unsigned char SEARCH_FCB_ATTR __addr__(0x1449);
+        extern struct dir_search DIR_SEARCH_FCB __addr__(0x1434);
         extern unsigned char DELETE_PATH_1452[] __addr__(0x1452);
         extern unsigned char CON_REQ_FLAG __addr__(0x1464);
         extern unsigned char CON_REQ_UNIT __addr__(0x1465);
@@ -616,6 +535,168 @@ NEXT_FREE_PARAGRAPH              equ     01460h    ; Word — next-free segment 
         extern int MCB_FLAG __addr__(0x1570);
         extern unsigned char DRIVE __addr__(0x1574);
         extern unsigned int LINE_POS __addr__(0x1576);
+        /* --- externs auto-generated from compiled/*.c definitions --- */
+        extern int read_line_to_buffer(void) __addr__(0x0724);
+        extern int skip_whitespace(void) __addr__(0x0786);
+        extern void skip_alnum(void) __addr__(0x07AF);
+        extern int atoi_decimal(void) __addr__(0x07E4);
+        extern int lookup_token(void) __addr__(0x083A);
+        extern void print_error(int code) __addr__(0x089D);
+        extern int dos_fn_01_char_input_with_echo(struct int21_regs far *regs) __addr__(0x08DB);
+        extern void dos_fn_03_aux_input(struct int21_regs far *regs) __addr__(0x0900);
+        extern void dos_fn_04_aux_output(struct int21_regs far *regs) __addr__(0x091E);
+        extern void dos_fn_05_printer_output(struct int21_regs far *regs) __addr__(0x093C);
+        extern void dos_fn_06_direct_console_io(struct int21_regs far *regs) __addr__(0x095A);
+        extern void dos_fn_07_direct_console_input(struct int21_regs far *regs) __addr__(0x09AE);
+        extern void dos_fn_08_console_input_no_echo(struct int21_regs far *regs) __addr__(0x09C4);
+        extern void dos_fn_09_print_string(struct int21_regs far *regs) __addr__(0x09DA);
+        extern void dos_fn_0a_buffered_kbd_input(struct int21_regs far *regs) __addr__(0x0A0F);
+        extern void dos_fn_0b_get_input_status(struct int21_regs far *regs) __addr__(0x0A31);
+        extern void dos_fn_0c_flush_and_input(struct int21_regs far *regs) __addr__(0x0A44);
+        extern long disk_request_dispatch(unsigned char op, unsigned char far *buf, unsigned char x, long lba) __addr__(0x0AAB);
+        extern void reset_dpb_probe_drive(unsigned char drive) __addr__(0x0B14);
+        extern void init_fcb_from_drive(unsigned char drive, int cursor) __addr__(0x0C06);
+        extern void fat_reload_sector_window(long cl) __addr__(0x0C50);
+        extern void sector_read_at_dpb_offset(unsigned char drive, long offset, long *out) __addr__(0x0CF5);
+        extern void read_cluster_sector(unsigned char drive, int cluster, int extra, long *out) __addr__(0x0D3C);
+        extern void get_data_sector_buffer(unsigned char drive, int cluster, int extra, long *out) __addr__(0x0D95);
+        extern int read_path_chars(unsigned char drive, int start, unsigned int n) __addr__(0x0E00);
+        extern int reserve_sector_for_drive(unsigned char drive, int hint_arg) __addr__(0x0E49);
+        extern void invalidate_cached_fcb(unsigned char drive, int start, int flag, long size) __addr__(0x0F31);
+        extern void dos_fn_36_get_free_space(struct int21_regs far *regs) __addr__(0x10FE);
+        extern void compute_fcb_sector_number(void) __addr__(0x1220);
+        extern void init_fcb_and_cache_dpb(unsigned char drive, int start, unsigned int file_off, unsigned int length) __addr__(0x124A);
+        extern void advance_sector_and_refresh_mcb(void) __addr__(0x1363);
+        extern void build_fat_request(unsigned int seg, long val) __addr__(0x13B4);
+        extern void copy_fcb_fragment_and_advance(unsigned int len, unsigned char far **bufp, unsigned char wflag) __addr__(0x13F3);
+        extern void read_or_write_fcb_data(unsigned char far **bufp, unsigned char wflag) __addr__(0x1474);
+        extern unsigned char far * read_fat_via_dispatch(unsigned int seg, long val) __addr__(0x15A3);
+        extern unsigned int write_at_fcb_position(unsigned char drive, int start, unsigned int file_off, unsigned int length, unsigned char far *buf, struct frag_desc *req) __addr__(0x15CA);
+        extern unsigned int read_at_fcb_position(unsigned char drive, int start, unsigned int file_off, unsigned int length, unsigned char far *buf, unsigned int ext, struct frag_desc *req) __addr__(0x166F);
+        extern void init_sda_driver_links(void) __addr__(0x176B);
+        extern unsigned int get_sda_preserved_size(void) __addr__(0x178E);
+        extern void load_dir_fcb_into_globals(struct system_file_table far *fcb) __addr__(0x17C3);
+        extern unsigned char far * get_fcb_driver_vector(struct fcb far *fcb) __addr__(0x17F8);
+        extern void setup_drive_table(unsigned char nfiles, unsigned int *para) __addr__(0x1944);
+        extern int find_free_file_handle(int *out_slot, unsigned char far **out_rec) __addr__(0x1AEB);
+        extern void release_file_handle_slot(int handle) __addr__(0x1BA5);
+        extern unsigned char find_fcb_for_drive(int drive, unsigned char far **out_rec) __addr__(0x1BBC);
+        extern int open_fcb_by_drive(int drive) __addr__(0x1C36);
+        extern void shift_driver_records_flag(struct system_file_table far *driver) __addr__(0x1CDB);
+        extern unsigned char far * resolve_fcb_driver(struct fcb far *fcb) __addr__(0x1D26);
+        extern unsigned int retry_network_loop(struct system_file_table far *driver, unsigned int bytes, unsigned char z) __addr__(0x1DDC);
+        extern void set_fcb_handle_or_clear(struct fcb far *fcb, unsigned int handle) __addr__(0x1E96);
+        extern unsigned int build_driver_request(unsigned char cmd, unsigned char unit, struct fcb far *fcb, unsigned char far *driver, unsigned long data) __addr__(0x1EBC);
+        extern unsigned char get_extended_fcb_attr(struct fcb_ext far **p) __addr__(0x1F30);
+        extern long get_fcb_datetime_or_now(struct fcb far *fcb) __addr__(0x1F5D);
+        extern long get_fcb_datetime(struct fcb far *fcb) __addr__(0x1FB3);
+        extern void set_fcb_time_fields(struct fcb far *fcb) __addr__(0x1FE6);
+        extern unsigned char compare_name_wildcard(unsigned char far *a, unsigned char far *b, unsigned char len) __addr__(0x2021);
+        extern unsigned int read_next_buffer_chunk(void) __addr__(0x205F);
+        extern int read_back_fat_entry(void) __addr__(0x20A0);
+        extern int read_or_follow_fat_chain(long pos) __addr__(0x2170);
+        extern void align_io_to_sector(unsigned int bytes) __addr__(0x21F7);
+        extern unsigned int char_device_io(unsigned char flags, unsigned int count, unsigned char far *buf) __addr__(0x2240);
+        extern void set_dir_fcb_position(struct system_file_table far *driver, unsigned int bytes, unsigned char z, struct fcb far *fcb) __addr__(0x2397);
+        extern unsigned char read_fcb_with_network(struct fcb far *fcb, unsigned char far *buf, unsigned int *count) __addr__(0x23EF);
+        extern unsigned char write_fcb_with_network(struct fcb far *fcb, unsigned char far *buf, unsigned int *count) __addr__(0x277B);
+        extern int fcb_random_block_io(int drive, unsigned char far *buffer, unsigned int *count) __addr__(0x2C5A);
+        extern void dos_fn_14_seq_read_fcb(struct int21_regs far *regs) __addr__(0x334F);
+        extern void dos_fn_21_random_read_fcb(struct int21_regs far *regs) __addr__(0x33E4);
+        extern void dos_fn_27_random_block_read_fcb(struct int21_regs far *regs) __addr__(0x344B);
+        extern void dos_fn_3f_read_file(struct int21_regs far *regs) __addr__(0x34D8);
+        extern void dos_fn_15_seq_write_fcb(struct int21_regs far *regs) __addr__(0x352D);
+        extern void dos_fn_22_random_write_fcb(struct int21_regs far *regs) __addr__(0x35C2);
+        extern void dos_fn_28_random_block_write_fcb(struct int21_regs far *regs) __addr__(0x3629);
+        extern void dos_fn_40_write_file(struct int21_regs far *regs) __addr__(0x36B6);
+        extern void dos_fn_24_set_rel_record_fcb(struct int21_regs far *regs) __addr__(0x370B);
+        extern void dos_fn_1a_set_dta(struct int21_regs far *regs) __addr__(0x376A);
+        extern void dos_fn_2f_get_dta(struct int21_regs far *regs) __addr__(0x3780);
+        extern void dos_fn_42_seek_file(struct int21_regs far *regs) __addr__(0x3796);
+        extern void dos_fn_46_dup2_handle(struct int21_regs far *regs) __addr__(0x384A);
+        extern void dos_fn_45_dup_handle(struct int21_regs far *regs) __addr__(0x38BF);
+        extern void dos_fn_44_ioctl(struct int21_regs far *regs) __addr__(0x3951);
+        extern void dos_fn_68_reserved_68(struct int21_regs far *regs) __addr__(0x3E76);
+        extern void save_dos_return_frame(unsigned char far *v) __addr__(0x3ED3);
+        extern void set_fcb_file_position(int drive, long value) __addr__(0x3EE5);
+        extern void write_fcb_to_con_or_driver(int op, struct system_file_table far *rec) __addr__(0x4134);
+        extern void trim_trailing_name_spaces(unsigned char far *name) __addr__(0x48DD);
+        extern unsigned char parse_filespec_to_fcb(unsigned char far **pp, unsigned char far *fcb) __addr__(0x495A);
+        extern unsigned int uppercase_and_check_drive(unsigned char far **p) __addr__(0x4AAF);
+        extern int process_path_dot(unsigned char far **pp, unsigned char far *dst) __addr__(0x4B73);
+        extern long get_fcb_file_size(int drive) __addr__(0x575F);
+        extern void dos_fn_47_get_cwd(struct int21_regs far *rec) __addr__(0x5785);
+        extern void dos_fn_39_mkdir(struct int21_regs far *rec) __addr__(0x589B);
+        extern void dos_fn_3c_create_file(struct int21_regs far *regs) __addr__(0x645A);
+        extern void dos_fn_5b_create_excl_file(struct int21_regs far *regs) __addr__(0x6481);
+        extern void dos_fn_5a_create_unique_file(struct int21_regs far *regs) __addr__(0x64BC);
+        extern void dos_fn_3d_open_file(struct int21_regs far *regs) __addr__(0x679C);
+        extern void dos_fn_4e_find_first_file(struct int21_regs far *regs) __addr__(0x67E7);
+        extern void dos_fn_4f_find_next_file(struct int21_regs far *regs) __addr__(0x6907);
+        extern void dos_fn_43_get_set_attrs(struct int21_regs far *rec) __addr__(0x69A2);
+        extern void dos_fn_3e_close_file(struct int21_regs far *regs) __addr__(0x6B59);
+        extern void dos_fn_57_get_set_file_time(struct int21_regs far *regs) __addr__(0x6B79);
+        extern void dos_fn_41_delete_file(struct int21_regs far *rec) __addr__(0x6C86);
+        extern unsigned int return_dpb_ptr_for_drive(unsigned char far **dpb_out, unsigned char far *drv) __addr__(0x74F6);
+        extern void dos_fn_60_truename(struct int21_regs far *regs) __addr__(0x7710);
+        extern int match_filename_pattern(unsigned char far *pat, unsigned char far *name, unsigned char len) __addr__(0x7763);
+        extern unsigned int copy_dpb_and_lookup(unsigned char drive) __addr__(0x77B3);
+        extern void network_or_local_copy(unsigned char far *rec, unsigned int offset) __addr__(0x7837);
+        extern unsigned char get_drive_type(unsigned char drive) __addr__(0x7895);
+        extern void copy_fcb_fields(struct fcb far *fcb, struct dir_entry far *src, unsigned char far *name) __addr__(0x7987);
+        extern void init_fcb_timestamp(struct fcb far *fcb) __addr__(0x7A44);
+        extern void reset_fcb_flags(void) __addr__(0x7A85);
+        extern unsigned char expand_name_wildcards(unsigned char far *name) __addr__(0x7A9F);
+        extern unsigned char find_wildcard_question_mark(unsigned char far *name) __addr__(0x7AF9);
+        extern unsigned char open_file_by_fcb_name(unsigned char far *name) __addr__(0x7B27);
+        extern int compare_dir_entry_to_fcb(unsigned char far *fcb, struct dir_entry far *entry) __addr__(0x7B8F);
+        extern unsigned char far * locate_dir_entry_in_sector(struct dir_search far *search, unsigned char far *base) __addr__(0x7C0D);
+        extern unsigned char set_fcb_drive_type(struct fcb far *fcb, struct dir_search far *out, unsigned char flags) __addr__(0x843A);
+        extern unsigned int close_sft_entry(struct system_file_table far *sft) __addr__(0x86E2);
+        extern int dos_fn_11_find_first_fcb(struct int21_regs far *regs) __addr__(0x8DD3);
+        extern int dos_fn_12_find_next_fcb(struct int21_regs far *regs) __addr__(0x8DE7);
+        extern void invoke_dos_error_prompt(unsigned char attr) __addr__(0x8FDD);
+        extern void dos_fn_13_delete_fcb(struct int21_regs far *rec) __addr__(0x903A);
+        extern void dos_fn_16_create_fcb(struct int21_regs far *rec) __addr__(0x91E2);
+        extern void dos_fn_10_close_fcb(struct int21_regs far *rec) __addr__(0x94F9);
+        extern void dos_fn_17_rename_fcb(struct int21_regs far *rec) __addr__(0x9751);
+        extern void dos_fn_23_get_file_size_fcb(struct int21_regs far *rec) __addr__(0x9B1B);
+        extern int con_getc(int dev) __addr__(0xA0FA);
+        extern int con_getc_brk(int dev) __addr__(0xA145);
+        extern void con_putc(int dev, unsigned char c) __addr__(0xA193);
+        extern void con_flush_or_fcb_close(void) __addr__(0xA1D4);
+        extern int find_fcb_logical_limit(void) __addr__(0xA1FB);
+        extern int read_line_buffered(void) __addr__(0xA2CF);
+        extern void echo_or_buffer_char(unsigned char c) __addr__(0xA312);
+        extern int get_terminal_column_count(void) __addr__(0xA36F);
+        extern int get_cursor_row_or_1(void) __addr__(0xA38C);
+        extern int get_cursor_col_or_cached(void) __addr__(0xA3A9);
+        extern int is_ctrl_char_printable(void) __addr__(0xA3C6);
+        extern void key_typed_dispatch(int row, int col) __addr__(0xA3E9);
+        extern void init_line_buffer(int input_buf, int template_buf) __addr__(0xA433);
+        extern void backspace_delete(void) __addr__(0xA708);
+        extern void backspace_last_char(void) __addr__(0xA720);
+        extern void process_typed_char(void) __addr__(0xA769);
+        extern void echo_input_for_new_line(void) __addr__(0xA916);
+        extern void delete_char_from_buffer(void) __addr__(0xA97B);
+        extern void insert_char_at_cursor(void) __addr__(0xA9CF);
+        extern void init_line_edit(void) __addr__(0xAA0F);
+        extern void flush_input_typed(void) __addr__(0xAA3C);
+        extern void process_char_unless_cr(void) __addr__(0xAA77);
+        extern void process_typed_chars_until_cr(void) __addr__(0xAAA4);
+        extern void recall_from_input_buffer(void) __addr__(0xAAE8);
+        extern void handle_insert_mode(void) __addr__(0xAB1D);
+        extern void echo_input_char_or_cr(void) __addr__(0xAC76);
+        extern void read_input_double(void) __addr__(0xACA5);
+        extern void find_next_char_match(void) __addr__(0xACBE);
+        extern void find_prev_char_match(void) __addr__(0xAD17);
+        extern void echo_input_loop(void) __addr__(0xAD59);
+        extern void line_edit_finish(void) __addr__(0xAD86);
+        extern void copy_prompt_template(void) __addr__(0xAD9C);
+        extern void init_input_cursor(void) __addr__(0xADED);
+        extern void set_current_drive(unsigned char drive) __addr__(0xBA05);
+        extern void dos_fn_54_get_verify(struct int21_regs far *regs) __addr__(0xBF71);
+        extern void dos_fn_2e_set_verify(unsigned char al) __addr__(0xBF7D);
         ;@endcompiled_headers
 
 
@@ -2767,9 +2848,9 @@ DOS_FN_36_GET_FREE_SPACE:
 
         extern unsigned int CURSOR __addr__(0x1544);
 
-        int write_at_fcb_position(unsigned char drive, int start, unsigned int file_off,
-                                  unsigned int length, unsigned char far *buf,
-                                  struct frag_desc *req) __addr__(0x15CA)
+        unsigned int write_at_fcb_position(unsigned char drive, int start, unsigned int file_off,
+                                           unsigned int length, unsigned char far *buf,
+                                           struct frag_desc *req) __addr__(0x15CA)
         {
             init_fcb_and_cache_dpb(drive, start, file_off, length);
             if (START_FRAG_FLAG != 0) {
@@ -2810,9 +2891,10 @@ READ_AT_FCB_POSITION:
 
         extern unsigned int CURSOR __addr__(0x1544);
 
-        int read_at_fcb_position(unsigned char drive, int start, unsigned int file_off,
-                                 unsigned int length, unsigned char far *buf, unsigned int ext,
-                                 struct frag_desc *req) __addr__(0x166F)
+        unsigned int read_at_fcb_position(unsigned char drive, int start, unsigned int file_off,
+                                          unsigned int length, unsigned char far *buf,
+                                          unsigned int ext, struct frag_desc *req)
+            __addr__(0x166F)
         {
             init_fcb_and_cache_dpb(drive, start, file_off, length);
             if (START_FRAG_FLAG != 0) {
@@ -3188,7 +3270,7 @@ FIND_FCB_FOR_DRIVE:
          * no slot (0xFF), or the chain ends (offset 0xFFFF) first.
          */
 
-        int find_fcb_for_drive(int drive, unsigned char far **out_rec) __addr__(0x1BBC)
+        unsigned char find_fcb_for_drive(int drive, unsigned char far **out_rec) __addr__(0x1BBC)
         {
             unsigned int limit;         /* bp-2 */
             unsigned int idx;           /* bp-4 */
@@ -3234,17 +3316,17 @@ OPEN_FCB_BY_DRIVE:
         int open_fcb_by_drive(int drive) __addr__(0x1C36)
         {
             struct system_file_table far *rec; /* bp-4  */
-            unsigned int dt_time;              /* bp-6  */
+            unsigned int fdate;                /* bp-6  */
             unsigned char result;              /* bp-8  */
-            unsigned int dt_date;              /* bp-0Ah */
+            unsigned int ftime;                /* bp-0Ah */
 
             if (find_fcb_for_drive(drive, &rec) != 0) {
                 return lookup_error_msg(6);
             }
             write_fcb_to_con_or_driver(0x0E, rec);
-            build_dos_datetime(&dt_time, &dt_date);
-            rec->s_time = dt_time;
-            rec->s_date = dt_date;
+            build_dos_datetime(&fdate, &ftime);
+            rec->s_date = fdate;
+            rec->s_time = ftime;
             result = dispatch_fcb_open(rec);
             if (rec->s_refcnt != 0) {
                 (rec->s_refcnt)--;
@@ -3270,10 +3352,13 @@ SHIFT_DRIVER_RECORDS_FLAG:
          * Age the per-driver record-usage counts. The first call (sticky [1432h] still
          * 0xFFFF) halves every driver record's +1Bh word in the [418h] table and arms
          * the sticky flag to 0x8000; later calls just bump the sticky counter. Either
-         * way the resulting sticky value is stashed into the caller FCB at +15h.
+         * way the resulting sticky value is stashed into the passed SFT/driver record
+         * at the low word of s_offset (+15h).  The argument is a driver record
+         * (struct system_file_table), not an FCB — callers pass RESOLVE_FCB_DRIVER's
+         * result.
          */
 
-        void shift_driver_records_flag(unsigned char far *fcb) __addr__(0x1CDB)
+        void shift_driver_records_flag(struct system_file_table far *driver) __addr__(0x1CDB)
         {
             unsigned int i; /* bp-2 */
 
@@ -3282,14 +3367,15 @@ SHIFT_DRIVER_RECORDS_FLAG:
                     /* raw: from the BLOCK base this lands at record[i]+0x15 (mid
                      * s_offset) — an aliased/mixed-width access the struct model
                      * cannot name honestly (cf. get_fcb_driver_vector).           */
-                    *(unsigned int far *)(DRIVER_TABLE + 0x35 * i + 0x1B) >>= 1;
+                    *(unsigned int far *)((unsigned char far *)DRIVER_TABLE + 0x35 * i + 0x1B) >>=
+                        1;
                 }
                 SHIFT_STICKY = 0x8000;
             } else {
                 SHIFT_STICKY++;
             }
-            /* raw: +15h spans f_date hi..f_time lo — an aliased overlay word.  */
-            *(unsigned int far *)(fcb + 0x15) = SHIFT_STICKY;
+            /* low word of s_offset (record +15h) — an aliased overlay word.  */
+            *(unsigned int far *)((unsigned char far *)driver + 0x15) = SHIFT_STICKY;
         }
         ;@endcompiled
         ;@compiled resolve_fcb_driver 1D26 182
@@ -3359,15 +3445,15 @@ RETRY_NETWORK_LOOP:
                 if (result == 0) {
                     return 0;
                 }
-                if (driver[3] == 0) {
+                if (((unsigned char far *)driver)[3] == 0) {
                     return result;
                 }
                 lookup_error_msg(result);
-                if ((driver[5] & 0x80) != 0) {
+                if ((((unsigned char far *)driver)[5] & 0x80) != 0) {
                     result = invoke_int24_with_device(0x80, driver->s_devptr, 0x81);
                 } else {
                     result = invoke_int24_with_device(z + 0x1E, driver->s_devptr->d_driver, 0x81,
-                                                      driver[5] & 0x0F);
+                                                      ((unsigned char far *)driver)[5] & 0x0F);
                 }
                 if (result != 1) {
                     abort_program();
@@ -3391,7 +3477,7 @@ SET_FCB_HANDLE_OR_CLEAR:
             if (handle == 0) {
                 fcb->f_time &= 0xFFFE;
             } else {
-                fcb[0x16] |= 1;
+                ((unsigned char far *)fcb)[0x16] |= 1;
                 *(unsigned int far *)fcb = handle;
             }
         }
@@ -3415,7 +3501,7 @@ SET_FCB_HANDLE_OR_CLEAR:
         {
             struct request_packet req;
 
-            mem_fill_zero((unsigned char far *)&req, 0x13);
+            mem_fill_zero(&req, 0x13);
             if (cmd == 5) {
                 req.r_len = 0x0E;
             } else if (cmd == 0x0D) {
@@ -3427,33 +3513,34 @@ SET_FCB_HANDLE_OR_CLEAR:
             req.r_unit = unit;
             req.r_count = fcb->f_count;
             req.r_addr = data;
-            call_driver_with_packet((unsigned char far *)&req, FP_OFF(driver), FP_SEG(driver));
+            call_driver_with_packet(&req, FP_OFF(driver), FP_SEG(driver));
             *(unsigned int far *)fcb = req.r_count;
             return req.r_status;
         }
         ;@endcompiled
 
-GET_DELETED_FCB_ATTR:
-        ; Return attribute byte from a "deleted" (FFh-marked) FCB entry
-        ;@compiled get_deleted_fcb_attr 1F30 45
+GET_EXTENDED_FCB_ATTR:
+        ; Extended FCB (FFh flag): return its attribute byte and skip the 7-byte prefix
+        ;@compiled get_extended_fcb_attr 1F30 45
         /*
-         * GET_DELETED_FCB_ATTR @ 0x1F30 in SISNE.SIS (45 bytes).
+         * GET_EXTENDED_FCB_ATTR @ 0x1F30 in SISNE.SIS (45 bytes).
          *
-         * `p` is a near pointer to a far pointer that walks a directory buffer.  When
-         * the entry it points at is marked deleted (first byte 0xFF), grab its
-         * attribute byte (offset +6), advance the far pointer past the entry
-         * (FP_OFF(*p) += 7), and return the attribute; otherwise return 0.  MSC reloads
+         * `p` is a near pointer to the caller's far pointer at an FCB.  When the FCB
+         * carries an extended-FCB prefix (x_flag == 0xFF — the extended-FCB flag, NOT a
+         * deletion mark), grab its attribute byte (x_attr), advance the far pointer past
+         * the 7-byte prefix (FP_OFF(*p) += 7) onto the embedded normal FCB, and return
+         * the attribute; a plain FCB returns 0 with the pointer unchanged.  MSC reloads
          * `les bx,[bx]` on every dereference (/Od), and reserves a 4-byte slot for the
          * entry pointer even though it stays live in ES:BX.
          */
 
-        unsigned char get_deleted_fcb_attr(unsigned char far **p) __addr__(0x1F30)
+        unsigned char get_extended_fcb_attr(struct fcb_ext far **p) __addr__(0x1F30)
         {
-            unsigned char attr;     /* bp-2 */
-            unsigned char far *ent; /* bp-6 — reserved slot; the entry ptr lives in ES:BX */
+            unsigned char attr;      /* bp-2 */
+            struct fcb_ext far *ent; /* bp-6 — reserved slot; the entry ptr lives in ES:BX */
 
-            if ((*p)[0] == 0xFF) {
-                attr = (*p)[6];
+            if ((*p)->x_flag == 0xFF) {
+                attr = (*p)->x_attr;
                 FP_OFF(*p) += 7;
                 return attr;
             }
@@ -3541,8 +3628,8 @@ COMPARE_NAME_WILDCARD:
          * first mismatch.
          */
 
-        int compare_name_wildcard(unsigned char far *a, unsigned char far *b, unsigned char len)
-            __addr__(0x2021)
+        unsigned char compare_name_wildcard(unsigned char far *a, unsigned char far *b,
+                                            unsigned char len) __addr__(0x2021)
         {
             register unsigned int si;
 
@@ -3604,7 +3691,7 @@ READ_BACK_FAT_ENTRY:
          * was empty.  Returns 0 ok / 0xFF failure.
          */
 
-        unsigned int read_back_fat_entry(void) __addr__(0x20A0)
+        int read_back_fat_entry(void) __addr__(0x20A0)
         {
             unsigned int head;     /* bp-2 */
             unsigned int len;      /* bp-4 */
@@ -3717,11 +3804,11 @@ ALIGN_IO_TO_SECTOR:
             register unsigned int mask; /* SI */
 
             mask = -DPB_SECTOR_SIZE;
-            CLUSTER_ALIGNED = IO_START;
-            CLUSTER_ALIGNED_LO &= mask;
-            CLUSTER_END = (long)bytes + IO_START - 1;
-            CLUSTER_END_LO &= mask;
-            CLUSTER_DPB = FCB_FIRST_CLUSTER;
+            FCB_FRAG_REQ.fr_cluster0 = IO_START;
+            FCB_FRAG_REQ.fr_cluster0_lo &= mask;
+            FCB_FRAG_REQ.fr_cluster1 = (long)bytes + IO_START - 1;
+            FCB_FRAG_REQ.fr_cluster1_lo &= mask;
+            FCB_FRAG_REQ.fr_seg = FCB_FIRST_CLUSTER;
         }
         ;@endcompiled
         ;@compiled char_device_io 2240 343
@@ -3858,8 +3945,8 @@ ALIGN_IO_TO_SECTOR:
         extern unsigned long IO_START __addr__(0x0EFE);
         extern unsigned long DRIVER_VEC __addr__(0x0F0A);
 
-        int read_fcb_with_network(struct fcb far *fcb, unsigned char far *buf,
-                                  unsigned int *count) __addr__(0x23EF)
+        unsigned char read_fcb_with_network(struct fcb far *fcb, unsigned char far *buf,
+                                            unsigned int *count) __addr__(0x23EF)
         {
             struct system_file_table far *driver; /* [bp-4]  */
             unsigned char far *buf_save;          /* [bp-8]  */
@@ -3932,8 +4019,8 @@ ALIGN_IO_TO_SECTOR:
                     align_io_to_sector(byte_count);
                     cluster_off =
                         ((DPB_SECTOR_SIZE << dpb->d_clushift) - 1) & (unsigned int)IO_START;
-                    FCB_LAST_CLUSTER = write_at_fcb_position(
-                        FCB_DRIVE, BUF_CHUNK, cluster_off, byte_count, buf, &CLUSTER_ALIGNED_LO);
+                    FCB_LAST_CLUSTER = write_at_fcb_position(FCB_DRIVE, BUF_CHUNK, cluster_off,
+                                                             byte_count, buf, &FCB_FRAG_REQ);
                     if (NETWORK_ACTIVE != 0 && FCB_LAST_CLUSTER != 0xFFFF) {
                         driver->s_lastclu = FCB_LAST_CLUSTER;
                         driver->s_relclu =
@@ -4003,8 +4090,8 @@ ALIGN_IO_TO_SECTOR:
         extern unsigned long EOF_ANCHOR __addr__(0x0F10);
         extern unsigned long DRIVER_VEC __addr__(0x0F0A);
 
-        int write_fcb_with_network(struct fcb far *fcb, unsigned char far *buf,
-                                   unsigned int *count) __addr__(0x277B)
+        unsigned char write_fcb_with_network(struct fcb far *fcb, unsigned char far *buf,
+                                             unsigned int *count) __addr__(0x277B)
         {
             struct system_file_table far *driver; /* [bp-4]  */
             unsigned char extend_flag;            /* [bp-6]  */
@@ -4124,9 +4211,9 @@ ALIGN_IO_TO_SECTOR:
                             align_io_to_sector(byte_count);
                             cluster_off = ((DPB_SECTOR_SIZE << dpb->d_clushift) - 1) &
                                           (unsigned int)IO_START;
-                            FCB_LAST_CLUSTER = read_at_fcb_position(
-                                FCB_DRIVE, BUF_CHUNK, cluster_off, byte_count, buf, extend_flag,
-                                &CLUSTER_ALIGNED_LO);
+                            FCB_LAST_CLUSTER =
+                                read_at_fcb_position(FCB_DRIVE, BUF_CHUNK, cluster_off,
+                                                     byte_count, buf, extend_flag, &FCB_FRAG_REQ);
                             if (NETWORK_ACTIVE != 0 && FCB_LAST_CLUSTER != 0xFFFF) {
                                 driver->s_lastclu = FCB_LAST_CLUSTER;
                                 driver->s_relclu =
@@ -4208,7 +4295,7 @@ FCB_RANDOM_BLOCK_IO:
             if (find_fcb_for_drive(drive, &rec) != 0) {
                 return lookup_error_msg(6);
             }
-            type = rec[2] & 7;
+            type = ((unsigned char far *)rec)[2] & 7;
             if (type == 1) {
                 if ((rec->s_flags & 0x80) != 0) {
                     return lookup_error_msg(5, 4, 3, 3);
@@ -4263,7 +4350,7 @@ FCB_RANDOM_BLOCK_IO:
                     cluster_off =
                         ((DPB_SECTOR_SIZE << dpb->d_clushift) - 1) & (unsigned int)IO_START;
                     FCB_LAST_CLUSTER = write_at_fcb_position(FCB_DRIVE, buf_chunk, cluster_off,
-                                                             xfer, buffer, &CLUSTER_ALIGNED_LO);
+                                                             xfer, buffer, &FCB_FRAG_REQ);
                     if (FCB_LAST_CLUSTER != 0xFFFF) {
                         rec->s_lastclu = FCB_LAST_CLUSTER;
                         rec->s_relclu =
@@ -4767,7 +4854,7 @@ DOS_FN_14_SEQ_READ_FCB:
         ; Body: 8-byte frame.
         ; - count=1 stored at [bp-8].
         ; - Reassemble user's FCB ptr from saved-regs into [bp-2:-4].
-        ; - GET_DELETED_FCB_ATTR.
+        ; - GET_EXTENDED_FCB_ATTR.
         ; - Compute byte position: FCB+0Ch (current-record) shifted by
         ; FCB+20h (log2 of record size) via SHL_DXAX_BY_CL.
         ; - Dispatch into FCB_RANDOM_BLOCK_IO at 2C5A with count=1.
@@ -4778,29 +4865,30 @@ DOS_FN_14_SEQ_READ_FCB:
         /*
          * DOS_FN_14_SEQ_READ_FCB @ 0x334F in SISNE.SIS (149 bytes).
          *
-         * INT 21h AH=14h handler (sequential read via FCB).  Rebuild the record far
-         * pointer, compute the byte position from the current record and log2
-         * record-size (`FCB_POS = ((unsigned)*(rec+0Ch) << 7) + (uchar)rec[0x20]`),
-         * read one record into the DTA via READ_FCB_WITH_NETWORK, and — on a full
-         * transfer (count still 1) — advance the position (FCB_POS += 1) and
-         * re-stamp the FCB time fields.  The attribute probe result is discarded.
+         * INT 21h AH=14h handler (sequential read via FCB).  Rebuild the FCB far
+         * pointer from the caller's DS:DX (frame +0Eh / +6), compute the byte position
+         * from the current record and log2 record-size (`FCB_POS = ((unsigned)*(rec+0Ch)
+         * << 7) + (uchar)rec[0x20]`), read one record into the DTA via
+         * READ_FCB_WITH_NETWORK, and — on a full transfer (count still 1) — advance the
+         * position (FCB_POS += 1) and re-stamp the FCB time fields.  The status is
+         * returned in AL; the attribute probe result is discarded.
          */
 
-        void dos_fn_14_seq_read_fcb(struct fcb far *fcb) __addr__(0x334F)
+        void dos_fn_14_seq_read_fcb(struct int21_regs far *regs) __addr__(0x334F)
         {
             unsigned char far *rec;
             unsigned char attr;
             unsigned int count;
 
             count = 1;
-            FP_SEG(rec) = fcb->f_sftseg;
-            FP_OFF(rec) = fcb->f_sftoff;
-            attr = get_deleted_fcb_attr(&rec);
-            /* raw: +0Ch spans s_firclu hi..s_date lo — the record's packed
+            FP_SEG(rec) = regs->r_ds;
+            FP_OFF(rec) = regs->r_dx;
+            attr = get_extended_fcb_attr(&rec);
+            /* raw: +0Ch spans s_firclu hi..s_time lo — the record's packed
              * position word straddles the struct's field split.              */
             FCB_POS = (unsigned int)*(unsigned int far *)(rec + 0x0C);
             FCB_POS = (FCB_POS << 7) + (unsigned char)rec[0x20];
-            fcb[0] = read_fcb_with_network(rec, SDA_DTA, &count);
+            regs->r_al = read_fcb_with_network(rec, SDA_DTA, &count);
             if (count == 1) {
                 FCB_POS += 1;
                 set_fcb_time_fields(rec);
@@ -4823,27 +4911,27 @@ DOS_FN_21_RANDOM_READ_FCB:
         /*
          * DOS_FN_21_RANDOM_READ_FCB @ 0x33E4 in SISNE.SIS (103 bytes).
          *
-         * INT 21h AH=21h handler (random read via FCB).  Rebuild the record far pointer
-         * from the FCB's stored offset/segment words (fcb+6 / fcb+0Eh), read one record
-         * (count=1) at the FCB's current random position into the DTA, stamping the
-         * FCB's date/time and status byte.  The read goes through READ_FCB_WITH_NETWORK
+         * INT 21h AH=21h handler (random read via FCB).  Rebuild the FCB far pointer
+         * from the caller's DS:DX (frame +0Eh / +6), read one record (count=1) at the
+         * FCB's current random position into the DTA, stamping the FCB's date/time and
+         * returning the status in AL.  The read goes through READ_FCB_WITH_NETWORK
          * (SHARE/redirector aware).  The attribute probe result is discarded (kept as a
          * dead store, MSC /Od).  SDA_DTA is declared per-function (0x2DA is aliased with
          * DOS_RETURN_STATE / the DTA offset word elsewhere).
          */
 
-        void dos_fn_21_random_read_fcb(struct fcb far *fcb) __addr__(0x33E4)
+        void dos_fn_21_random_read_fcb(struct int21_regs far *regs) __addr__(0x33E4)
         {
             unsigned char far *rec;
             unsigned char attr;
             unsigned int count;
 
             count = 1;
-            FP_SEG(rec) = fcb->f_sftseg;
-            FP_OFF(rec) = fcb->f_sftoff;
-            attr = get_deleted_fcb_attr(&rec);
+            FP_SEG(rec) = regs->r_ds;
+            FP_OFF(rec) = regs->r_dx;
+            attr = get_extended_fcb_attr(&rec);
             FCB_POS = get_fcb_datetime(rec);
-            fcb[0] = read_fcb_with_network(rec, SDA_DTA, &count);
+            regs->r_al = read_fcb_with_network(rec, SDA_DTA, &count);
             set_fcb_time_fields(rec);
         }
         ;@endcompiled
@@ -4863,26 +4951,27 @@ DOS_FN_27_RANDOM_BLOCK_READ_FCB:
          * DOS_FN_27_RANDOM_BLOCK_READ_FCB @ 0x344B in SISNE.SIS (141 bytes).
          *
          * INT 21h AH=27h handler (random block read via FCB).  Like AH=21h but reads a
-         * caller-supplied record count (fcb+4) instead of a single record: rebuild the
-         * record far pointer, read `count` records at the random position into the DTA
-         * via READ_FCB_WITH_NETWORK, write the actual transferred count back to fcb+4,
-         * and — when any records moved — advance the position (FCB_POS += count)
-         * and re-stamp the FCB date/time.  The attribute probe is a dead store.
+         * caller-supplied record count (CX) instead of a single record: rebuild the FCB
+         * far pointer from the caller's DS:DX, read `count` records at the random
+         * position into the DTA via READ_FCB_WITH_NETWORK, write the actual transferred
+         * count back to CX, and — when any records moved — advance the position
+         * (FCB_POS += count) and re-stamp the FCB date/time.  The status is returned in
+         * AL; the attribute probe is a dead store.
          */
 
-        void dos_fn_27_random_block_read_fcb(struct fcb far *fcb) __addr__(0x344B)
+        void dos_fn_27_random_block_read_fcb(struct int21_regs far *regs) __addr__(0x344B)
         {
             unsigned char far *rec;
             unsigned char attr;
             unsigned int count;
 
-            count = fcb->f_count;
-            FP_SEG(rec) = fcb->f_sftseg;
-            FP_OFF(rec) = fcb->f_sftoff;
-            attr = get_deleted_fcb_attr(&rec);
+            count = regs->r_cx;
+            FP_SEG(rec) = regs->r_ds;
+            FP_OFF(rec) = regs->r_dx;
+            attr = get_extended_fcb_attr(&rec);
             FCB_POS = get_fcb_datetime(rec);
-            fcb[0] = read_fcb_with_network(rec, SDA_DTA, &count);
-            fcb->f_count = count;
+            regs->r_al = read_fcb_with_network(rec, SDA_DTA, &count);
+            regs->r_cx = count;
             if (count > 0) {
                 FCB_POS += count;
                 get_fcb_datetime_or_now(rec);
@@ -4940,21 +5029,21 @@ DOS_FN_15_SEQ_WRITE_FCB:
          * DOS_FN_14_SEQ_READ_FCB, identical shape through WRITE_FCB_WITH_NETWORK.
          */
 
-        void dos_fn_15_seq_write_fcb(struct fcb far *fcb) __addr__(0x352D)
+        void dos_fn_15_seq_write_fcb(struct int21_regs far *regs) __addr__(0x352D)
         {
             unsigned char far *rec;
             unsigned char attr;
             unsigned int count;
 
             count = 1;
-            FP_SEG(rec) = fcb->f_sftseg;
-            FP_OFF(rec) = fcb->f_sftoff;
-            attr = get_deleted_fcb_attr(&rec);
-            /* raw: +0Ch spans s_firclu hi..s_date lo — the record's packed
+            FP_SEG(rec) = regs->r_ds;
+            FP_OFF(rec) = regs->r_dx;
+            attr = get_extended_fcb_attr(&rec);
+            /* raw: +0Ch spans s_firclu hi..s_time lo — the record's packed
              * position word straddles the struct's field split.              */
             FCB_POS = (unsigned int)*(unsigned int far *)(rec + 0x0C);
             FCB_POS = (FCB_POS << 7) + (unsigned char)rec[0x20];
-            fcb[0] = write_fcb_with_network(rec, SDA_DTA, &count);
+            regs->r_al = write_fcb_with_network(rec, SDA_DTA, &count);
             if (count == 1) {
                 FCB_POS += 1;
                 set_fcb_time_fields(rec);
@@ -4973,24 +5062,24 @@ DOS_FN_22_RANDOM_WRITE_FCB:
          * DOS_FN_22_RANDOM_WRITE_FCB @ 0x35C2 in SISNE.SIS (103 bytes).
          *
          * INT 21h AH=22h handler (random write via FCB) — the write twin of
-         * DOS_FN_21_RANDOM_READ_FCB.  Identical shape (rebuild the record far pointer,
-         * stamp date/time, write one record from the DTA via WRITE_FCB_WITH_NETWORK,
-         * store the status byte) except `count=1` is set after the pointer rebuild and
-         * the transfer is a write.
+         * DOS_FN_21_RANDOM_READ_FCB.  Identical shape (rebuild the FCB far pointer from
+         * the caller's DS:DX, stamp date/time, write one record from the DTA via
+         * WRITE_FCB_WITH_NETWORK, return the status in AL) except `count=1` is set after
+         * the pointer rebuild and the transfer is a write.
          */
 
-        void dos_fn_22_random_write_fcb(struct fcb far *fcb) __addr__(0x35C2)
+        void dos_fn_22_random_write_fcb(struct int21_regs far *regs) __addr__(0x35C2)
         {
             unsigned char far *rec;
             unsigned char attr;
             unsigned int count;
 
-            FP_SEG(rec) = fcb->f_sftseg;
-            FP_OFF(rec) = fcb->f_sftoff;
+            FP_SEG(rec) = regs->r_ds;
+            FP_OFF(rec) = regs->r_dx;
             count = 1;
-            attr = get_deleted_fcb_attr(&rec);
+            attr = get_extended_fcb_attr(&rec);
             FCB_POS = get_fcb_datetime(rec);
-            fcb[0] = write_fcb_with_network(rec, SDA_DTA, &count);
+            regs->r_al = write_fcb_with_network(rec, SDA_DTA, &count);
             set_fcb_time_fields(rec);
         }
         ;@endcompiled
@@ -5010,20 +5099,20 @@ DOS_FN_28_RANDOM_BLOCK_WRITE_FCB:
          * reproduced with the `pad` local.
          */
 
-        void dos_fn_28_random_block_write_fcb(struct fcb far *fcb) __addr__(0x3629)
+        void dos_fn_28_random_block_write_fcb(struct int21_regs far *regs) __addr__(0x3629)
         {
             unsigned char far *rec;
             unsigned char attr;
             unsigned int count;
             unsigned char far *pad; /* reserved but unused — frame is sub sp,0Ch */
 
-            count = fcb->f_count;
-            FP_SEG(rec) = fcb->f_sftseg;
-            FP_OFF(rec) = fcb->f_sftoff;
-            attr = get_deleted_fcb_attr(&rec);
+            count = regs->r_cx;
+            FP_SEG(rec) = regs->r_ds;
+            FP_OFF(rec) = regs->r_dx;
+            attr = get_extended_fcb_attr(&rec);
             FCB_POS = get_fcb_datetime(rec);
-            fcb[0] = write_fcb_with_network(rec, SDA_DTA, &count);
-            fcb->f_count = count;
+            regs->r_al = write_fcb_with_network(rec, SDA_DTA, &count);
+            regs->r_cx = count;
             if (count > 0) {
                 FCB_POS += count;
                 get_fcb_datetime_or_now(rec);
@@ -5078,23 +5167,23 @@ DOS_FN_24_SET_REL_RECORD_FCB:
         /*
          * DOS_FN_24_SET_REL_RECORD_FCB @ 0x370B in SISNE.SIS (95 bytes).
          *
-         * INT 21h AH=24h handler (set relative record).  Rebuild the record far pointer
-         * from the FCB's stored words (fcb+6 / fcb+0Eh), compute the byte position from
+         * INT 21h AH=24h handler (set relative record).  Rebuild the FCB far pointer
+         * from the caller's DS:DX (frame +0Eh / +6), compute the byte position from
          * the current-record word (rec+0Ch) and the log2 record-size (rec+20h) —
          * `FCB_POS = ((unsigned)*(rec+0Ch) << 7) + (uchar)rec[0x20]` (the 128-byte
          * record scaling) — then re-timestamp via GET_FCB_DATETIME_OR_NOW.  The
          * attribute probe result is discarded.
          */
 
-        void dos_fn_24_set_rel_record_fcb(struct fcb far *fcb) __addr__(0x370B)
+        void dos_fn_24_set_rel_record_fcb(struct int21_regs far *regs) __addr__(0x370B)
         {
             unsigned char far *rec;
             unsigned char attr;
 
-            FP_SEG(rec) = fcb->f_sftseg;
-            FP_OFF(rec) = fcb->f_sftoff;
-            attr = get_deleted_fcb_attr(&rec);
-            /* raw: +0Ch spans s_firclu hi..s_date lo — the record's packed
+            FP_SEG(rec) = regs->r_ds;
+            FP_OFF(rec) = regs->r_dx;
+            attr = get_extended_fcb_attr(&rec);
+            /* raw: +0Ch spans s_firclu hi..s_time lo — the record's packed
              * position word straddles the struct's field split.              */
             FCB_POS = (unsigned int)*(unsigned int far *)(rec + 0x0C);
             FCB_POS = (FCB_POS << 7) + (unsigned char)rec[0x20];
@@ -5124,8 +5213,8 @@ DOS_FN_1A_SET_DTA:
 
         void dos_fn_1a_set_dta(struct int21_regs far *regs) __addr__(0x376A)
         {
-            SDA_DTA_SEG = regs->r_ds;
-            SDA_DTA_OFF = regs->r_dx;
+            FP_SEG(SDA_DTA) = regs->r_ds;
+            FP_OFF(SDA_DTA) = regs->r_dx;
         }
         ;@endcompiled
 
@@ -5150,8 +5239,8 @@ DOS_FN_2F_GET_DTA:
 
         void dos_fn_2f_get_dta(struct int21_regs far *regs) __addr__(0x3780)
         {
-            regs->r_es = SDA_DTA_SEG;
-            regs->r_bx = SDA_DTA_OFF;
+            regs->r_es = FP_SEG(SDA_DTA);
+            regs->r_bx = FP_OFF(SDA_DTA);
         }
         ;@endcompiled
 
@@ -5409,8 +5498,7 @@ DOS_FN_44_IOCTL:
                     } else {
                         cmd = 0x0C;
                     }
-                    result =
-                        build_driver_request(cmd, 0, (struct fcb far *)regs, DRIVER_VEC, dsdx);
+                    result = build_driver_request(cmd, 0, regs, DRIVER_VEC, dsdx);
                     break;
                 case 4:
                 case 5:
@@ -5422,8 +5510,7 @@ DOS_FN_44_IOCTL:
                     } else {
                         cmd = 0x0C;
                     }
-                    result = build_driver_request(cmd, dpb->d_unit, (struct fcb far *)regs,
-                                                  DRIVER_VEC, dsdx);
+                    result = build_driver_request(cmd, dpb->d_unit, regs, DRIVER_VEC, dsdx);
                     break;
                 case 6:
                 case 7:
@@ -5433,8 +5520,7 @@ DOS_FN_44_IOCTL:
                         } else {
                             cmd = 0x0A;
                         }
-                        result = build_driver_request(cmd, 0, (struct fcb far *)regs, DRIVER_VEC,
-                                                      attr);
+                        result = build_driver_request(cmd, 0, regs, DRIVER_VEC, attr);
                         if ((result & 0x200) == 0) {
                             regs->r_al = 0xFF;
                         } else {
@@ -5445,8 +5531,7 @@ DOS_FN_44_IOCTL:
                         regs->r_al = 0xFF;
                     } else {
                         count = 1;
-                        result = (unsigned char)fcb_random_block_io(
-                            handle, (unsigned char far *)&attr, &count);
+                        result = (unsigned char)fcb_random_block_io(handle, &attr, &count);
                         if (count == 0) {
                             regs->r_ax = 0x1A00;
                         } else {
@@ -5468,7 +5553,7 @@ DOS_FN_44_IOCTL:
                     pkt.i_cmd = 0x0F;
                     pkt.i_status = 0;
                     pkt.i_cat = dpb->d_media;
-                    call_driver_with_packet((unsigned char far *)&pkt, DRIVER_VEC);
+                    call_driver_with_packet(&pkt, DRIVER_VEC);
                     if ((pkt.i_status & 0x200) != 0) {
                     media_err:
                         regs->r_ax = 1;
@@ -5514,8 +5599,7 @@ DOS_FN_44_IOCTL:
                         pkt.i_di = FP_OFF(DRIVER_VEC);
                         FP_OFF(pkt.i_ptr) = regs->r_dx;
                         FP_SEG(pkt.i_ptr) = regs->r_ds;
-                        call_driver_with_packet((unsigned char far *)&pkt, FP_OFF(DRIVER_VEC),
-                                                FP_SEG(DRIVER_VEC));
+                        call_driver_with_packet(&pkt, FP_OFF(DRIVER_VEC), FP_SEG(DRIVER_VEC));
                         if ((pkt.i_status & 0x8000) != 0) {
                         drv_err:
                             err = (unsigned char)lookup_default_error(pkt.i_status, 2);
@@ -5535,7 +5619,7 @@ DOS_FN_44_IOCTL:
                         pkt.i_cmd = 0x18;
                     }
                     pkt.i_status = 0;
-                    call_driver_with_packet((unsigned char far *)&pkt, DRIVER_VEC);
+                    call_driver_with_packet(&pkt, DRIVER_VEC);
                     if ((pkt.i_status & 0x8000) != 0) {
                         goto drv_err;
                     }
@@ -5543,7 +5627,7 @@ DOS_FN_44_IOCTL:
                     break;
                 }
             }
-            set_fcb_handle_or_clear((unsigned char far *)regs, err);
+            set_fcb_handle_or_clear(regs, err);
         }
         ;@endcompiled
 
@@ -5555,7 +5639,7 @@ DOS_FN_68_RESERVED_68:
          *
          * INT 21h AH=68h "Commit File" (fflush): resolve the FCB from its handle
          * (FCB+2); on failure report error 6.  Otherwise stamp the current DOS
-         * date/time into the record (rec+0x0D date, rec+0x0F time) and flush it through
+         * date/time into the record (rec+0x0D time, rec+0x0F date) and flush it through
          * DISPATCH_FCB_OPEN, reporting that status.  Both outcomes are handed to
          * SET_FCB_HANDLE_OR_CLEAR (the two calls share their tail).
          */
@@ -5563,17 +5647,17 @@ DOS_FN_68_RESERVED_68:
         void dos_fn_68_reserved_68(struct int21_regs far *regs) __addr__(0x3E76)
         {
             struct system_file_table far *rec; /* bp-4  */
-            unsigned int time;                 /* bp-6  */
+            unsigned int fdate;                /* bp-6  */
             unsigned int handle;               /* bp-8  */
-            unsigned int date;                 /* bp-0Ah */
+            unsigned int ftime;                /* bp-0Ah */
 
             handle = regs->r_bx;
             if (find_fcb_for_drive(handle, &rec) != 0) {
                 set_fcb_handle_or_clear(regs, 6);
             } else {
-                build_dos_datetime(&time, &date);
-                rec->s_time = time;
-                rec->s_date = date;
+                build_dos_datetime(&fdate, &ftime);
+                rec->s_date = fdate;
+                rec->s_time = ftime;
                 set_fcb_handle_or_clear(regs, (unsigned char)dispatch_fcb_open(rec));
             }
         }
@@ -5590,7 +5674,7 @@ SAVE_DOS_RETURN_FRAME:
          * DTA getters/setters access word-wise.
          */
 
-        void save_dos_return_frame(long v) __addr__(0x3ED3) { SDA_DTA_LONG = v; }
+        void save_dos_return_frame(unsigned char far *v) __addr__(0x3ED3) { SDA_DTA = v; }
         ;@endcompiled
 
 SET_FCB_FILE_POSITION:
@@ -5744,7 +5828,7 @@ INSTALL_DRIVER_SLOT_CLAIM:
         mov     word [es:bx], 1                                ;#4031: 26 C7 07 01 00
         push    es                                             ;#4036: 06
         push    bx                                             ;#4037: 53
-        call    near BIND_FCB_TO_DRIVER                        ;#4038: E8 A7 46
+        call    near CLOSE_SFT_ENTRY                           ;#4038: E8 A7 46
         add     sp, 4                                          ;#403B: 83 C4 04
 INSTALL_DRIVER_NEXT_SLOT:
         ; Loop tail — bump si and re-enter INSTALL_DRIVER_SCAN_LOOP
@@ -5894,8 +5978,7 @@ WRITE_FCB_TO_CON_OR_DRIVER:
             }
             buf[0] = 0x0D;
             buf[2] = op;
-            call_driver_with_packet((unsigned char far *)buf, FP_OFF(DRIVER_VEC),
-                                    FP_SEG(DRIVER_VEC));
+            call_driver_with_packet(buf, FP_OFF(DRIVER_VEC), FP_SEG(DRIVER_VEC));
         }
         ;@endcompiled
 
@@ -6940,36 +7023,29 @@ TRIM_TRAILING_NAME_SPACES:
             register int si;
             register int di;
 
-            si = 7;
-            do {
+            for (si = 7; si >= 0; si--) {
                 if (name[si] != ' ') {
                     break;
                 }
-                si--;
-            } while (si >= 0);
+            }
 
             if (si == 7) {
-                di = 0x0B;
-                do {
+                for (di = 0x0B; di > 7; di--) {
                     name[di + 1] = name[di];
-                    di--;
-                } while (di > 7);
+                }
                 name[++si] = '.';
                 si += 3;
             } else {
                 name[++si] = '.';
-                di = 8;
-                do {
+                for (di = 8; di < 0x0B; di++) {
                     name[++si] = name[di];
-                    di++;
-                } while (di < 0x0B);
+                }
             }
 
-            for (; si >= 0;) {
+            for (; si >= 0; si--) {
                 if (name[si] != ' ') {
                     break;
                 }
-                si--;
             }
             if (name[si] != '.') {
                 si++;
@@ -6994,7 +7070,8 @@ PARSE_FILESPEC_TO_FCB:
          * returned.
          */
 
-        int parse_filespec_to_fcb(unsigned char far **pp, unsigned char far *fcb) __addr__(0x495A)
+        unsigned char parse_filespec_to_fcb(unsigned char far **pp, unsigned char far *fcb)
+            __addr__(0x495A)
         {
             unsigned char far *ptr;   /* bp-4/-2 */
             register unsigned int si; /* SI (home slot bp-6) */
@@ -7027,7 +7104,7 @@ PARSE_FILESPEC_TO_FCB:
             } else {
                 namelen = 0x0B;
             }
-            mem_copy_far((unsigned char far *)NAME_BUF, fcb, 8);
+            mem_copy_far(NAME_BUF, fcb, 8);
             if (*ptr == '.') {
                 ptr++;
                 skip_leading_whitespace(&ptr);
@@ -7043,7 +7120,7 @@ PARSE_FILESPEC_TO_FCB:
                         return 0x0C;
                     }
                 }
-                mem_copy_far(fcb + 8, (unsigned char far *)EXT_BUF, 3);
+                mem_copy_far(fcb + 8, EXT_BUF, 3);
             }
             skip_leading_whitespace(&ptr);
             *pp = ptr;
@@ -8680,12 +8757,12 @@ DOS_FN_47_GET_CWD:
             FP_SEG(dest) = rec->r_ds;
             FP_OFF(dest) = rec->r_si;
             if ((DPB_TABLE[drive].c_dpbo | DPB_TABLE[drive].c_dpbs) != 0) {
-                SDA_SEARCH_ATTR = 0x10;
-                fcb_bit15_check((struct fcb far *)&DIR_SEARCH_FCB, 0);
-                if (SDA_REQ_DPB->d_media == 0xF8) {
-                    rec[1] = 1;
+                DIR_SEARCH_FCB.s_attr = 0x10;
+                fcb_bit15_check(&DIR_SEARCH_FCB, 0);
+                if (DIR_SEARCH_FCB.s_dpb->d_media == 0xF8) {
+                    ((unsigned char far *)rec)[1] = 1;
                 } else {
-                    rec[1] = 0xFF;
+                    ((unsigned char far *)rec)[1] = 0xFF;
                 }
             }
             si = DPB_TABLE[drive].c_pathoffw;
@@ -8722,11 +8799,11 @@ DOS_FN_39_MKDIR:
         {
             unsigned int new_cluster;          /* bp-2 */
             unsigned char status;              /* bp-4 */
-            unsigned int ftime;                /* bp-6 */
+            unsigned int fdate;                /* bp-6 */
             unsigned char far *buf;            /* bp-0xa / bp-8 */
             register int si;                   /* SI (home bp-0xc) */
-            unsigned char far *dir_ent;        /* bp-0x10 / bp-0xe */
-            unsigned int fdate;                /* bp-0x12 */
+            struct dir_entry far *dir_ent;     /* bp-0x10 / bp-0xe */
+            unsigned int ftime;                /* bp-0x12 */
             struct drive_param_block far *dpb; /* bp-0x16 / bp-0x14 */
             unsigned int per_sector;           /* bp-0x18 */
             unsigned int count;                /* bp-0x1a */
@@ -8734,8 +8811,8 @@ DOS_FN_39_MKDIR:
 
             FP_SEG(path) = rec->r_ds;
             FP_OFF(path) = rec->r_dx;
-            SDA_SEARCH_ATTR = 0x17;
-            status = parse_filename_to_fcb(path, (struct fcb far *)&DIR_SEARCH_FCB, &buf);
+            DIR_SEARCH_FCB.s_attr = 0x17;
+            status = parse_filename_to_fcb(path, &DIR_SEARCH_FCB, &buf);
             if (status >= 3) {
                 set_fcb_handle_or_clear(rec, lookup_error_msg(3));
                 return;
@@ -8744,7 +8821,7 @@ DOS_FN_39_MKDIR:
                 set_fcb_handle_or_clear(rec, lookup_error_msg(5, 2, 3, 3));
                 return;
             }
-            if (open_file_by_fcb_name((unsigned char far *)&DIR_SEARCH_FCB.f_name) != 0) {
+            if (open_file_by_fcb_name(&DIR_SEARCH_FCB.f_name) != 0) {
                 set_fcb_handle_or_clear(rec, lookup_error_msg(3));
                 return;
             }
@@ -8753,7 +8830,7 @@ DOS_FN_39_MKDIR:
                 set_fcb_handle_or_clear(rec, lookup_error_msg(5, 1, 4, 7));
                 return;
             }
-            dpb = SDA_REQ_DPB;
+            dpb = DIR_SEARCH_FCB.s_dpb;
             count = dpb->d_clumax + 1;
             per_sector = dpb->d_secsize;
             new_cluster = reserve_sector_for_drive(DIR_SEARCH_FCB.f_drvcode, 0);
@@ -8769,35 +8846,34 @@ DOS_FN_39_MKDIR:
             get_data_sector_buffer(DIR_SEARCH_FCB.f_drvcode, new_cluster, 0, &buf);
             mem_fill_zero(buf, per_sector);
             dir_ent = buf;
-            build_dos_datetime(&ftime, &fdate);
-            mem_copy_far((unsigned char far *)DOT_TEMPLATE, dir_ent, 0x0B);
-            *(unsigned int far *)(dir_ent + 0x1A) = new_cluster;
-            dir_ent[0x0B] = 0x10;
-            *(unsigned int far *)(dir_ent + 0x18) = ftime;
-            *(unsigned int far *)(dir_ent + 0x16) = fdate;
+            build_dos_datetime(&fdate, &ftime); /* fills (date, time) */
+            mem_copy_far(DOT_TEMPLATE, dir_ent, 0x0B);
+            dir_ent->de_cluster = new_cluster;
+            dir_ent->de_attr = 0x10;
+            dir_ent->de_date = fdate;
+            dir_ent->de_time = ftime;
             FP_OFF(dir_ent) += 0x20;
-            *(unsigned int far *)(dir_ent + 0x1A) = PARENT_DIR_CLUSTER;
-            dir_ent[0x0B] = 0x10;
-            *(unsigned int far *)(dir_ent + 0x18) = ftime;
-            *(unsigned int far *)(dir_ent + 0x16) = fdate;
-            mem_copy_far((unsigned char far *)DOTDOT_TEMPLATE, dir_ent, 0x0B);
+            dir_ent->de_cluster = DIR_SEARCH_FCB.s_parent;
+            dir_ent->de_attr = 0x10;
+            dir_ent->de_date = fdate;
+            dir_ent->de_time = ftime;
+            mem_copy_far(DOTDOT_TEMPLATE, dir_ent, 0x0B);
             mark_mcb_bit7(FP_SEG(buf), 1);
-            mem_copy_far((unsigned char far *)&DIR_SEARCH_FCB, (unsigned char far *)&NEW_DIR_FCB,
-                         0x2B);
+            mem_copy_far(&DIR_SEARCH_FCB, &NEW_DIR_FCB, 0x2B);
             NEW_DIR_FCB.f_name[0] = 0;
             NEW_DIR_SECTOR = 0xFFFF;
-            if (write_dir_entry((unsigned char far *)&NEW_DIR_FCB, &buf) != 0) {
+            if (write_dir_entry(&NEW_DIR_FCB, &buf) != 0) {
                 invalidate_cached_fcb(NEW_DIR_FCB.f_drvcode, new_cluster, 1, (long)0);
                 set_fcb_handle_or_clear(rec, lookup_error_msg(0x52));
                 return;
             }
-            dir_ent = locate_dir_entry_in_sector((unsigned char far *)&NEW_DIR_FCB, buf);
+            dir_ent = locate_dir_entry_in_sector(&NEW_DIR_FCB, buf);
             mem_fill_zero(dir_ent, 0x20);
-            mem_copy_far((unsigned char far *)&DIR_SEARCH_FCB.f_name, dir_ent, 0x0B);
-            dir_ent[0x0B] = 0x10;
-            *(unsigned int far *)(dir_ent + 0x18) = ftime;
-            *(unsigned int far *)(dir_ent + 0x16) = fdate;
-            *(unsigned int far *)(dir_ent + 0x1A) = new_cluster;
+            mem_copy_far(&DIR_SEARCH_FCB.f_name, dir_ent, 0x0B);
+            dir_ent->de_attr = 0x10;
+            dir_ent->de_date = fdate;
+            dir_ent->de_time = ftime;
+            dir_ent->de_cluster = new_cluster;
             mark_mcb_bit7(FP_SEG(buf), 1);
             walk_mcb_copy_matching(DIR_SEARCH_FCB.f_drvcode);
             set_fcb_handle_or_clear(rec, 0);
@@ -9912,15 +9988,16 @@ DOS_FN_3C_CREATE_FILE:
          * DOS_FN_3C_CREATE_FILE @ 0x645A in SISNE.SIS (39 bytes).
          *
          * INT 21h AH=3Ch "Create File": issue driver command 0x12 (create) for the
-         * caller's FCB, then record the returned handle (or clear the slot on error).
+         * caller's register frame, then record the returned handle (or clear the slot
+         * on error).
          */
 
-        void dos_fn_3c_create_file(unsigned char far *fcb) __addr__(0x645A)
+        void dos_fn_3c_create_file(struct int21_regs far *regs) __addr__(0x645A)
         {
             unsigned int result; /* bp-2 */
 
-            result = process_driver_request(fcb, 0x12);
-            set_fcb_handle_or_clear(fcb, result);
+            result = process_driver_request(regs, 0x12);
+            set_fcb_handle_or_clear(regs, result);
         }
         ;@endcompiled
 
@@ -10330,15 +10407,15 @@ DOS_FN_4E_FIND_FIRST_FILE:
          * DOS_FN_4E_FIND_FIRST_FILE @ 0x67E7 in SISNE.SIS (288 bytes).
          *
          * INT 21h AH=4Eh handler (find first matching directory entry).  Parse the
-         * caller's filespec into the search FCB [1434h]; on a parse failure map it to
-         * an error (0x12 file-not-found unless the parser already returned a specific
-         * code).  When the redirector is active, retry through the APPEND search-path
-         * scan, re-parsing each returned name until one is final.  On success copy the
-         * 0x2Bh search record into the DTA, fix up its network/local fields, trim,
-         * clear the caller FCB, and funnel through the shared SET_FCB_HANDLE_OR_CLEAR.
+         * caller's filespec (DS:DX) into the search FCB [1434h]; on a parse failure map
+         * it to an error (0x12 file-not-found unless the parser already returned a
+         * specific code).  When the redirector is active, retry through the APPEND
+         * search-path scan, re-parsing each returned name until one is final.  On
+         * success copy the 0x2Bh search record into the DTA, fix up its network/local
+         * fields, trim, clear AX, and funnel through the shared SET_FCB_HANDLE_OR_CLEAR.
          */
 
-        void dos_fn_4e_find_first_file(unsigned char far *fcb) __addr__(0x67E7)
+        void dos_fn_4e_find_first_file(struct int21_regs far *regs) __addr__(0x67E7)
         {
             unsigned char status;              /* bp-2 */
             unsigned int qpad_a;               /* bp-4 (reserved) */
@@ -10348,45 +10425,43 @@ DOS_FN_4E_FIND_FIRST_FILE:
             struct system_file_table far *rec; /* bp-0xe / bp-0xc */
             unsigned char far *path;           /* bp-0x12 / bp-0x10 */
 
-            FP_SEG(path) = *(unsigned int far *)(fcb + 0x0E);
-            FP_OFF(path) = *(unsigned int far *)(fcb + 0x06);
+            FP_SEG(path) = regs->r_ds;
+            FP_OFF(path) = regs->r_dx;
             rec = SDA_DTA;
-            SDA_SEARCH_ATTR = fcb[4];
-            status = parse_filename_to_fcb(path, (struct fcb far *)&DIR_SEARCH_FCB, &work);
+            DIR_SEARCH_FCB.s_attr = regs->r_cl;
+            status = parse_filename_to_fcb(path, &DIR_SEARCH_FCB, &work);
             if (status != 1) {
                 if (NET_REDIR_PRESENT == 0) {
                     if (status != 3) {
                         status = 0x12;
                     }
-                    set_fcb_handle_or_clear(fcb, lookup_error_msg(status));
+                    set_fcb_handle_or_clear(regs, lookup_error_msg(status));
                     return;
                 }
                 if (status == 3) {
-                    set_fcb_handle_or_clear(fcb, lookup_error_msg(status));
+                    set_fcb_handle_or_clear(regs, lookup_error_msg(status));
                     return;
                 }
                 counter = 0xFFFF;
                 do {
                     counter++;
-                    if (int2f_append_b701(path, (unsigned char far *)SDA_SCRATCH_BUF, counter,
-                                          SDA_SRC_SEG) != 0) {
-                        set_fcb_handle_or_clear(fcb, lookup_error_msg(0x12));
+                    if (int2f_append_b701(path, SDA_SCRATCH_BUF, counter, SDA_SRC_SEG) != 0) {
+                        set_fcb_handle_or_clear(regs, lookup_error_msg(0x12));
                         return;
                     }
-                } while (parse_filename_to_fcb((unsigned char far *)SDA_SCRATCH_BUF,
-                                               (struct fcb far *)&DIR_SEARCH_FCB, &work) != 1);
+                } while (parse_filename_to_fcb(SDA_SCRATCH_BUF, &DIR_SEARCH_FCB, &work) != 1);
             }
-            mem_copy_far((unsigned char far *)&DIR_SEARCH_FCB, rec, 0x2B);
+            mem_copy_far(&DIR_SEARCH_FCB, rec, 0x2B);
             if ((SDA_FCB_FLAGS & 0x80) != 0) {
-                mem_fill_value((unsigned char far *)(rec + 0x26), 3, 0x20);
-                rec[0x15] = 0x40;
-                *(unsigned int far *)(rec + 0x0D) = 0xFFFF;
+                mem_fill_value((unsigned char far *)rec + 0x26, 3, 0x20);
+                ((unsigned char far *)rec)[0x15] = 0x40;
+                *(unsigned int far *)((unsigned char far *)rec + 0x0D) = 0xFFFF;
             } else {
-                rec[0]++;
+                ((unsigned char far *)rec)[0]++;
             }
-            trim_trailing_name_spaces((unsigned char far *)(rec + 0x1E));
-            *(unsigned int far *)fcb = 0;
-            set_fcb_handle_or_clear(fcb, 0);
+            trim_trailing_name_spaces((unsigned char far *)rec + 0x1E);
+            regs->r_ax = 0;
+            set_fcb_handle_or_clear(regs, 0);
         }
         ;@endcompiled
 
@@ -10401,30 +10476,30 @@ DOS_FN_4F_FIND_NEXT_FILE:
          * write the pending directory entry; on a bad cluster [1441h] or a write
          * failure, mark the record deleted and raise error 0x12.  Otherwise copy the
          * refreshed entry back to the DTA, bump its first byte, trim the trailing name
-         * spaces, clear the caller FCB, and succeed.  Both outcomes funnel through the
-         * shared SET_FCB_HANDLE_OR_CLEAR tail (the success arm's `*fcb=0` store spills
-         * ES:BX so the merged fcb push reads memory like the error arm).
+         * spaces, clear AX, and succeed.  Both outcomes funnel through the shared
+         * SET_FCB_HANDLE_OR_CLEAR tail (the success arm's `regs->r_ax=0` store spills
+         * ES:BX so the merged frame push reads memory like the error arm).
          */
 
-        void dos_fn_4f_find_next_file(unsigned char far *fcb) __addr__(0x6907)
+        void dos_fn_4f_find_next_file(struct int21_regs far *regs) __addr__(0x6907)
         {
             unsigned int pad;                  /* bp-2 (reserved, unused) */
             unsigned int work;                 /* bp-4 */
             struct system_file_table far *rec; /* bp-8/-6 */
 
             rec = SDA_DTA;
-            mem_copy_far(rec, (unsigned char far *)&DIR_SEARCH_FCB, 0x2B);
+            mem_copy_far(rec, &DIR_SEARCH_FCB, 0x2B);
             DIR_SEARCH_FCB.f_drvcode--;
-            if (DIR_SEARCH_CLUSTER == 0xFFFF ||
-                write_dir_entry((unsigned char far *)&DIR_SEARCH_FCB, &work) != 0) {
-                rec->s_date = 0xFFFF;
-                set_fcb_handle_or_clear(fcb, lookup_error_msg(0x12));
+            if (DIR_SEARCH_FCB.s_cluster == 0xFFFF ||
+                write_dir_entry(&DIR_SEARCH_FCB, &work) != 0) {
+                rec->s_time = 0xFFFF;
+                set_fcb_handle_or_clear(regs, lookup_error_msg(0x12));
             } else {
-                mem_copy_far((unsigned char far *)&DIR_SEARCH_FCB, rec, 0x2B);
-                rec[0]++;
-                trim_trailing_name_spaces((unsigned char far *)(rec + 0x1E));
-                *(unsigned int far *)fcb = 0;
-                set_fcb_handle_or_clear(fcb, 0);
+                mem_copy_far(&DIR_SEARCH_FCB, rec, 0x2B);
+                ((unsigned char far *)rec)[0]++;
+                trim_trailing_name_spaces((unsigned char far *)rec + 0x1E);
+                regs->r_ax = 0;
+                set_fcb_handle_or_clear(regs, 0);
             }
         }
         ;@endcompiled
@@ -10457,9 +10532,9 @@ DOS_FN_43_GET_SET_ATTRS:
                 set_fcb_handle_or_clear(rec, lookup_error_msg(0x0C));
                 return;
             }
-            SDA_SEARCH_ATTR = 0x17;
-            status = parse_filename_to_fcb(path, (struct fcb far *)&DIR_SEARCH_FCB, &parse_out);
-            if (find_wildcard_question_mark((unsigned char far *)&DIR_SEARCH_FCB.f_name) != 0) {
+            DIR_SEARCH_FCB.s_attr = 0x17;
+            status = parse_filename_to_fcb(path, &DIR_SEARCH_FCB, &parse_out);
+            if (find_wildcard_question_mark(&DIR_SEARCH_FCB.f_name) != 0) {
                 status = 3;
             }
             if (status != 1 && status != 4) {
@@ -10477,13 +10552,12 @@ DOS_FN_43_GET_SET_ATTRS:
                     set_fcb_handle_or_clear(rec, lookup_error_msg(2, 2, 3, 3));
                     return;
                 }
-                dir_ent =
-                    locate_dir_entry_in_sector((unsigned char far *)&DIR_SEARCH_FCB, parse_out);
+                dir_ent = locate_dir_entry_in_sector(&DIR_SEARCH_FCB, parse_out);
                 attr = dir_ent[0x0B];
                 *(unsigned int far *)rec = attr;
-                *(unsigned int far *)(rec + 4) = attr;
+                *(unsigned int far *)((unsigned char far *)rec + 4) = attr;
             } else {
-                attr = *(unsigned int far *)(rec + 4);
+                attr = *(unsigned int far *)((unsigned char far *)rec + 4);
                 if (status == 4 || (attr & 0x10) != 0 || (attr & 0x08) != 0) {
                     set_fcb_handle_or_clear(rec, lookup_error_msg(5, 4, 3, 3));
                     return;
@@ -10496,8 +10570,7 @@ DOS_FN_43_GET_SET_ATTRS:
                     copy_dpb_entry_to_sda(WORK_FCB_DRIVE - 1, path);
                     invoke_dos_error_prompt(0);
                 }
-                dir_ent =
-                    locate_dir_entry_in_sector((unsigned char far *)&DIR_SEARCH_FCB, parse_out);
+                dir_ent = locate_dir_entry_in_sector(&DIR_SEARCH_FCB, parse_out);
                 if ((dir_ent[0x0B] & 0x10) != 0) {
                     dir_ent[0x0B] = attr | 0x10;
                 } else {
@@ -10535,72 +10608,72 @@ DOS_FN_57_GET_SET_FILE_TIME:
         /*
          * DOS_FN_57_GET_SET_FILE_TIME @ 0x6B79 in SISNE.SIS (269 bytes).
          *
-         * INT 21h AH=57h handler (get/set FCB file date+time).  mode = fcb[0] selects
-         * get (0) or set (1); anything else is error 1.  Resolve the record for the FCB
-         * handle (fcb+2); on failure raise error 6.  When the record's "new" flag
-         * (rec->s_flags bit 7) is set, mode 0 builds a fresh timestamp and returns it to
-         * the caller; otherwise mode 1 writes the caller's date/time into the record
+         * INT 21h AH=57h handler (get/set file date+time by handle).  mode = AL selects
+         * get (0) or set (1); anything else is error 1.  Resolve the record for the
+         * handle in BX; on failure raise error 6.  When the record's "new" flag
+         * (rec->s_flags bit 7) is set, mode 0 builds a fresh timestamp and returns it in
+         * CX/DX; otherwise mode 1 writes the caller's CX/DX date/time into the record
          * (clearing bit 6, notifying the redirector, re-dispatching the open) and mode 0
-         * loads the record's date/time back into the caller FCB.
+         * loads the record's date/time back into the caller's CX/DX.
          *
-         * Goto-free: every arm ends in `set_fcb_handle_or_clear(fcb, 0)` — the atom
+         * Goto-free: every arm ends in `set_fcb_handle_or_clear(regs, 0)` — the atom
          * suffix-merge factors the common statement suffixes at each nesting level, so
          * the copy-to-caller stores + the shared push/call tail are emitted once at the
          * last arm with the earlier arms jumping in at the right depth (the ROM's
          * COPY_TO_CALLER / DONE funnel).
          */
 
-        void dos_fn_57_get_set_file_time(struct fcb far *fcb) __addr__(0x6B79)
+        void dos_fn_57_get_set_file_time(struct int21_regs far *regs) __addr__(0x6B79)
         {
             struct system_file_table far *rec; /* bp-4  */
             unsigned char mode;                /* bp-6  */
             unsigned int pad1;                 /* bp-8  (reserved) */
-            unsigned int t;                    /* bp-0Ah */
+            unsigned int fdate;                /* bp-0Ah */
             unsigned int handle;               /* bp-0Ch */
             unsigned char attr;                /* bp-0Eh */
             unsigned int pad2;                 /* bp-10h (reserved) */
-            unsigned int d;                    /* bp-12h */
+            unsigned int ftime;                /* bp-12h */
 
-            mode = fcb[0];
-            handle = fcb->f_handle;
+            mode = regs->r_al;
+            handle = regs->r_bx;
             if (mode > 1) {
-                set_fcb_handle_or_clear(fcb, lookup_error_msg(1, 1));
+                set_fcb_handle_or_clear(regs, lookup_error_msg(1, 1));
             } else if (find_fcb_for_drive(handle, &rec) != 0) {
-                set_fcb_handle_or_clear(fcb, lookup_error_msg(6));
+                set_fcb_handle_or_clear(regs, lookup_error_msg(6));
             } else {
                 attr = rec->s_attr;
                 if ((rec->s_flags & 0x80) != 0) {
                     if (mode != 0) {
-                        set_fcb_handle_or_clear(fcb, 0);
+                        set_fcb_handle_or_clear(regs, 0);
                     } else {
-                        build_dos_datetime(&t, &d);
-                        fcb[6] = ((unsigned char *)&t)[0];
-                        fcb[7] = ((unsigned char *)&t)[1];
-                        fcb[4] = ((unsigned char *)&d)[0];
-                        fcb[5] = ((unsigned char *)&d)[1];
-                        set_fcb_handle_or_clear(fcb, 0);
+                        build_dos_datetime(&fdate, &ftime);
+                        regs->r_dl = ((unsigned char *)&fdate)[0];
+                        regs->r_dh = ((unsigned char *)&fdate)[1];
+                        regs->r_cl = ((unsigned char *)&ftime)[0];
+                        regs->r_ch = ((unsigned char *)&ftime)[1];
+                        set_fcb_handle_or_clear(regs, 0);
                     }
                 } else if (mode != 0) {
-                    ((unsigned char *)&t)[0] = fcb[6];
-                    ((unsigned char *)&t)[1] = fcb[7];
-                    ((unsigned char *)&d)[0] = fcb[4];
-                    ((unsigned char *)&d)[1] = fcb[5];
-                    rec->s_time = t;
-                    rec->s_date = d;
+                    ((unsigned char *)&fdate)[0] = regs->r_dl;
+                    ((unsigned char *)&fdate)[1] = regs->r_dh;
+                    ((unsigned char *)&ftime)[0] = regs->r_cl;
+                    ((unsigned char *)&ftime)[1] = regs->r_ch;
+                    rec->s_date = fdate;
+                    rec->s_time = ftime;
                     rec->s_flags &= 0xBF;
                     if (NETWORK_ACTIVE != 0) {
                         int2f_network_1086(rec, 0);
                     }
                     dispatch_fcb_open(rec);
-                    set_fcb_handle_or_clear(fcb, 0);
+                    set_fcb_handle_or_clear(regs, 0);
                 } else {
-                    t = rec->s_time;
-                    d = rec->s_date;
-                    fcb[6] = ((unsigned char *)&t)[0];
-                    fcb[7] = ((unsigned char *)&t)[1];
-                    fcb[4] = ((unsigned char *)&d)[0];
-                    fcb[5] = ((unsigned char *)&d)[1];
-                    set_fcb_handle_or_clear(fcb, 0);
+                    fdate = rec->s_date;
+                    ftime = rec->s_time;
+                    regs->r_dl = ((unsigned char *)&fdate)[0];
+                    regs->r_dh = ((unsigned char *)&fdate)[1];
+                    regs->r_cl = ((unsigned char *)&ftime)[0];
+                    regs->r_ch = ((unsigned char *)&ftime)[1];
+                    set_fcb_handle_or_clear(regs, 0);
                 }
             }
         }
@@ -10634,8 +10707,8 @@ DOS_FN_41_DELETE_FILE:
 
             FP_SEG(path) = rec->r_ds;
             FP_OFF(path) = rec->r_dx;
-            SDA_SEARCH_ATTR = 0x17;
-            status = parse_filename_to_fcb(path, (struct fcb far *)&DIR_SEARCH_FCB, &work);
+            DIR_SEARCH_FCB.s_attr = 0x17;
+            status = parse_filename_to_fcb(path, &DIR_SEARCH_FCB, &work);
             if (status != 1) {
                 set_fcb_handle_or_clear(rec, lookup_error_msg(status, 2, 3, 3));
                 return;
@@ -10646,12 +10719,12 @@ DOS_FN_41_DELETE_FILE:
             }
             status = 0;
             flag_del = 2;
-            rflag = find_wildcard_question_mark((unsigned char far *)&DIR_SEARCH_FCB.f_name);
+            rflag = find_wildcard_question_mark(&DIR_SEARCH_FCB.f_name);
             if (rflag != 0) {
-                attr_check = SEARCH_FCB_ATTR & 0x1E;
-                SDA_SEARCH_ATTR = 0;
-                if ((attr_check & SDA_SEARCH_ATTR) != attr_check) {
-                    status = write_dir_entry((unsigned char far *)&DIR_SEARCH_FCB, &work);
+                attr_check = DIR_SEARCH_FCB.s_fcbattr & 0x1E;
+                DIR_SEARCH_FCB.s_attr = 0;
+                if ((attr_check & DIR_SEARCH_FCB.s_attr) != attr_check) {
+                    status = write_dir_entry(&DIR_SEARCH_FCB, &work);
                 }
             }
             if (NETWORK_ACTIVE != 0 || REDIRECTOR_ACTIVE != 0) {
@@ -10669,10 +10742,10 @@ DOS_FN_41_DELETE_FILE:
                 }
             }
             for (; status == 0;) {
-                if (check_file_attr_bits(8, 1, SEARCH_FCB_ATTR) == 0) {
+                if (check_file_attr_bits(8, 1, DIR_SEARCH_FCB.s_fcbattr) == 0) {
                     if (NETWORK_ACTIVE != 0 || REDIRECTOR_ACTIVE != 0) {
                         if (rflag != 0) {
-                            mem_copy_far((unsigned char far *)DELETE_PATH_1452,
+                            mem_copy_far(DELETE_PATH_1452,
                                          (unsigned char far *)&SDA_SCRATCH_BUF[si], 0x0B);
                             trim_trailing_name_spaces((unsigned char far *)&SDA_SCRATCH_BUF[si]);
                         }
@@ -10680,11 +10753,10 @@ DOS_FN_41_DELETE_FILE:
                             net_delete_notify(0);
                         }
                         if (REDIRECTOR_ACTIVE != 0) {
-                            int2f_redirector_4603((unsigned char far *)SDA_SCRATCH_BUF);
+                            int2f_redirector_4603(SDA_SCRATCH_BUF);
                         }
                     }
-                    dir_ent =
-                        locate_dir_entry_in_sector((unsigned char far *)&DIR_SEARCH_FCB, work);
+                    dir_ent = locate_dir_entry_in_sector(&DIR_SEARCH_FCB, work);
                     dir_ent[0] = 0xE5;
                     cluster = *(unsigned int far *)(dir_ent + 0x1A);
                     mark_mcb_bit7(FP_SEG(work), 1);
@@ -10698,7 +10770,7 @@ DOS_FN_41_DELETE_FILE:
                 if (rflag == 0) {
                     break;
                 }
-                status = write_dir_entry((unsigned char far *)&DIR_SEARCH_FCB, &work);
+                status = write_dir_entry(&DIR_SEARCH_FCB, &work);
             }
             if (flag_del != 0) {
                 set_fcb_handle_or_clear(rec, lookup_error_msg(flag_del, 2, 3, 3));
@@ -11693,29 +11765,26 @@ DOS_FN_60_TRUENAME:
         /*
          * DOS_FN_60_TRUENAME @ 0x7710 in SISNE.SIS (83 bytes).
          *
-         * INT 21h AH=60h "Canonicalize path" (truename): rebuild the source path far
-         * pointer (DS at FCB+0x0E, DX at FCB+8) and the destination far pointer (ES at
-         * FCB+0x10, DI at FCB+0x0A) from the FCB, set the truename mode flag, resolve
-         * the path via PROCESS_PATH_LOOKUP_DRIVE, and report the status through
-         * SET_FCB_HANDLE_OR_CLEAR.
+         * INT 21h AH=60h "Canonicalize path" (truename): take the source path in DS:SI
+         * and the destination buffer in ES:DI from the caller's register frame, set the
+         * truename mode flag, resolve the path via PROCESS_PATH_LOOKUP_DRIVE, and report
+         * the status through SET_FCB_HANDLE_OR_CLEAR.
          */
 
-        void dos_fn_60_truename(unsigned char far *fcb) __addr__(0x7710)
+        void dos_fn_60_truename(struct int21_regs far *regs) __addr__(0x7710)
         {
             unsigned char far *src; /* bp-4 (off), bp-2 (seg) */
             unsigned char result;   /* bp-6 */
             unsigned int work;      /* bp-8 */
             unsigned char far *dst; /* bp-0Ch (off), bp-0Ah (seg) */
 
-            /* raw: AH=60h reuses the FCB block as {src off@8/seg@0Eh, dst
-             * off@0Ah/seg@10h} buffer pointers — name-area overlays, not fields. */
-            FP_SEG(src) = *(unsigned int far *)(fcb + 0x0E);
-            FP_OFF(src) = *(unsigned int far *)(fcb + 8);
-            FP_SEG(dst) = *(unsigned int far *)(fcb + 0x10);
-            FP_OFF(dst) = *(unsigned int far *)(fcb + 0x0A);
+            FP_SEG(src) = regs->r_ds;
+            FP_OFF(src) = regs->r_si;
+            FP_SEG(dst) = regs->r_es;
+            FP_OFF(dst) = regs->r_di;
             TRUENAME_MODE = 1;
             result = process_path_lookup_drive(src, dst, &work);
-            set_fcb_handle_or_clear(fcb, result);
+            set_fcb_handle_or_clear(regs, result);
         }
         ;@endcompiled
 
@@ -11768,8 +11837,7 @@ MATCH_FILENAME_PATTERN:
             register int si;
             unsigned char far *result;
 
-            mem_copy_far((unsigned char far *)&DPB_TABLE[drive],
-                         (unsigned char far *)SDA_SCRATCH_BUF, 0x43);
+            mem_copy_far((unsigned char far *)&DPB_TABLE[drive], SDA_SCRATCH_BUF, 0x43);
             resolve_logical_drive_letter(drive, &result);
             if (FP_SEG(result) != 0xFA1 || FP_OFF(result) != 0x14F0) {
                 si = 0;
@@ -11807,7 +11875,7 @@ MATCH_FILENAME_PATTERN:
                 invoke_dos_error_prompt(0x80);
             }
             if (REDIRECTOR_ACTIVE != 0) {
-                int2f_redirector_4603((unsigned char far *)SDA_SCRATCH_BUF);
+                int2f_redirector_4603(SDA_SCRATCH_BUF);
             }
         }
         ;@endcompiled
@@ -11825,7 +11893,7 @@ GET_DRIVE_TYPE:
          * or a different class returns 0xFF.
          */
 
-        int get_drive_type(unsigned char drive) __addr__(0x7895)
+        unsigned char get_drive_type(unsigned char drive) __addr__(0x7895)
         {
             if (drive == 0) {
                 return get_current_drive();
@@ -11943,14 +12011,13 @@ COPY_FCB_FIELDS:
             if ((SEED_CLUSTER | SEED_HANDLE) == 0) {
                 /* raw: +1D/+1F word/byte accesses straddle f_drvidx/f_netid —
                  * the DOS-2.0 LSTCLUS word overlaid by SISNE's per-byte fields.  */
-                compute_cluster_info_for_fcb(name, (unsigned int far *)&cluster,
-                                             (unsigned char far *)(fcb + 0x1F));
+                compute_cluster_info_for_fcb(name, &cluster, (unsigned char far *)fcb + 0x1F);
                 fcb->f_devid = type;
-                *(unsigned int far *)(fcb + 0x1D) = cluster;
+                *(unsigned int far *)((unsigned char far *)fcb + 0x1D) = cluster;
             } else {
                 fcb->f_devid = SEED_HANDLE_LO;
-                *(unsigned int far *)(fcb + 0x1D) = SEED_CLUSTER;
-                fcb[0x1F] = SEED_ATTR;
+                *(unsigned int far *)((unsigned char far *)fcb + 0x1D) = SEED_CLUSTER;
+                ((unsigned char far *)fcb)[0x1F] = SEED_ATTR;
             }
         }
         ;@endcompiled
@@ -11967,14 +12034,14 @@ INIT_FCB_TIMESTAMP:
 
         void init_fcb_timestamp(struct fcb far *fcb) __addr__(0x7A44)
         {
-            unsigned int t; /* bp-2 */
-            unsigned int d; /* bp-4 */
+            unsigned int fdate; /* bp-2 */
+            unsigned int ftime; /* bp-4 */
 
             fcb->f_extent = 0;
             fcb->f_sizelo = fcb->f_sizehi = 0;
-            build_dos_datetime(&t, &d);
-            fcb->f_date = t;
-            fcb->f_time = d;
+            build_dos_datetime(&fdate, &ftime);
+            fcb->f_date = fdate;
+            fcb->f_time = ftime;
             fcb->f_flags |= 0x40;
         }
         ;@endcompiled
@@ -12010,7 +12077,7 @@ EXPAND_NAME_WILDCARDS:
          * (i.e. it is a wildcard pattern), else 0.
          */
 
-        unsigned char expand_name_wildcards(unsigned char far *fcb) __addr__(0x7A9F)
+        unsigned char expand_name_wildcards(unsigned char far *name) __addr__(0x7A9F)
         {
             unsigned char limit;     /* bp-2 */
             unsigned char found;     /* bp-4 */
@@ -12019,22 +12086,20 @@ EXPAND_NAME_WILDCARDS:
 
             found = 0;
             i = 0;
-            limit = 8;
-            do {
+            for (limit = 8; limit < 0x0C; limit += 3) {
                 star = 0;
                 for (; limit > i; i++) {
-                    if (fcb[i] == '*') {
+                    if (name[i] == '*') {
                         star = 1;
                     }
                     if (star != 0) {
-                        fcb[i] = '?';
+                        name[i] = '?';
                     }
-                    if (fcb[i] == '?') {
+                    if (name[i] == '?') {
                         found = 1;
                     }
                 }
-                limit += 3;
-            } while (limit < 0x0C);
+            }
             return found;
         }
         ;@endcompiled
@@ -12045,16 +12110,17 @@ FIND_WILDCARD_QUESTION_MARK:
         /*
          * FIND_WILDCARD_QUESTION_MARK @ 0x7AF9 in SISNE.SIS (46 bytes).
          *
-         * Scan the 11-byte FCB name (far pointer arg) for the first '?' (0x3F) wildcard
-         * byte; return 1 if any is present, 0 otherwise.
+         * Scan the 11-byte FCB name field (far pointer arg) for the first '?' (0x3F)
+         * wildcard byte; return 1 if any is present, 0 otherwise.  The argument is the
+         * 8.3 name area, not a whole FCB.
          */
 
-        int find_wildcard_question_mark(unsigned char far *fcb) __addr__(0x7AF9)
+        unsigned char find_wildcard_question_mark(unsigned char far *name) __addr__(0x7AF9)
         {
             unsigned char i;
 
             for (i = 0; i < 0xB; i++) {
-                if (fcb[i] == 0x3F) {
+                if (name[i] == 0x3F) {
                     return 1;
                 }
             }
@@ -12079,8 +12145,8 @@ OPEN_FILE_BY_FCB_NAME:
             unsigned char buf[12]; /* bp-0Ch */
             unsigned char i;       /* bp-0Eh */
 
-            mem_copy_far(name, (unsigned char far *)buf, 0x0B);
-            upcase_fcb_filename((unsigned char far *)buf);
+            mem_copy_far(name, buf, 0x0B);
+            upcase_fcb_filename(buf);
             if (buf[0] == 0x20) {
                 return 2;
             }
@@ -12089,7 +12155,7 @@ OPEN_FILE_BY_FCB_NAME:
                     return 2;
                 }
             }
-            return (unsigned char)find_wildcard_question_mark((unsigned char far *)buf);
+            return (unsigned char)find_wildcard_question_mark(buf);
         }
         ;@endcompiled
 
@@ -12117,7 +12183,7 @@ COMPARE_DIR_ENTRY_TO_FCB:
             unsigned char mask; /* bp-2 */
             unsigned char attr; /* bp-4 */
 
-            if (entry[0] == 0 || entry[0] == 0xE5) {
+            if (((unsigned char far *)entry)[0] == 0 || ((unsigned char far *)entry)[0] == 0xE5) {
                 if (fcb[1] == 0) {
                     return 1;
                 }
@@ -12143,22 +12209,23 @@ LOCATE_DIR_ENTRY_IN_SECTOR:
          * LOCATE_DIR_ENTRY_IN_SECTOR @ 0x7C0D in SISNE.SIS (66 bytes).
          *
          * Compute the byte pointer of a 32-byte directory entry within a sector buffer:
-         * entries-per-sector = (bytes/sector at DPB+2) >> 5; the dir index (FCB+0x0D)
-         * modulo that gives the slot, scaled by 32 and added to the caller's `base`.
+         * entries-per-sector = (bytes/sector at the DPB) >> 5; the search record's
+         * directory index (s_cluster) modulo that gives the slot, scaled by 32 and
+         * added to the caller's `base`.  The argument is the directory-search record
+         * (struct dir_search), not an FCB — it carries the request DPB at s_dpb and the
+         * scan index at s_cluster.
          */
 
-        unsigned char far *locate_dir_entry_in_sector(unsigned char far *fcb,
+        unsigned char far *locate_dir_entry_in_sector(struct dir_search far *search,
                                                       unsigned char far *base) __addr__(0x7C0D)
         {
             unsigned int offset;               /* bp-2 */
             unsigned int clustersize;          /* bp-4 */
             struct drive_param_block far *dpb; /* bp-8 */
 
-            /* raw: the dir-walk FCB stashes a DPB far ptr at +11h (mid f_size)
-             * and a word at +0Dh (f_extent hi..f_recsiz lo) — aliased overlays.  */
-            dpb = *(unsigned char far *far *)(fcb + 0x11);
+            dpb = search->s_dpb;
             clustersize = dpb->d_secsize >> 5;
-            offset = *(unsigned int far *)(fcb + 0x0D) % clustersize;
+            offset = search->s_cluster % clustersize;
             return base + (offset << 5);
         }
         ;@endcompiled
@@ -13053,25 +13120,27 @@ SET_FCB_DRIVE_TYPE:
         /*
          * SET_FCB_DRIVE_TYPE @ 0x843A in SISNE.SIS (130 bytes).
          *
-         * Bind a destination FCB to a source path's drive: clear the binary-mode flag,
-         * map the source drive byte through GET_DRIVE_TYPE into the destination's drive
-         * field, and stash the caller's flag byte at +0Ch.  A 0xFF drive type, or a
-         * drive whose CDS entry has no DPB pointer, is rejected (return 1).  Otherwise
-         * verify the DPB's bit-15 access mode (mode 8 forces the write-check flag), copy
-         * the 0Bh-byte filename from source to destination, and return 0.
+         * Bind the destination search FCB to a source path's drive: clear the
+         * binary-mode flag, map the source drive byte through GET_DRIVE_TYPE into the
+         * search record's drive field (f_drvcode), and stash the caller's flag byte in
+         * its search attribute (s_attr, +0Ch).  A 0xFF drive type, or a drive whose CDS
+         * entry has no DPB pointer, is rejected (return 1).  Otherwise verify the DPB's
+         * bit-15 access mode (mode 8 forces the write-check flag), copy the 0Bh-byte
+         * filename from source to destination, and return 0.
          */
 
-        unsigned char set_fcb_drive_type(struct fcb far *fcb, struct fcb far *out,
+        unsigned char set_fcb_drive_type(struct fcb far *fcb, struct dir_search far *out,
                                          unsigned char flags) __addr__(0x843A)
         {
             FCB_BINARY_MODE = 0;
-            out[0] = get_drive_type(fcb[0]);
-            out[0x0C] = flags;
-            if (out[0] == 0xFF || (DPB_TABLE[out[0]].c_dpbo | DPB_TABLE[out[0]].c_dpbs) == 0) {
+            out->f_drvcode = get_drive_type(fcb->f_drvcode);
+            out->s_attr = flags;
+            if (out->f_drvcode == 0xFF ||
+                (DPB_TABLE[out->f_drvcode].c_dpbo | DPB_TABLE[out->f_drvcode].c_dpbs) == 0) {
                 return 1;
             }
             fcb_bit15_check(out, flags == 8 ? 1 : 0);
-            mem_copy_far((unsigned char far *)fcb + 1, (unsigned char far *)out + 1, 0x0B);
+            mem_copy_far(fcb->f_name, out->f_name, 0x0B);
             return 0;
         }
         ;@endcompiled
@@ -13323,34 +13392,37 @@ DISPATCH_FCB_OPEN_RET:
         pop     bp                                             ;#86E0: 5D
         ret                                                    ;#86E1: C3
 
-BIND_FCB_TO_DRIVER:
+CLOSE_SFT_ENTRY:
         ; Wrap DISPATCH_FCB_OPEN — decrement [es:bx] count, fan out via SUB_EAD1
-        ;@compiled bind_fcb_to_driver 86E2 74
+        ;@compiled close_sft_entry 86E2 74
         /*
-         * BIND_FCB_TO_DRIVER @ 0x86E2 in SISNE.SIS (74 bytes).
+         * CLOSE_SFT_ENTRY @ 0x86E2 in SISNE.SIS (74 bytes).
          *
-         * Wrap DISPATCH_FCB_OPEN: open/bind the FCB and remember failure (result=0FFh
-         * when the open returns non-zero, else 0).  Then drop the FCB's reference-count
-         * word (`(*(unsigned int far *)fcb)--`) and notify SHARE of the close/flush; if
-         * that count reached zero, zero-fill the 0x35-byte FCB block.  Returns the
-         * open-status byte (0 ok / 0FFh error), zero-extended.
+         * Wrap DISPATCH_FCB_OPEN: open/bind the SFT entry and remember failure
+         * (result=0FFh when the open returns non-zero, else 0).  Then drop the SFT
+         * entry's reference-count word (`sft->s_refcnt--`) and notify SHARE of the
+         * close/flush; if that count reached zero, zero-fill the whole 0x35-byte SFT
+         * entry.  Returns the open-status byte (0 ok / 0FFh error), zero-extended.
+         *
+         * The `sft` argument is a System File Table entry (DRIVER_TABLE + 6 +
+         * 0x35*index), not an FCB — see DOS_FN_10_CLOSE_FCB's redirector path.
          *
          * dispatch_fcb_open is declared `unsigned char`-returning here (vs the shared
          * header's `int`) because this caller tests only its low byte (`or al,al`).
          */
 
-        unsigned int bind_fcb_to_driver(unsigned char far *fcb) __addr__(0x86E2)
+        unsigned int close_sft_entry(struct system_file_table far *sft) __addr__(0x86E2)
         {
             unsigned char result;
 
             result = 0;
-            if (dispatch_fcb_open(fcb) != 0) {
+            if (dispatch_fcb_open(sft) != 0) {
                 result = 0xFF;
             }
-            (*(unsigned int far *)fcb)--;
-            notify_share_fcb(fcb);
-            if (*(unsigned int far *)fcb == 0) {
-                mem_fill_zero(fcb, 0x35);
+            sft->s_refcnt--;
+            notify_share_fcb(sft);
+            if (sft->s_refcnt == 0) {
+                mem_fill_zero(sft, 0x35);
             }
             return result;
         }
@@ -13477,7 +13549,7 @@ LOOKUP_DRIVER_OUTER_TEST:
         jmp     near LOOKUP_DRIVER_OUTER_BODY                  ;#8821: E9 69 FF
 
 LOOKUP_DRIVER_BIND_BEST:
-        ; Build far ptr to best slot, mark first word=1, call BIND_FCB_TO_DRIVER
+        ; Build far ptr to best slot, mark first word=1, call CLOSE_SFT_ENTRY
         mov     al, 35h                                        ;#8824: B0 35
         mul     byte [bp-4]                                    ;#8826: F6 66 FC
         add     ax, [418h]                                     ;#8829: 03 06 18 04
@@ -13491,7 +13563,7 @@ LOOKUP_DRIVER_BIND_BEST:
         mov     bx, [bp+4]                                     ;#8843: 8B 5E 04
         push    word [bx+2]                                    ;#8846: FF 77 02
         push    word [bx]                                      ;#8849: FF 37
-        call    near BIND_FCB_TO_DRIVER                        ;#884B: E8 94 FE
+        call    near CLOSE_SFT_ENTRY                           ;#884B: E8 94 FE
         add     sp, 4                                          ;#884E: 83 C4 04
         mov     al, [bp-4]                                     ;#8851: 8A 46 FC
 LOOKUP_DRIVER_TAIL_OK:
@@ -13876,7 +13948,7 @@ PROCESS_DIR_ENTRY_DISPATCH:
         ; Get deleted-attr; dispatch on BUILD_DEVICE_CMD_BLOCK result
         lea     ax, [bp-4]                                     ;#8B6F: 8D 46 FC
         push    ax                                             ;#8B72: 50
-        call    near GET_DELETED_FCB_ATTR                      ;#8B73: E8 BA 93
+        call    near GET_EXTENDED_FCB_ATTR                     ;#8B73: E8 BA 93
         add     sp, 2                                          ;#8B76: 83 C4 02
         mov     [bp-1Ah], al                                   ;#8B79: 88 46 E6
         push    word [bp-2]                                    ;#8B7C: FF 76 FE
@@ -14172,14 +14244,14 @@ DOS_FN_11_FIND_FIRST_FCB:
          * DOS_FN_11_FIND_FIRST_FCB @ 0x8DD3 in SISNE.SIS (20 bytes).
          *
          * INT 21h AH=11h handler (find first file via FCB).  Tail-call
-         * PROCESS_DIRECTORY_ENTRY with the caller's search FCB and mode=1 ("first" —
+         * PROCESS_DIRECTORY_ENTRY with the caller's register frame and mode=1 ("first" —
          * restart the directory scan).  Returns the scan result (FCB[0]=0 on a match,
          * 0FFh when none).
          */
 
-        int dos_fn_11_find_first_fcb(unsigned char far *fcb) __addr__(0x8DD3)
+        int dos_fn_11_find_first_fcb(struct int21_regs far *regs) __addr__(0x8DD3)
         {
-            return process_directory_entry(fcb, 1);
+            return process_directory_entry(regs, 1);
         }
         ;@endcompiled
 
@@ -14203,9 +14275,9 @@ DOS_FN_12_FIND_NEXT_FCB:
          * more matches).
          */
 
-        int dos_fn_12_find_next_fcb(unsigned char far *fcb) __addr__(0x8DE7)
+        int dos_fn_12_find_next_fcb(struct int21_regs far *regs) __addr__(0x8DE7)
         {
-            return process_directory_entry(fcb, 0);
+            return process_directory_entry(regs, 0);
         }
         ;@endcompiled
 
@@ -14487,10 +14559,10 @@ INVOKE_DOS_ERROR_PROMPT:
             unsigned char mode;   /* bp-2 */
             unsigned char result; /* bp-4 */
 
-            for (; (result = int2f_network_1088((unsigned char far *)SDA_SCRATCH_BUF)) != 0;) {
+            for (; (result = int2f_network_1088(SDA_SCRATCH_BUF)) != 0;) {
                 lookup_error_msg(result);
                 mode = (attr & 0x80) != 0 ? 0xFF : 5;
-                if (invoke_int24_with_device(0x1C, SDA_REQ_DPB->d_driver, mode,
+                if (invoke_int24_with_device(0x1C, DIR_SEARCH_FCB.s_dpb->d_driver, mode,
                                              DIR_SEARCH_FCB.f_drvcode) != 1) {
                     abort_program();
                 }
@@ -14506,7 +14578,7 @@ DOS_FN_13_DELETE_FCB:
         ;
         ; Body: 18h-byte frame.
         ; - Reassemble user's FCB far ptr from saved-regs.
-        ; - GET_DELETED_FCB_ATTR(fcb).
+        ; - GET_EXTENDED_FCB_ATTR(fcb).
         ; - If redirector enabled ([34Fh]!=0): BUILD_DEVICE_CMD_BLOCK to ask
         ; the network — on handle, raise error 3. Otherwise fall through.
         ; - Local path: SET_FCB_DRIVE_TYPE then iterate the directory marking
@@ -14539,7 +14611,7 @@ DOS_FN_13_DELETE_FCB:
 
             FP_SEG(path) = rec->r_ds;
             FP_OFF(path) = rec->r_dx;
-            attr = get_deleted_fcb_attr(&path);
+            attr = get_extended_fcb_attr(&path);
             if (REDIR_STATE_34F != 0) {
                 if (build_device_cmd_block(path) != 0) {
                     lookup_error_msg(5, 1, 3, 3);
@@ -14547,7 +14619,7 @@ DOS_FN_13_DELETE_FCB:
                     return;
                 }
             }
-            if (set_fcb_drive_type(path, (struct fcb far *)&DIR_SEARCH_FCB, attr) != 0) {
+            if (set_fcb_drive_type(path, &DIR_SEARCH_FCB, attr) != 0) {
                 lookup_error_msg(0x0F);
                 rec->r_al = 0xFF;
                 return;
@@ -14557,7 +14629,7 @@ DOS_FN_13_DELETE_FCB:
                 rec->r_al = 0xFF;
                 return;
             }
-            DIR_SEARCH_CLUSTER = 0xFFFF;
+            DIR_SEARCH_FCB.s_cluster = 0xFFFF;
             flag_del = 0;
             flag_e = 0;
             if (NETWORK_ACTIVE != 0 || REDIRECTOR_ACTIVE != 0) {
@@ -14569,7 +14641,7 @@ DOS_FN_13_DELETE_FCB:
                 si = copy_dpb_and_lookup(drive);
             }
             for (;;) {
-                if (write_dir_entry((unsigned char far *)&DIR_SEARCH_FCB, &work) != 0) {
+                if (write_dir_entry(&DIR_SEARCH_FCB, &work) != 0) {
                     if (flag_del != 0) {
                         walk_mcb_copy_matching(DIR_SEARCH_FCB.f_drvcode);
                         rec->r_al = 0;
@@ -14584,9 +14656,9 @@ DOS_FN_13_DELETE_FCB:
                     rec->r_al = 0xFF;
                     return;
                 }
-                dir_ent = locate_dir_entry_in_sector((unsigned char far *)&DIR_SEARCH_FCB, work);
+                dir_ent = locate_dir_entry_in_sector(&DIR_SEARCH_FCB, work);
                 if (check_file_attr_bits(8, 1, dir_ent[0x0B]) == 0) {
-                    network_or_local_copy((unsigned char far *)DELETE_PATH_1452, si);
+                    network_or_local_copy(DELETE_PATH_1452, si);
                     dir_ent[0] = 0xE5;
                     cluster = *(unsigned int far *)(dir_ent + 0x1A);
                     mark_mcb_bit7(FP_SEG(work), 1);
@@ -14607,7 +14679,7 @@ DOS_FN_16_CREATE_FCB:
         ; truncates existing) using the FCB at DS:DX.
         ;
         ; Body: 28h-byte frame.
-        ; - Reassemble FCB ptr, GET_DELETED_FCB_ATTR.
+        ; - Reassemble FCB ptr, GET_EXTENDED_FCB_ATTR.
         ; - Redirector probe (BUILD_DEVICE_CMD_BLOCK) first, then local path
         ; via SET_FCB_DRIVE_TYPE / directory write.
         ; - Sets FCB+0Bh attribute and creates the directory entry; opens
@@ -14629,94 +14701,91 @@ DOS_FN_16_CREATE_FCB:
 
         void dos_fn_16_create_fcb(struct int21_regs far *rec) __addr__(0x91E2)
         {
-            unsigned char far *fcb;      /* bp-2 / bp-4 */
-            unsigned char namebuf[0x0E]; /* bp-0x12 */
-            unsigned int ftime;          /* bp-0x14 */
-            unsigned int pad_16;         /* bp-0x16 */
-            unsigned char attr;          /* bp-0x18 */
-            unsigned int pad_1a;         /* bp-0x1a */
-            unsigned char flag_dev;      /* bp-0x1c */
-            unsigned char far *work;     /* bp-0x1e / bp-0x20 */
-            unsigned char far *dir_ent;  /* bp-0x22 / bp-0x24 */
-            unsigned int fdate;          /* bp-0x26 */
-            unsigned int cluster;        /* bp-0x28 */
+            struct fcb far *fcb;           /* bp-2 / bp-4 */
+            unsigned char namebuf[0x0E];   /* bp-0x12 */
+            unsigned int fdate;            /* bp-0x14 */
+            unsigned int pad_16;           /* bp-0x16 */
+            unsigned char attr;            /* bp-0x18 */
+            unsigned int pad_1a;           /* bp-0x1a */
+            unsigned char flag_dev;        /* bp-0x1c */
+            unsigned char far *work;       /* bp-0x1e / bp-0x20 */
+            struct dir_entry far *dir_ent; /* bp-0x22 / bp-0x24 */
+            unsigned int ftime;            /* bp-0x26 */
+            unsigned int cluster;          /* bp-0x28 */
 
             FP_SEG(fcb) = rec->r_ds;
             FP_OFF(fcb) = rec->r_dx;
-            attr = get_deleted_fcb_attr(&fcb);
+            attr = get_extended_fcb_attr(&fcb);
             if ((attr & 8) != 0) {
                 attr = 8;
             }
             flag_dev = build_device_cmd_block(fcb) != 0 && REDIR_STATE_34F != 0 ? 1 : 0;
             if (flag_dev != 0) {
-                if ((fcb[0x1A] & 1) != 0) {
+                if ((fcb->f_flags & 1) != 0) {
                     reset_fcb_flags();
                 }
-                init_fcb_timestamp((struct fcb far *)fcb);
-                *(unsigned int far *)(fcb + 0x0E) = 0x80;
+                init_fcb_timestamp(fcb);
+                fcb->f_recsiz = 0x80;
                 if (NETWORK_ACTIVE != 0) {
                     fill_device_fcb_request(fcb, flag_dev, 0x81);
                 }
             } else {
-                if (set_fcb_drive_type(fcb, (struct fcb far *)&DIR_SEARCH_FCB, attr) != 0) {
+                if (set_fcb_drive_type(fcb, &DIR_SEARCH_FCB, attr) != 0) {
                     lookup_error_msg(0x0F);
                     rec->r_al = 0xFF;
                     return;
                 }
-                if (open_file_by_fcb_name((unsigned char far *)(fcb + 1)) > 1) {
+                if (open_file_by_fcb_name(fcb->f_name) > 1) {
                     lookup_error_msg(0x57);
                     rec->r_al = 0xFF;
                     return;
                 }
-                upcase_fcb_filename((unsigned char far *)&DIR_SEARCH_FCB.f_name);
-                mem_copy_far((unsigned char far *)&DIR_SEARCH_FCB.f_name,
-                             (unsigned char far *)NAME_SCRATCH, 0x0B);
+                upcase_fcb_filename(&DIR_SEARCH_FCB.f_name);
+                mem_copy_far(&DIR_SEARCH_FCB.f_name, &NAME_SCRATCH, 0x0B);
                 if ((attr & 8) != 0) {
-                    mem_fill_value((unsigned char far *)&DIR_SEARCH_FCB.f_name, 0x0B, 0x3F);
+                    mem_fill_value(&DIR_SEARCH_FCB.f_name, 0x0B, 0x3F);
                 } else {
-                    SDA_SEARCH_ATTR = 0x17;
+                    DIR_SEARCH_FCB.s_attr = 0x17;
                 }
-                DIR_SEARCH_CLUSTER = 0xFFFF;
-                fcb[0] = get_drive_type(fcb[0]) + 1;
-                if (write_dir_entry((unsigned char far *)&DIR_SEARCH_FCB, &work) != 0) {
+                DIR_SEARCH_FCB.s_cluster = 0xFFFF;
+                fcb->f_drvcode = get_drive_type(fcb->f_drvcode) + 1;
+                if (write_dir_entry(&DIR_SEARCH_FCB, &work) != 0) {
                     DIR_SEARCH_FCB.f_name[0] = 0;
-                    DIR_SEARCH_CLUSTER = 0xFFFF;
-                    if (write_dir_entry((unsigned char far *)&DIR_SEARCH_FCB, &work) != 0) {
+                    DIR_SEARCH_FCB.s_cluster = 0xFFFF;
+                    if (write_dir_entry(&DIR_SEARCH_FCB, &work) != 0) {
                         lookup_error_msg(0x52);
                         rec->r_al = 0xFF;
                         return;
                     }
-                    dir_ent =
-                        locate_dir_entry_in_sector((unsigned char far *)&DIR_SEARCH_FCB, work);
-                    mem_copy_far((unsigned char far *)NAME_SCRATCH, dir_ent, 0x0B);
+                    dir_ent = locate_dir_entry_in_sector(&DIR_SEARCH_FCB, work);
+                    mem_copy_far(&NAME_SCRATCH, dir_ent, 0x0B);
                     cluster = 0;
                 } else {
-                    dir_ent =
-                        locate_dir_entry_in_sector((unsigned char far *)&DIR_SEARCH_FCB, work);
-                    if (check_file_attr_bits(3, 1, dir_ent[0x0B]) != 0) {
+                    dir_ent = locate_dir_entry_in_sector(&DIR_SEARCH_FCB, work);
+                    if (check_file_attr_bits(3, 1, dir_ent->de_attr) != 0) {
                         lookup_error_msg(5, 2, 3, 3);
                         rec->r_al = 0xFF;
                         return;
                     }
-                    cluster = *(unsigned int far *)(dir_ent + 0x1A);
+                    cluster = dir_ent->de_cluster;
                     if (REDIRECTOR_ACTIVE != 0 &&
                         int2f_redirector_4605(DIR_SEARCH_FCB.f_drvcode) != 0) {
-                        mem_copy_far(dir_ent, (unsigned char far *)namebuf, 0x0B);
-                        trim_trailing_name_spaces((unsigned char far *)namebuf);
-                        copy_dpb_entry_to_sda(fcb[0] - 1, (unsigned char far *)namebuf);
-                        int2f_redirector_4603((unsigned char far *)SDA_SCRATCH_BUF);
+                        mem_copy_far(dir_ent, namebuf, 0x0B);
+                        trim_trailing_name_spaces(namebuf);
+                        copy_dpb_entry_to_sda(fcb->f_drvcode - 1, namebuf);
+                        int2f_redirector_4603(&SDA_SCRATCH_BUF);
                     }
                 }
-                mem_fill_zero((unsigned char far *)(dir_ent + 0x0C), 0x0A);
-                *(unsigned int far *)(dir_ent + 0x1C) = *(unsigned int far *)(dir_ent + 0x1E) = 0;
-                dir_ent[0x0B] = attr | 0x20;
-                build_dos_datetime(&ftime, &fdate);
-                *(unsigned int far *)(dir_ent + 0x18) = ftime;
-                *(unsigned int far *)(dir_ent + 0x16) = fdate;
-                *(unsigned int far *)(dir_ent + 0x1A) = 0;
+                mem_fill_zero(dir_ent->de_res, 0x0A);
+                dir_ent->de_sizelo = dir_ent->de_sizehi = 0;
+                dir_ent->de_attr = attr | 0x20;
+                build_dos_datetime(&fdate, &ftime);
+                dir_ent->de_date = fdate;
+                dir_ent->de_time = ftime;
+                dir_ent->de_cluster = 0;
                 SEED_HANDLE = SEED_CLUSTER = 0;
-                copy_fcb_fields(fcb, dir_ent, (unsigned char far *)&DIR_SEARCH_FCB);
-                *(unsigned int far *)(fcb + 0x0E) = 0x80;
+                copy_fcb_fields(fcb, dir_ent, &DIR_SEARCH_FCB);
+                fcb->f_recsiz = 0x80;
                 if (NETWORK_ACTIVE != 0) {
                     fill_device_fcb_request(fcb, flag_dev, 0x81);
                 }
@@ -14738,11 +14807,11 @@ DOS_FN_10_CLOSE_FCB:
         ;
         ; Body: 20h-byte frame (smaller than open since no scratch FCB needed).
         ; - Reassemble user's FCB far ptr from saved-regs.
-        ; - GET_DELETED_FCB_ATTR(fcb).
+        ; - GET_EXTENDED_FCB_ATTR(fcb).
         ; - Check FCB+1Ah bit 7 (open-flag) → if not set, error out.
         ; - If [2E0h] (no redirector flagged on this drive), jmp to
         ; RENAME_POST_REDIR_CHECK (joins the shared FCB-close tail).
-        ; Otherwise call INT2F_NETWORK_1087 with the FCB → BIND_FCB_TO_DRIVER
+        ; Otherwise call INT2F_NETWORK_1087 with the FCB → CLOSE_SFT_ENTRY
         ; → if both report success, the redirector handled the close.
         ;
         ; @return  FCB[0] = 0 on success, 0FFh on failure.
@@ -14765,7 +14834,7 @@ DOS_FN_10_CLOSE_FCB:
             unsigned int hi;               /* bp-2 */
             unsigned int lo;               /* bp-4 */
             unsigned char far *sft;        /* bp-8 / bp-6 */
-            unsigned char far *fcb;        /* bp-0xc / bp-0xa */
+            struct fcb far *fcb;           /* bp-0xc / bp-0xa */
             unsigned char attr;            /* bp-0xe */
             unsigned char devbit;          /* bp-0x10 */
             unsigned char far *sector_val; /* bp-0x14 / bp-0x12 */
@@ -14777,16 +14846,16 @@ DOS_FN_10_CLOSE_FCB:
             FP_SEG(fcb) = rec->r_ds;
             FP_OFF(fcb) = rec->r_dx;
             flag_e = 0;
-            attr = get_deleted_fcb_attr(&fcb);
-            devbit = fcb[0x1A] & 0x80;
+            attr = get_extended_fcb_attr(&fcb);
+            devbit = fcb->f_flags & 0x80;
             if (NETWORK_ACTIVE != 0) {
-                sft = DRIVER_TABLE + 0x35 * fcb[0x1D] + 6;
-                flag_e = int2f_network_1087(sft, *(unsigned int far *)(fcb + 0x1E));
+                sft = DRIVER_TABLE + 0x35 * fcb->f_drvidx + 6;
+                flag_e = int2f_network_1087(sft, fcb->f_netid);
                 if (flag_e != 0) {
-                    *(long far *)(fcb + 0x10) = *(long far *)(sft + 0x11);
-                    *(unsigned int far *)(fcb + 0x14) = *(unsigned int far *)(sft + 0x0F);
-                    *(unsigned int far *)(fcb + 0x16) = *(unsigned int far *)(sft + 0x0D);
-                    if (bind_fcb_to_driver(sft) != 0) {
+                    fcb->f_size = *(long far *)(sft + 0x11);
+                    fcb->f_date = *(unsigned int far *)(sft + 0x0F);
+                    fcb->f_time = *(unsigned int far *)(sft + 0x0D);
+                    if (close_sft_entry(sft) != 0) {
                         lookup_error_msg(2);
                         rec->r_al = 0xFF;
                         return;
@@ -14795,17 +14864,17 @@ DOS_FN_10_CLOSE_FCB:
             }
             if (flag_e == 0) {
                 if (devbit != 0) {
-                    if ((fcb[0x1A] & 1) != 0) {
+                    if ((fcb->f_flags & 1) != 0) {
                         reset_fcb_flags();
                     }
-                } else if ((fcb[0x1A] & 0x40) == 0) {
-                    drive = fcb[0x19];
+                } else if ((fcb->f_flags & 0x40) == 0) {
+                    drive = fcb->f_drive;
                     if (get_drive_type(drive) == 0xFF) {
                         goto done;
                     }
                     dpb = get_dpb_by_drive_index(drive);
-                    hi = fcb[0x18];
-                    lo = *(unsigned int far *)(fcb + 0x1D);
+                    hi = fcb->f_devid;
+                    lo = *(unsigned int far *)((unsigned char far *)fcb + 0x1D);
                     if (((long)(*(unsigned int far *)(dpb + 0x0D) - 1) << dpb[0x05]) +
                             *(unsigned int far *)(dpb + 0x0B) <=
                         (((long)hi << 16) | lo)) {
@@ -14814,20 +14883,20 @@ DOS_FN_10_CLOSE_FCB:
                     sector_read_at_dpb_offset(
                         drive, (((long)hi << 16) | lo) - *(unsigned int far *)(dpb + 0x10),
                         &sector_val);
-                    FP_OFF(dir_ent) = (fcb[0x1F] << 5) + FP_OFF(sector_val);
+                    FP_OFF(dir_ent) =
+                        (((unsigned char far *)fcb)[0x1F] << 5) + FP_OFF(sector_val);
                     FP_SEG(dir_ent) = FP_SEG(sector_val);
-                    mem_copy_far((unsigned char far *)(fcb + 1), (unsigned char far *)SFT_SCRATCH,
-                                 0x0B);
-                    upcase_fcb_filename((unsigned char far *)SFT_SCRATCH);
-                    if (compare_fcb_name((unsigned char far *)SFT_SCRATCH, dir_ent) == 0) {
+                    mem_copy_far((unsigned char far *)fcb + 1, SFT_SCRATCH, 0x0B);
+                    upcase_fcb_filename(SFT_SCRATCH);
+                    if (compare_fcb_name(SFT_SCRATCH, dir_ent) == 0) {
                         lookup_error_msg(2);
                         rec->r_al = 0xFF;
                         return;
                     }
-                    *(long far *)(dir_ent + 0x1C) = *(long far *)(fcb + 0x10);
-                    *(unsigned int far *)(dir_ent + 0x18) = *(unsigned int far *)(fcb + 0x14);
-                    *(unsigned int far *)(dir_ent + 0x16) = *(unsigned int far *)(fcb + 0x16);
-                    *(unsigned int far *)(dir_ent + 0x1A) = *(unsigned int far *)(fcb + 0x1B);
+                    *(long far *)(dir_ent + 0x1C) = fcb->f_size;
+                    *(unsigned int far *)(dir_ent + 0x18) = fcb->f_date;
+                    *(unsigned int far *)(dir_ent + 0x16) = fcb->f_time;
+                    *(unsigned int far *)(dir_ent + 0x1A) = fcb->f_cluspos;
                     dir_ent[0x0B] |= 0x20;
                     mark_mcb_bit7(FP_SEG(sector_val), 1);
                     walk_mcb_copy_matching(drive);
@@ -14837,7 +14906,7 @@ DOS_FN_10_CLOSE_FCB:
                 }
             }
             devbit == 0;
-            fcb[0x1A] |= 0x40;
+            fcb->f_flags |= 0x40;
         done:
             rec->r_al = 0;
         }
@@ -14874,7 +14943,7 @@ DOS_FN_17_RENAME_FCB:
 
         void dos_fn_17_rename_fcb(struct int21_regs far *rec) __addr__(0x9751)
         {
-            unsigned char far *fcb;      /* bp-2 / bp-4 */
+            struct fcb far *fcb;         /* bp-2 / bp-4 */
             unsigned char match;         /* bp-6 */
             unsigned char idx;           /* bp-8 */
             unsigned char r1;            /* bp-0xa */
@@ -14891,11 +14960,11 @@ DOS_FN_17_RENAME_FCB:
 
             FP_SEG(fcb) = rec->r_ds;
             FP_OFF(fcb) = rec->r_dx;
-            attr = get_deleted_fcb_attr(&fcb);
+            attr = get_extended_fcb_attr(&fcb);
             attr = (attr & 8) != 0 ? 8 : attr & 0x17;
             rec->r_al = 0;
             fcb_copy = fcb;
-            mem_copy_far(fcb, (unsigned char far *)WORK_FCB, 0x25);
+            mem_copy_far(fcb, WORK_FCB, 0x25);
             r1 = open_file_by_fcb_name((unsigned char far *)(fcb_copy + 1));
             if (r1 <= 1) {
                 if (open_file_by_fcb_name((unsigned char far *)(fcb_copy + 0x11)) <= 1) {
@@ -14907,37 +14976,35 @@ DOS_FN_17_RENAME_FCB:
             return;
         bound_ok:
             if (REDIR_STATE_34F != 0) {
-                if (build_device_cmd_block((unsigned char far *)WORK_FCB) != 0) {
+                if (build_device_cmd_block(WORK_FCB) != 0) {
                     lookup_error_msg(5, 1, 3, 3);
                     rec->r_al = 0xFF;
                     return;
                 }
             }
-            if (set_fcb_drive_type(fcb, (struct fcb far *)&DIR_SEARCH_FCB, attr) != 0) {
+            if (set_fcb_drive_type(fcb, &DIR_SEARCH_FCB, attr) != 0) {
                 lookup_error_msg(0x0F);
                 rec->r_al = 0xFF;
                 return;
             }
             if (attr == 8) {
-                DIR_SEARCH_CLUSTER = 0xFFFF;
-                if (write_dir_entry((unsigned char far *)&DIR_SEARCH_FCB, &work) != 0) {
+                DIR_SEARCH_FCB.s_cluster = 0xFFFF;
+                if (write_dir_entry(&DIR_SEARCH_FCB, &work) != 0) {
                     goto err2;
                 }
-                dir_ent = locate_dir_entry_in_sector((unsigned char far *)&DIR_SEARCH_FCB, work);
+                dir_ent = locate_dir_entry_in_sector(&DIR_SEARCH_FCB, work);
                 mem_copy_far((unsigned char far *)(fcb_copy + 0x11), dir_ent, 0x0B);
                 mark_mcb_bit7(FP_SEG(work), 1);
             walk_ret:
                 walk_mcb_copy_matching(DIR_SEARCH_FCB.f_drvcode);
                 return;
             }
-            mem_copy_far((unsigned char far *)&DIR_SEARCH_FCB, (unsigned char far *)SRCH_FCB_COPY,
-                         0x2B);
-            mem_copy_far((unsigned char far *)(fcb_copy + 0x11),
-                         (unsigned char far *)NAME_SCRATCH, 0x0B);
+            mem_copy_far(&DIR_SEARCH_FCB, SRCH_FCB_COPY, 0x2B);
+            mem_copy_far((unsigned char far *)(fcb_copy + 0x11), NAME_SCRATCH, 0x0B);
             qcount = 0;
             for (si = 0; si < 0x0B; si++) {
                 if (NAME_SCRATCH[si] == 0x3F) {
-                    NAME_SCRATCH[si] = DIR_SEARCH_NAME[si];
+                    NAME_SCRATCH[si] = DIR_SEARCH_FCB.f_name[si];
                     if (NAME_SCRATCH[si] == 0x3F) {
                         QPOS_TABLE[qcount++] = si;
                     }
@@ -14946,7 +15013,7 @@ DOS_FN_17_RENAME_FCB:
             SRCH_ATTR_11D8 = 0x17;
             idx = 0;
             SRCH_CLUS_11D9 = 0xFFFF;
-            while (write_dir_entry((unsigned char far *)SRCH_FCB_COPY, &work) == 0) {
+            while (write_dir_entry(SRCH_FCB_COPY, &work) == 0) {
                 if (qcount == 0) {
                     lookup_error_msg(5, 2, 3, 3);
                     rec->r_al = 0xFF;
@@ -14964,14 +15031,14 @@ DOS_FN_17_RENAME_FCB:
                 }
             }
             renamed = 0;
-            DIR_SEARCH_CLUSTER = 0xFFFF;
+            DIR_SEARCH_FCB.s_cluster = 0xFFFF;
             if (NETWORK_ACTIVE == 0 && REDIRECTOR_ACTIVE == 0) {
                 goto scan;
             }
-            drive = fcb[0] == 0 ? get_current_drive() : fcb[0] - 1;
+            drive = fcb->f_drvcode == 0 ? get_current_drive() : fcb->f_drvcode - 1;
             dpb = copy_dpb_and_lookup(drive);
         scan:
-            if (write_dir_entry((unsigned char far *)&DIR_SEARCH_FCB, &work) != 0) {
+            if (write_dir_entry(&DIR_SEARCH_FCB, &work) != 0) {
                 goto done_check;
             }
             match = 0;
@@ -14989,10 +15056,9 @@ DOS_FN_17_RENAME_FCB:
             if (match != 0) {
                 goto err523;
             }
-            dir_ent = locate_dir_entry_in_sector((unsigned char far *)&DIR_SEARCH_FCB, work);
+            dir_ent = locate_dir_entry_in_sector(&DIR_SEARCH_FCB, work);
             network_or_local_copy(dir_ent, dpb);
-            mem_copy_far((unsigned char far *)NAME_SCRATCH, (unsigned char far *)WORK_FCB_NAME,
-                         0x0B);
+            mem_copy_far(NAME_SCRATCH, WORK_FCB_NAME, 0x0B);
             if (0xC7 - qcount == idx) {
                 lookup_error_msg(0x57);
                 rec->r_al = 0xFF;
@@ -15002,15 +15068,15 @@ DOS_FN_17_RENAME_FCB:
                 WORK_FCB_NAME[QPOS_TABLE[si]] = QCHAR_TABLE[idx++] =
                     DELETE_PATH_1452[QPOS_TABLE[si]];
             }
-            if (open_file_by_fcb_name((unsigned char far *)WORK_FCB_NAME) != 0) {
+            if (open_file_by_fcb_name(WORK_FCB_NAME) != 0) {
                 goto err523;
             }
             if (REDIR_STATE_34F != 0) {
-                if (build_device_cmd_block((unsigned char far *)WORK_FCB) != 0) {
+                if (build_device_cmd_block(WORK_FCB) != 0) {
                     goto err523;
                 }
             }
-            mem_copy_far((unsigned char far *)WORK_FCB_NAME, dir_ent, 0x0B);
+            mem_copy_far(WORK_FCB_NAME, dir_ent, 0x0B);
             mark_mcb_bit7(FP_SEG(work), 1);
             renamed = 1;
             if (r1 == 0) {
@@ -15044,7 +15110,7 @@ DOS_FN_23_GET_FILE_SIZE_FCB:
         ;
         ; Body: 24h-byte frame.
         ; - Mark FCB[0]=0 (clear pre-existing error).
-        ; - Reassemble FCB ptr, GET_DELETED_FCB_ATTR.
+        ; - Reassemble FCB ptr, GET_EXTENDED_FCB_ATTR.
         ; - Redirector probe via BUILD_DEVICE_CMD_BLOCK first.
         ; - Local path: SET_FCB_DRIVE_TYPE then directory scan; on match
         ; compute (filesize-bytes / FCB+0Eh) and store at FCB+21h.
@@ -15079,7 +15145,7 @@ DOS_FN_23_GET_FILE_SIZE_FCB:
             rec->r_al = 0;
             FP_SEG(path) = rec->r_ds;
             FP_OFF(path) = rec->r_dx;
-            attr = get_deleted_fcb_attr(&path);
+            attr = get_extended_fcb_attr(&path);
             if ((attr & 8) != 0) {
                 attr = 8;
             }
@@ -15089,35 +15155,32 @@ DOS_FN_23_GET_FILE_SIZE_FCB:
                     goto finalize;
                 }
             }
-            if (set_fcb_drive_type(path, (struct fcb far *)&DIR_SEARCH_FCB, attr) != 0) {
+            if (set_fcb_drive_type(path, &DIR_SEARCH_FCB, attr) != 0) {
                 lookup_error_msg(0x0F);
                 rec->r_al = 0xFF;
                 return;
             }
-            DIR_SEARCH_CLUSTER = 0xFFFF;
-            if (write_dir_entry((unsigned char far *)&DIR_SEARCH_FCB, &work) != 0) {
+            DIR_SEARCH_FCB.s_cluster = 0xFFFF;
+            if (write_dir_entry(&DIR_SEARCH_FCB, &work) != 0) {
                 if (NET_APPEND_ACTIVE == 0) {
                     lookup_error_msg(2);
                     rec->r_al = 0xFF;
                     return;
                 }
-                mem_copy_far((unsigned char far *)(path + 1), (unsigned char far *)namebuf, 0x0B);
-                trim_trailing_name_spaces((unsigned char far *)namebuf);
+                mem_copy_far((unsigned char far *)(path + 1), namebuf, 0x0B);
+                trim_trailing_name_spaces(namebuf);
                 index = 0xFFFF;
                 do {
                     index++;
-                    if (int2f_append_b701((unsigned char far *)namebuf,
-                                          (unsigned char far *)SDA_SCRATCH_BUF, index,
-                                          SDA_SRC_SEG) != 0) {
+                    if (int2f_append_b701(namebuf, SDA_SCRATCH_BUF, index, SDA_SRC_SEG) != 0) {
                         lookup_error_msg(2);
                         rec->r_al = 0xFF;
                         return;
                     }
-                } while ((unsigned int)parse_filename_to_fcb((unsigned char far *)SDA_SCRATCH_BUF,
-                                                             (struct fcb far *)&DIR_SEARCH_FCB,
+                } while ((unsigned int)parse_filename_to_fcb(SDA_SCRATCH_BUF, &DIR_SEARCH_FCB,
                                                              &work) != 1);
             }
-            dir_ent = locate_dir_entry_in_sector((unsigned char far *)&DIR_SEARCH_FCB, work);
+            dir_ent = locate_dir_entry_in_sector(&DIR_SEARCH_FCB, work);
             recsize = *(unsigned int far *)(path + 0x0E) != 0 ? *(unsigned int far *)(path + 0x0E)
                                                               : 0x80;
             size = divmod32(*(long far *)(dir_ent + 0x1C), (long)recsize);
@@ -15141,7 +15204,7 @@ DOS_FN_0F_OPEN_FCB:
         ; network-redirector packet).
         ; - Read saved-DS:DX from the saved-reg block, reassemble far ptr
         ; to user's FCB at [bp-66h:-68h].
-        ; - GET_DELETED_FCB_ATTR(fcb) to read the FCB attribute byte; clamp
+        ; - GET_EXTENDED_FCB_ATTR(fcb) to read the FCB attribute byte; clamp
         ; bit 3 (volume) to 8.
         ; - If [34Fh] (redirector enabled) → BUILD_DEVICE_CMD_BLOCK to ask
         ; the network; AL=1 means handled by redirector, AL=0 means fall
@@ -15160,7 +15223,7 @@ DOS_FN_0F_OPEN_FCB:
         mov     [bp-68h], ax                                   ;#9CBB: 89 46 98
         lea     ax, [bp-68h]                                   ;#9CBE: 8D 46 98
         push    ax                                             ;#9CC1: 50
-        call    near GET_DELETED_FCB_ATTR                      ;#9CC2: E8 6B 82
+        call    near GET_EXTENDED_FCB_ATTR                     ;#9CC2: E8 6B 82
         add     sp, 2                                          ;#9CC5: 83 C4 02
         mov     [bp-70h], al                                   ;#9CC8: 88 46 90
         test    byte [bp-70h], 8                               ;#9CCB: F6 46 90 08
@@ -15672,7 +15735,7 @@ COPY_DIR_ENTRY_ZERO_TAIL:
             unsigned char far *drv;
 
             if (lookup_fcb_by_index(dev, &drv) == 0) {
-                fcb_random_block_io(dev, (unsigned char far *)&ch, &CON_PUTC_COUNT);
+                fcb_random_block_io(dev, &ch, &CON_PUTC_COUNT);
                 return ch;
             }
             if ((unsigned int)check_con_busy(drv, &ch) != 0) {
@@ -15701,7 +15764,7 @@ COPY_DIR_ENTRY_ZERO_TAIL:
             unsigned char far *drv;
 
             if (lookup_fcb_by_index(dev, &drv) == 0) {
-                fcb_random_block_io(dev, (unsigned char far *)&ch, &CON_PUTC_COUNT);
+                fcb_random_block_io(dev, &ch, &CON_PUTC_COUNT);
                 check_ctrl_break_flags();
                 return ch;
             }
@@ -15728,7 +15791,7 @@ COPY_DIR_ENTRY_ZERO_TAIL:
             unsigned char far *fcb;
 
             if (lookup_fcb_by_index(dev, &fcb) == 0) {
-                fcb_random_block_write(dev, (unsigned char far *)&c, &CON_PUTC_COUNT);
+                fcb_random_block_write(dev, &c, &CON_PUTC_COUNT);
             } else {
                 con_write_char(fcb, c);
             }
@@ -15908,7 +15971,7 @@ READ_LINE_BUFFERED:
                 }
                 return 0x1A;
             } else {
-                fcb_random_block_io(0, (unsigned char far *)&ch, &CON_PUTC_COUNT);
+                fcb_random_block_io(0, &ch, &CON_PUTC_COUNT);
             }
             return ch;
         }
@@ -15943,7 +16006,7 @@ ECHO_OR_BUFFER_CHAR:
                     }
                 }
             } else {
-                fcb_random_block_write(1, (unsigned char far *)&c, &CON_PUTC_COUNT);
+                fcb_random_block_write(1, &c, &CON_PUTC_COUNT);
             }
         }
         ;@endcompiled
@@ -17171,12 +17234,11 @@ COPY_PROMPT_TEMPLATE:
         {
             if (INPUT_FCB_PTR[1] != 0) {
                 TEMPLATE_LEN = INPUT_FCB_PTR[1];
-                mem_copy_far((unsigned char far *)(INPUT_FCB_PTR + 2),
-                             (unsigned char far *)TEMPLATE_BUF, INPUT_FCB_PTR[1] + 1);
+                mem_copy_far((unsigned char far *)(INPUT_FCB_PTR + 2), TEMPLATE_BUF,
+                             INPUT_FCB_PTR[1] + 1);
             }
             INPUT_FCB_PTR[1] = TYPED_COUNT;
-            mem_copy_far((unsigned char far *)HIST_BUF, (unsigned char far *)(INPUT_FCB_PTR + 2),
-                         TYPED_COUNT + 1);
+            mem_copy_far(HIST_BUF, (unsigned char far *)(INPUT_FCB_PTR + 2), TYPED_COUNT + 1);
         }
         ;@endcompiled
 
@@ -19683,8 +19745,22 @@ DOS_FN_2E_SET_VERIFY:
         ; Body: 2 instructions. mov [456h], al; ret.
         ;
         ; @return  None.
-        mov     [456h], al                                     ;#BF7D: A2 56 04
-        ret                                                    ;#BF80: C3
+        ;@compiled dos_fn_2e_set_verify BF7D 4
+        /*
+         * DOS_FN_2E_SET_VERIFY @ 0xBF7D in SISNE.SIS (4 bytes).
+         *
+         * INT 21h AH=2Eh handler (set verify flag).  Store the caller's AL — the
+         * requested write-verify toggle — into the global VERIFY_FLAG [456h].  A bare
+         * register-input handler: no stack frame at all (no `push bp`/`mov bp,sp`), the
+         * argument is the live AL register the dispatcher passes in, and a bare `ret`.
+         * The sibling DOS_FN_54_GET_VERIFY reads this same cell back.
+         */
+
+        void dos_fn_2e_set_verify(unsigned char al) __addr__(0xBF7D) __noframe__
+        {
+            VERIFY_FLAG = al;
+        }
+        ;@endcompiled
         push    bp                                             ;#BF81: 55
         mov     bp, sp                                         ;#BF82: 8B EC
         mov     byte [43Eh], 0Fh                               ;#BF84: C6 06 3E 04 0F

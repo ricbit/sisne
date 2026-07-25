@@ -70,6 +70,7 @@ PASCAL = set()  # names of callee-cleaned (pascal) functions
 UCHAR_FUNCS = set()  # names of functions whose return is `unsigned char` (AL)
 LONG_FUNCS = set()  # names of functions whose return is `long`/`ulong` (DX:AX)
 BYTE_PARAMS = {}  # func name -> per-parameter byte-width flags (uchar params)
+FAR_PARAMS = {}  # func name -> per-parameter far-pointer flags (`T far *p`)
 
 KW = {
     'int',
@@ -293,11 +294,23 @@ def _param_group_is_byte(grp):
     )
 
 
+def _param_group_is_far(grp):
+    """A prototype parameter is a single far pointer (`T far *p`): a bare near
+    address argument (`&global`, an array) passed to it is promoted to a far
+    pointer.  A `T far **p` is a NEAR pointer to a far pointer (the `far` governs
+    the pointee, not the parameter), so it takes the near address as-is — it must
+    NOT match, or `&local_farptr` args would be wrongly pushed far."""
+    return any(t == ('kw', 'far') for t in grp) and (
+        sum(1 for t in grp if t == ('op', '*')) == 1
+    )
+
+
 def parse_extern(p):
     ty = parse_type(p)
     is_pascal = bool(p.acc('kw', 'pascal'))  # callee-cleaned (ret N) helper
     name = p.exp('id')[1]
     param_bytes = ()
+    param_far = ()
     if p.acc('op', '('):
         # Collect each comma-separated parameter group (at paren depth 1) so we
         # know which parameters are byte-width — the rest of the tokens are still
@@ -323,6 +336,7 @@ def parse_extern(p):
         if grp:
             groups.append(grp)
         param_bytes = tuple(_param_group_is_byte(g) for g in groups)
+        param_far = tuple(_param_group_is_far(g) for g in groups)
         kind = decl_kind(ty, True, False)
     elif p.acc('op', '['):
         while not p.acc('op', ']'):
@@ -335,7 +349,7 @@ def parse_extern(p):
     if kind in ('far_var', 'var', 'uvar') or kind.startswith('struct:'):
         GLOBTY[name] = ty  # keep the type string (`->`/`.` needs the tag)
     return ('extern', name, kind, addr, is_pascal, ty == 'uchar', param_bytes,
-            ty in ('long', 'ulong'))
+            ty in ('long', 'ulong'), param_far)
 
 
 def parse_function(p):
@@ -357,13 +371,20 @@ def parse_function(p):
     # with NO `push bp` (so args sit at [bp+2], not [bp+4]) and a bare `ret`
     # (no `pop bp`).  The dispatcher owns BP; the handler just needs it to reach
     # its saved-register-block far pointer.
-    no_bp = False
-    if p.pk() == ('id', '__nobp__'):
-        p.eat()
-        no_bp = True
+    # `__noframe__`: an even lighter shape than `__nobp__` — NO frame at all
+    # (no `push bp`, no `mov bp,sp`, no `mov sp,bp`, bare `ret`).  Its single
+    # `unsigned char` parameter is the live AL register the dispatcher passes in
+    # (DOS_FN_2E_SET_VERIFY reads the caller's AL straight into VERIFY_FLAG).
+    no_bp = no_frame = False
+    while p.pk() in (('id', '__nobp__'), ('id', '__noframe__')):
+        if p.eat()[1] == '__noframe__':
+            no_frame = True
+        else:
+            no_bp = True
     body = parse_block(p)
     far_ret = 'far' in ret_ty
-    return ('func', name, args, body, addr, far_ret, ret_ty == 'uchar', no_bp)
+    return ('func', name, args, body, addr, far_ret, ret_ty == 'uchar', no_bp,
+            no_frame)
 
 
 def parse_block(p):
@@ -2125,6 +2146,12 @@ class CG:
                 if t.startswith('ptr_'):
                     return t[4:]
                 return t
+            # `(*p)->fld` — a dereferenced pointer-to-pointer (`T far **p`): drop
+            # one pointer level, so `*p` is the inner (far) pointer whose struct
+            # the arrow resolves against.
+            if node[0] == 'deref':
+                t = typestr(node[1])
+                return t[4:] if t.startswith('ptr_') else t
             ni('member base', node)
 
         def tag_of(node):
@@ -2134,6 +2161,29 @@ class CG:
             if i < 0:
                 raise NameError(f'not a struct pointer: {node!r} ({ty})')
             return ty[i + 7 :]
+
+        def ptr_ty(node):
+            """Outermost pointer TYPE string of a cast / id / ptr-arith / member
+            expression, or None if it is not a pointer.  Used to scale explicit
+            `p + n` arithmetic by sizeof(*p)."""
+            if node[0] == 'cast':
+                return node[1] if node[1].startswith('ptr') else None
+            if nid(node):
+                t = types.get(node[1]) or GLOBTY.get(node[1], '')
+                return t if t.startswith('ptr') else None
+            if node[0] == 'bin' and node[1] in ('+', '-'):
+                return ptr_ty(node[2]) or ptr_ty(node[3])
+            if node[0] in ('arrow', 'dot'):
+                t = STRUCTS[tag_of(node[1])][node[2]][1]
+                return t if t.startswith('ptr') else None
+            return None
+
+        def pointee_size(pt):
+            """sizeof of the pointee named by pointer-type string `pt`."""
+            inner = pt[4:]  # strip 'ptr_'
+            if inner.startswith('far_'):
+                inner = inner[4:]  # strip 'far_'
+            return _type_size(inner)
 
         def scaled_base(idxnode):
             """`p[i]` where p is a struct pointer: the element address
@@ -2176,6 +2226,12 @@ class CG:
                 cast = pfx + fty
             elif fty.startswith('ptr_'):
                 cast = pfx + fty  # ptr field → chained ptr-to-ptr cast
+            elif fty.startswith('arr_'):
+                # `p->arrayfield` decays to a pointer to its first element:
+                # `(elem far *)(p + off)` (NO deref) — the same AST the explicit
+                # `(elem far *)p + off` byte idiom lowers to.
+                addr = ('bin', '+', lbase, ('num', off)) if off else lbase
+                return ('cast', pfx + fty[4:], addr)
             else:
                 ni('arrow field type', fty)
             addr = ('bin', '+', lbase, ('num', off)) if off else lbase
@@ -2188,6 +2244,16 @@ class CG:
                 return n
             if n[0] in ('arrow', 'dot'):
                 return lower(n)
+            # Collapse a redundant pointer-over-pointer reinterpret cast
+            # `(T far *)(U far *)x` → `(T far *)x`.  The `p + n` scaling above
+            # re-wraps a byte cast around its sum, so `*(uint far *)((uchar far
+            # *)p + off)` would otherwise nest two pointer casts; the outer
+            # target cast wins and the shape matches the single-cast spelling.
+            if n[0] == 'cast' and n[1].startswith('ptr'):
+                inner = rw(n[2])
+                if inner[0] == 'cast' and inner[1].startswith('ptr'):
+                    return ('cast', n[1], inner[2])
+                return ('cast', n[1], inner)
             # `p->arr[k]` — subscript of a scalar-ARRAY member: the element at
             # `p + off + sizeof(elem)*k`.  A uchar/char array lowers to the raw
             # byte-index form `(p_lowered)[off + k]` (identical to the bare
@@ -2245,6 +2311,74 @@ class CG:
                 and 'struct:' in (typestr(n[1][1]) or '')
             ):
                 return scaled_base(n[1])
+            # Bare `p[n]` subscript on a STRUCT pointer scales by sizeof(struct)
+            # — C semantics, consistent with `p + n`.  The byte-access idiom is
+            # `(unsigned char far *)p` (the far→far byte cast stripped, so the
+            # codegen byte-indexes it as before).  Scalar-pointer subscripts
+            # (int/long/near) are already scaled by the codegen and pass through
+            # untouched; `p[i].fld` / `&p[i]` / `p->arr[k]` are handled above.
+            if n[0] == 'idx' and n[1][0] not in ('arrow', 'dot'):
+                pt = ptr_ty(n[1]) or ''
+                pointee = pt[4:]
+                if pointee.startswith('far_'):
+                    pointee = pointee[4:]
+                if (
+                    pointee in ('uchar', 'char')
+                    and n[1][0] == 'cast'
+                    and n[1][1].startswith('ptr_far')
+                    and ptr_ty(n[1][2])
+                ):
+                    return ('idx', rw(n[1][2]), rw(n[2]))  # strip byte cast
+                if pointee.startswith('struct:'):
+                    size = _type_size(pointee)
+                    term = ('num', size * n[2][1]) if num(n[2]) else (
+                        'bin', '*', ('num', size), rw(n[2]))
+                    cast = ('ptr_far_' if 'far' in pt else 'ptr_') + pointee
+                    return ('deref', ('cast', cast, ('bin', '+', rw(n[1]), term)))
+            # Explicit pointer arithmetic `p + n` / `p - n` scales the integer
+            # term by sizeof(*p) — C semantics, matching the subscript path.  A
+            # byte pointee (char/uchar, sizeof 1) adds no multiply, so the raw
+            # byte-offset idiom keeps an `unsigned char far *` operand and lowers
+            # unchanged.  A reinterpret cast `(unsigned char far *)structptr` is
+            # the size-1 signal: the far→far cast is stripped so the downstream
+            # far-address lowering sees the base pointer directly — identical to
+            # the pre-scaling AST (`*(T far *)(p + off)`, opassign, etc.).
+            if n[0] == 'bin' and n[1] in ('+', '-'):
+                lt, rt = ptr_ty(n[2]), ptr_ty(n[3])
+                pnode = order = None
+                if lt and not rt:
+                    pnode, inode, order = n[2], n[3], 'pl'
+                elif rt and not lt and n[1] == '+':
+                    pnode, inode, order = n[3], n[2], 'pr'
+                if pnode is not None:
+                    size = pointee_size(ptr_ty(pnode))
+                    castwrap = None
+                    if (
+                        pnode[0] == 'cast'
+                        and pnode[1].startswith('ptr_far')
+                        and ptr_ty(pnode[2])
+                    ):
+                        castwrap = pnode[1]  # lift the far→far reinterpret out
+                        base = rw(pnode[2])
+                    else:
+                        base = rw(pnode)
+                    # A nested `p + a + b` re-wraps the byte cast around the inner
+                    # sum; lift it out again so ONE cast wraps the whole sum.
+                    if base[0] == 'cast' and base[1].startswith('ptr_far'):
+                        castwrap = base[1]
+                        base = base[2]
+                    if size == 1:
+                        term = rw(inode)
+                    elif num(inode):
+                        term = ('num', size * inode[1])  # fold sizeof*const
+                    else:
+                        term = ('bin', '*', ('num', size), rw(inode))
+                    summ = ('bin', n[1], base, term) if order == 'pl' else (
+                        'bin', '+', term, base)
+                    # Re-wrap the reinterpret cast around the whole sum, so
+                    # `(uchar far *)p + off` lowers to the `(uchar far *)(p + off)`
+                    # AST the arg/assign codegen already emits byte-identically.
+                    return ('cast', castwrap, summ) if castwrap else summ
             return tuple(rw(c) for c in n)
 
         return rw(body)
@@ -2385,11 +2519,16 @@ class CG:
         # Function args go at [bp+4], [bp+6], ...  (positive offsets)
         # Stored in self.locals with positive offsets to distinguish from
         # locals (which get negative offsets via collect_locals below).
+        noframe = getattr(self, '_no_frame', False)
         arg_off = 2 if getattr(self, '_no_bp', False) else 4
         for ty, aname in args:
             self.locals[aname] = (-arg_off, ty)  # stored as negated so
             # far ptr and long are 4 bytes; everything else 2
             arg_off += 4 if (pf(ty) or wlong(ty)) else 2
+        # A __noframe__ handler has no stack for args — its single uchar param is
+        # the live AL register on entry, so tag AL with it (reads are then free).
+        if noframe and args:
+            self._al_argname = args[0][1]
         self.collect_locals(body)
         # A local array (address-taken stack buffer) makes MSC keep an explicit
         # `add sp,N` after the final call instead of folding it into the epilogue's
@@ -2701,11 +2840,16 @@ class CG:
         self._cl_bvar0 = None  # a byte global just zeroed INTO CL (kept for a
         # following `(L & G) cmp L` — DOS_FN_41's SDA_SEARCH_ATTR)
         nobp = getattr(self, '_no_bp', False)
-        if not nobp:
-            self.emit(0x55)  # push bp
-        self.emit(0x8B, 0xEC)  # mov bp, sp
+        noframe = getattr(self, '_no_frame', False)
+        if not noframe:
+            if not nobp:
+                self.emit(0x55)  # push bp
+            self.emit(0x8B, 0xEC)  # mov bp, sp
         if self.local_size:
             self.emit(0x83, 0xEC, self.local_size)
+        # AL already holds the register-passed argument.
+        if getattr(self, '_al_argname', None):
+            self.al = self._al_argname
         if self.uses_di:
             self.emit(0x57)  # push di
         if self.uses_si:
@@ -2732,7 +2876,7 @@ class CG:
         # `mov sp,bp` restores the frame.  MSC omits it only for a pure
         # straight-line leaf with no frame activity at all — no locals, no saved
         # regs, no emitted call, and no control flow (no branches/loops/gotos).
-        if (
+        if not noframe and (
             self.local_size
             or self.uses_si
             or self.uses_di
@@ -2740,7 +2884,7 @@ class CG:
             or self._has_branch(body)
         ):
             self.emit(0x8B, 0xE5)  # mov sp, bp
-        if not nobp:
+        if not nobp and not noframe:
             self.emit(0x5D)  # pop bp
         self.emit(0xC3)  # ret
         self.resolve()
@@ -3646,6 +3790,8 @@ class CG:
                 (cond[1] == '<' and init[2][1] < cond[3][1])
                 or (cond[1] == '<=' and init[2][1] <= cond[3][1])
                 or (cond[1] == '!=' and init[2][1] != cond[3][1])
+                or (cond[1] == '>' and init[2][1] > cond[3][1])
+                or (cond[1] == '>=' and init[2][1] >= cond[3][1])
             )
         )
         loop = self.fresh('loop')
@@ -5699,6 +5845,10 @@ class CG:
                 and self.lt(rhs[1][2][1][1]) == 'long'
                 and num(rhs[2])
             )
+            # FP_OFF/FP_SEG(global far pointer) is a plain absolute-word load
+            # (mov ax,[g] / [g+2]) that can't touch ES:BX, so les-first — matching
+            # a direct component-global read (SDA_DTA_OFF / SDA_DTA_SEG).
+            fpseg_gfar = rhs[0] in ('fpoff', 'fpseg') and self.gfar(rhs[1])
             # A byte store needs only AL (no zero-extend); a word store needs AX.
             load = self.expr_to_al if kind == 'byte' else self.expr_to_ax
             if (
@@ -5706,6 +5856,7 @@ class CG:
                 or self._is_local_arr_read(rhs)
                 or near_cast_local
                 or long_half
+                or fpseg_gfar
             ):
                 # a simple memory rhs (e.g. a global or a stack-buffer word) doesn't
                 # touch ES:BX, so MSC loads the far pointer first, then the value.
@@ -6331,14 +6482,17 @@ class CG:
         # (les) doesn't touch AH, so a known-0 AH (e.g. seeded on a loop
         # back-edge) is still live for the first byte arg's widen.
         pbytes = BYTE_PARAMS.get(target[1], ())
+        pfar = FAR_PARAMS.get(target[1], ())
         for i in range(len(args) - 1, -1, -1):
             a = args[i]
+            far_param = i < len(pfar) and pfar[i]
             # Shared multi-arg call tail: the label lands before the leftmost
             # arg's push (lbl() clears the caches, so the push emits cold —
             # correct for every jump-in site as well as this fall-through).
             if share_lbl and a is args[0]:
                 self.lbl(share_lbl)
-            self.push_arg(a, byte_param=(i < len(pbytes) and pbytes[i]), arg0=(i == 0))
+            self.push_arg(a, byte_param=(i < len(pbytes) and pbytes[i]),
+                          arg0=(i == 0), far_param=far_param)
             # far pointers and longs (local/param or far_var global) are 4 bytes
             far_arg = (
                 (
@@ -6361,6 +6515,8 @@ class CG:
                         or pf(self.lty(a[2]))
                     )
                 )
+                # a bare near address promoted to far by a `far *` param
+                or (far_param and self._promotable_near_addr(a))
             )
             nbytes += 4 if far_arg else 2
         self.emit_call(addr)
@@ -6516,7 +6672,30 @@ class CG:
         self.break_lbls.pop()
         self.lbl(brk)
 
-    def push_arg(self, e, byte_param=False, arg0=False):
+    def _promotable_near_addr(self, a):
+        """A near address with a known segment — `&global` / `&local`, or a
+        global/local array name (which decays to its address) — promotable to a
+        far pointer when the callee parameter is `far *`.  The `(T far *)<addr>`
+        cast the promotion delegates to picks the right segment: DS for a global
+        (push ds), SS for a local buffer / `&local` (push ss)."""
+        if a[0] == 'addr' and nid(a[1]):
+            n = a[1][1]
+            return (
+                n in SYMS and SYMS[n][0] in ('arr', 'arr_w', 'var', 'uvar', 'bvar')
+            ) or n in self.locals
+        if nid(a):
+            n = a[1]
+            return (n in SYMS and SYMS[n][0] in ('arr', 'arr_w')) or (
+                n in self.locals and (self.lty(a) or '').startswith('arr')
+            )
+        return False
+
+    def push_arg(self, e, byte_param=False, arg0=False, far_param=False):
+        # A bare near address (`&global`/`&local` or an array name) handed to a
+        # `far *` parameter: promote it to a far pointer — identical to the
+        # explicit `(T far *)<addr>` cast, so the cast is not needed at the call.
+        if far_param and self._promotable_near_addr(e):
+            return self.push_arg(('cast', 'ptr_far_uchar', e))
         # A numeric literal filling a `unsigned char` parameter of a *pascal*
         # helper: MSC narrows it to a byte in AL and pushes the word (garbage AH)
         # — `mov al,N; push ax` (SHR_FAR_BUF_BY_CL's count).  cdecl callees keep
@@ -7620,6 +7799,22 @@ class CG:
             self.zaa()
             self.bx = key  # bx survives the AL load
             return
+        # arr[reg var ± const] → mov al, [si/di + (ARR±const)]  (the const folds
+        # into the base displacement).  A struct-member array indexed by a reg
+        # var normalizes to base[member_off + idx], e.g. DIR_SEARCH_FCB.f_name[si]
+        # → DIR_SEARCH_FCB[1 + si]; the '+' form is commutative.
+        if idx[0] == 'bin' and idx[1] in ('+', '-'):
+            if idx[1] == '+' and num(idx[2]) and self.rvid(idx[3]):
+                self.emit(0x8A, sd(0x84, self.rv(idx[3])),
+                          *w16((arr_addr + idx[2][1]) & 0xFFFF))
+                self.zaa()
+                return
+            if self.rvid(idx[2]) and num(idx[3]):
+                c = idx[3][1] if idx[1] == '+' else -idx[3][1]
+                self.emit(0x8A, sd(0x84, self.rv(idx[2])),
+                          *w16((arr_addr + c) & 0xFFFF))
+                self.zaa()
+                return
         # arr[reg var] → mov al, [si/di + ARR]  (the index lives in SI/DI)
         if self.rvid(idx):
             self.emit(0x8A, sd(0x84, self.rv(idx)), *w16(arr_addr))
@@ -9111,10 +9306,12 @@ def build_syms(decls, addr_map):
     uchar_funcs = set()
     long_funcs = set()
     byte_params = {}
+    far_params = {}
     for d in decls:
         if d[0] == 'extern':
             _, name, kind, addr, is_pascal, ret_uchar, param_bytes = d[:7]
             ret_long = len(d) > 7 and d[7]
+            param_far = d[8] if len(d) > 8 else ()
             if addr is None:
                 addr = addr_map.get(name)
             if addr is None:
@@ -9160,6 +9357,8 @@ def build_syms(decls, addr_map):
                     long_funcs.discard(name)
             if kind in ('func', 'far_func') and any(param_bytes):
                 byte_params[name] = param_bytes
+            if kind in ('func', 'far_func') and any(param_far):
+                far_params[name] = param_far
             if kind == 'uvar':
                 kind = 'var'
                 unsigned.add(name)
@@ -9175,7 +9374,7 @@ def build_syms(decls, addr_map):
                 addr = addr_map.get(name)
             if addr is not None:
                 syms[name] = ('far_func' if far_ret else 'func', addr)
-    return syms, unsigned, pascal, uchar_funcs, byte_params, long_funcs
+    return syms, unsigned, pascal, uchar_funcs, byte_params, long_funcs, far_params
 
 
 def compile_src(src, addr_map=None):
@@ -9188,18 +9387,19 @@ def compile_src(src, addr_map=None):
 
     Returns dict name -> (base_addr, bytes).
     """
-    global SYMS, PASCAL, UCHAR_FUNCS, BYTE_PARAMS, LONG_FUNCS
+    global SYMS, PASCAL, UCHAR_FUNCS, BYTE_PARAMS, LONG_FUNCS, FAR_PARAMS
     decls = parse(lex(src))
-    syms, unsigned, pascal, uchar_funcs, byte_params, long_funcs = build_syms(
+    syms, unsigned, pascal, uchar_funcs, byte_params, long_funcs, far_params = build_syms(
         decls, addr_map or {}
     )
     saved, saved_p, saved_u, saved_b = SYMS, PASCAL, UCHAR_FUNCS, BYTE_PARAMS
-    saved_l = LONG_FUNCS
+    saved_l, saved_f = LONG_FUNCS, FAR_PARAMS
     SYMS = syms
     PASCAL = pascal
     UCHAR_FUNCS = uchar_funcs
     BYTE_PARAMS = byte_params
     LONG_FUNCS = long_funcs
+    FAR_PARAMS = far_params
     try:
         out = {}
         for d in decls:
@@ -9212,6 +9412,7 @@ def compile_src(src, addr_map=None):
             cg = CG(base, unsigned)
             cg._func_ret_uchar = len(d) > 6 and d[6]
             cg._no_bp = len(d) > 7 and d[7]
+            cg._no_frame = len(d) > 8 and d[8]
             cg.emit_func(args, body)
             out[name] = (base, bytes(cg.buf))
         return out
@@ -9221,6 +9422,7 @@ def compile_src(src, addr_map=None):
         UCHAR_FUNCS = saved_u
         BYTE_PARAMS = saved_b
         LONG_FUNCS = saved_l
+        FAR_PARAMS = saved_f
 
 
 def dump(bs, base):
