@@ -367,24 +367,9 @@ def parse_function(p):
             args.append((ty, aname))
         p.acc('op', ',')
     addr = parse_addr_suffix(p)  # optional `__addr__(N)` on the def
-    # Optional `__nobp__` marker: a light INT 21h-handler frame — `mov bp,sp`
-    # with NO `push bp` (so args sit at [bp+2], not [bp+4]) and a bare `ret`
-    # (no `pop bp`).  The dispatcher owns BP; the handler just needs it to reach
-    # its saved-register-block far pointer.
-    # `__noframe__`: an even lighter shape than `__nobp__` — NO frame at all
-    # (no `push bp`, no `mov bp,sp`, no `mov sp,bp`, bare `ret`).  Its single
-    # `unsigned char` parameter is the live AL register the dispatcher passes in
-    # (DOS_FN_2E_SET_VERIFY reads the caller's AL straight into VERIFY_FLAG).
-    no_bp = no_frame = False
-    while p.pk() in (('id', '__nobp__'), ('id', '__noframe__')):
-        if p.eat()[1] == '__noframe__':
-            no_frame = True
-        else:
-            no_bp = True
     body = parse_block(p)
     far_ret = 'far' in ret_ty
-    return ('func', name, args, body, addr, far_ret, ret_ty == 'uchar', no_bp,
-            no_frame)
+    return ('func', name, args, body, addr, far_ret, ret_ty == 'uchar')
 
 
 def parse_block(p):
@@ -877,6 +862,7 @@ class CG:
         self._deferred_whiles = []  # queued out-of-line while bodies
         self.cxbx_var = None  # name whose full 4-byte value is in CX:BX
         self.esbx = None  # far_var whose data ES:BX currently points at
+        self._lbxdx = False  # a long accumulator that migrated to BX:DX
         self._regvar_zero = {}  # reg-var ('si'/'di') -> holds literal 0
         self.uses_di = False
         self._al_arr_store = False  # last store left its byte live in AL
@@ -1025,9 +1011,16 @@ class CG:
             return None
 
         if node[0] == 'idx' and num(node[2]):
-            b = far_base(node[1])
+            # A far STRUCT-pointer cast with its own base offset — writing
+            # `((struct dir_entry far *)(p + 1))->de_attr` lowers to
+            # `(cast)(p + 1)[0Bh]`, which is the same far byte as `p[0Ch]`,
+            # so fold the cast's offset into the displacement.
+            base, extra = node[1], 0
+            if ncast(base) and pf(base[1]):
+                base, extra = self.split_disp(base[2])
+            b = far_base(base)
             if b:
-                return (b, node[2][1], 'byte')
+                return (b, node[2][1] + extra, 'byte')
         if nderef(node):
             # *p where p is a far-pointer local/param → element at offset 0
             if is_far(node[1]):
@@ -1036,7 +1029,11 @@ class CG:
                     if n11(node) in self.locals
                     else SYMS[n11(node)][0]
                 )
-                return (n11(node), 0, 'word' if 'int' in ty else 'byte')
+                return (
+                    n11(node),
+                    0,
+                    'long' if 'long' in ty else ('word' if 'int' in ty else 'byte'),
+                )
             # *(T far *)(base [+ disp]) — but not a far-ptr-to-far-ptr (a base)
             if (
                 ncast(node[1])
@@ -1610,6 +1607,13 @@ class CG:
                     'call',
                     'jcc',
                 ):
+                    continue
+                # A jmp to ITSELF is an infinite loop, not one of two
+                # predecessors of a shared tail: with L == J the two candidate
+                # regions below are the same span, so they match all the way to
+                # the top of the function and the "merge" would delete it.
+                # (MAIN_ENTRY ends in `jmp short $` after its fatal error.)
+                if L == J:
                     continue
                 # A (jmp side, content above the jmp) and B (fall-in side).  For a
                 # backward jmp (J > L) floor A at L so it can't consume B's region;
@@ -2926,22 +2930,11 @@ class CG:
         # Function args go at [bp+4], [bp+6], ...  (positive offsets)
         # Stored in self.locals with positive offsets to distinguish from
         # locals (which get negative offsets via collect_locals below).
-        noframe = getattr(self, '_no_frame', False)
-        arg_off = 2 if getattr(self, '_no_bp', False) else 4
+        arg_off = 4
         for ty, aname in args:
             self.locals[aname] = (-arg_off, ty)  # stored as negated so
             # far ptr and long are 4 bytes; everything else 2
             arg_off += 4 if (pf(ty) or wlong(ty)) else 2
-        # A __noframe__ handler has no stack for args — its single param is a
-        # live register the dispatcher passes in: AL for a `unsigned char`
-        # (DOS_FN_2E_SET_VERIFY), DX for a word (DOS_FN_02_CHAR_OUTPUT pushes
-        # the caller's DL straight through as `push dx`).  Tag the register so
-        # reads of the name are free.
-        if noframe and args:
-            if args[0][0] == 'uchar':
-                self._al_argname = args[0][1]
-            else:
-                self._dx_argname = args[0][1]
         self.collect_locals(body)
         # A local array (address-taken stack buffer) makes MSC keep an explicit
         # `add sp,N` after the final call instead of folding it into the epilogue's
@@ -3397,6 +3390,31 @@ class CG:
                 and n[2][2][1][1] == n[1][1]
                 for n in self._nodes(body)
             )
+            # far_local[uchar_local] puts the POINTER's offset in SI (the index
+            # takes BX) — see the matching read in gen_index.
+            or any(
+                n[0] == 'idx'
+                and self.locid(n[1])
+                and pf(self.lty(n[1]))
+                and self.locid(n[2])
+                and self.ucharty(n[2])
+                and not self.is_reg_var(n[2][1])
+                for n in self._nodes(body)
+            )
+            # the divide-in-a-long-expression sequence spills the running
+            # total's high word into SI and keeps the far pointer in DI.
+            or any(self._long_div_tail(n) for n in self._nodes(body))
+            # the arrD[g++] = arrS[g2++] byte copy keeps the SOURCE index in SI.
+            or any(
+                n[0] == 'assign'
+                and n[1][0] == 'idx'
+                and self.gkind(n[1][1]) == 'arr'
+                and n[1][2][0] == 'postinc'
+                and n[2][0] == 'idx'
+                and self.gkind(n[2][1]) == 'arr'
+                and n[2][2][0] in ('postinc', 'preinc')
+                for n in self._nodes(body)
+            )
             # local_array[uchar_local] loads the index into SI scratch.
             or any(
                 n[0] == 'idx'
@@ -3452,6 +3470,21 @@ class CG:
                 and self.gfar(n[2][1])
                 for n in self._nodes(body)
             )
+            # the divide-in-a-long-expression sequence spills the running
+            # total's high word into SI and keeps the far pointer in DI.
+            or any(self._long_div_tail(n) for n in self._nodes(body))
+            # far_local = &local_array[uchar local] zero-extends the subscript
+            # through the spare index register, which is DI once SI is a
+            # register var (EXEC_PROGRAM_FROM_PATH's `cur = &buf[type]`, 0x5641).
+            or (
+                'si' in self.regvars.values()
+                and any(
+                    n[0] == 'assign'
+                    and pf(self.lty(n[1]))
+                    and self._addr_local_arr_byte_idx(n[2])
+                    for n in self._nodes(body)
+                )
+            )
             # ARR[reg++] = *far_local++ derefs the old offset through DI.
             or any(
                 n[0] == 'assign'
@@ -3469,12 +3502,8 @@ class CG:
         self._fpseg_suppress = None  # a FP_SEG store folded into a fused far build
         self._cl_bvar0 = None  # a byte global just zeroed INTO CL (kept for a
         # following `(L & G) cmp L` — DOS_FN_41's SDA_SEARCH_ATTR)
-        nobp = getattr(self, '_no_bp', False)
-        noframe = getattr(self, '_no_frame', False)
-        if not noframe:
-            if not nobp:
-                self.emit(0x55)  # push bp
-            self.emit(0x8B, 0xEC)  # mov bp, sp
+        self.emit(0x55)  # push bp
+        self.emit(0x8B, 0xEC)  # mov bp, sp
         if self.local_size:
             # a frame of 80h or more needs the imm16 form — the imm8 is SIGNED,
             # so 80h would read as -128 (DOS_FN_0F_OPEN_FCB's 128-byte frame)
@@ -3482,9 +3511,6 @@ class CG:
                 self.emit(0x81, 0xEC, *w16(self.local_size))
             else:
                 self.emit(0x83, 0xEC, self.local_size)
-        # AL already holds the register-passed argument.
-        if getattr(self, '_al_argname', None):
-            self.al = self._al_argname
         if self.uses_di:
             self.emit(0x57)  # push di
         if self.uses_si:
@@ -3503,6 +3529,22 @@ class CG:
             self.expr_to_ax(cval)
             if j != len(_dc) - 1:
                 self.emit_jmp_short(self.func_ret_lbl)
+        # A body that CANNOT FALL THROUGH — its last instruction is an
+        # unconditional jmp — and whose return label nothing references has no
+        # reachable epilogue, and MSC emits none (MAIN_ENTRY ends at the
+        # `jmp short $` of its fatal-error hang, with no pops and no ret).
+        # Only a jmp to ITSELF counts: MSC emits the epilogue even when the last
+        # instruction is an ordinary backward jmp that leaves it unreachable
+        # (DOS_FN_0C, whose trailing switch arm jumps back into a shared tail).
+        # An infinite self-loop is the one shape where it emits nothing at all.
+        if (
+            not _dc
+            and self.atoms
+            and self.atoms[-1][0] == 'jmp_short'
+            and self.labels.get(self.atoms[-1][2]) == len(self.buf) - 2
+        ):
+            self.resolve()
+            return
         self.lbl(self.func_ret_lbl)
         if self.uses_si:
             self.emit(0x5E)
@@ -3511,7 +3553,7 @@ class CG:
         # `mov sp,bp` restores the frame.  MSC omits it only for a pure
         # straight-line leaf with no frame activity at all — no locals, no saved
         # regs, no emitted call, and no control flow (no branches/loops/gotos).
-        if not noframe and (
+        if (
             self.local_size
             or self.uses_si
             or self.uses_di
@@ -3519,8 +3561,7 @@ class CG:
             or self._has_branch(body)
         ):
             self.emit(0x8B, 0xE5)  # mov sp, bp
-        if not nobp and not noframe:
-            self.emit(0x5D)  # pop bp
+        self.emit(0x5D)  # pop bp
         self.emit(0xC3)  # ret
         self.resolve()
 
@@ -3529,8 +3570,11 @@ class CG:
             if s[0] == 'localarr':
                 ty, name, n = s[1], s[2], s[3]
                 # A byte buffer reserved on the stack; `name` denotes its base
-                # (bp-offset = element [0]).  Size is the byte count as written.
-                self.local_size += n
+                # (bp-offset = element [0]).  Size is the byte count as written,
+                # rounded so the base stays EVEN — MSC keeps every frame slot
+                # word-aligned, so an odd-length buffer is followed by a pad byte
+                # (EXEC_PROGRAM_FROM_PATH's 43h-byte path buffer at bp-54h).
+                self.local_size += n + ((self.local_size + n) & 1)
                 self.locals[name] = (self.local_size, 'arr_' + ty)
                 continue
             if s[0] == 'local' and s[1].startswith('struct:'):
@@ -3551,6 +3595,20 @@ class CG:
                     # Slot stays reserved on the stack but the var actually
                     # lives in SI (only one register-var allowed for now).
                     self.regvars[name] = 'si'
+
+    def _addr_local_arr_byte_idx(self, rhs):
+        """True for `(T far *)&local_array[<uchar local>]` — the one far-pointer
+        build whose subscript has to be zero-extended through an index register
+        (see the matching store in gen_assign)."""
+        a = rhs[2] if (ncast(rhs) and pf(rhs[1])) else rhs
+        return (
+            a[0] == 'addr'
+            and a[1][0] == 'idx'
+            and nid(a[1][1])
+            and str(self.lty(a[1][1])).startswith('arr')
+            and self.locid(a[1][2])
+            and self.ucharty(a[1][2])
+        )
 
     def _has_far_long_ptr_add(self, body):
         """True if the body contains a far-long opassign `*(long far*)(p+d) +=/-=
@@ -3613,6 +3671,10 @@ class CG:
         """True if `e` is local/global/const byte arithmetic — no call, no far
         access — so it can be computed after a `les` without clobbering ES:BX."""
         if num(e):
+            return True
+        # `g++` on a byte global reads and bumps memory only — no ES:BX
+        # (PARSE_FILENAME_TO_FCB's `fcb->f_drvcode = WORK_FCB_DRIVE++`)
+        if e[0] == 'postinc' and nid(e[1]) and self.gkind(e[1]) == 'bvar':
             return True
         # a stack struct/array byte member ([bp+d] read — DOS_FN_44's
         # regs->r_al = pkt.i_unit)
@@ -4164,12 +4226,19 @@ class CG:
                 # break label right after (the natural fall-through exit).
                 loop = self.fresh('loop')
                 brk = self.fresh('break')
+                cont = self.fresh('cont')
                 self.break_lbls.append(brk)
+                self.continue_lbls.append(cont)
                 self.lbl(loop)
                 for ss in body:
                     self.stmt(ss)
+                # `continue` in a do-while lands on the CONDITION, not the loop
+                # top — placed only when something jumps to it, so a loop
+                # without one keeps the exact register cache noted below.
+                self.lbl_if_used(cont)
                 self.cond_jump(cond, loop, True)
                 self.break_lbls.pop()
+                self.continue_lbls.pop()
                 # A break-less do-while exits ONLY by falling through the failed
                 # back-edge test, so the post-test register cache is exact — keep it
                 # live (MSC reuses the loop body's ES:BX in the code that follows,
@@ -4534,6 +4603,20 @@ class CG:
                 self.bx = esbx_seed  # BX also points there (rotated cond's les)
             if self._cond_ah_zero_seed(cond):
                 self._ah_zero = True  # cond's `sub ah,ah` left AH=0 on back-edge
+            # `ARR[<word global>] OP num` leaves BX holding that global's value
+            # (the `mov bx,[g]` its compare emitted), so the body's first read
+            # of the SAME index reuses it across the back-edge — MAIN_ENTRY's
+            # DEVICE= name loop tests LINE_BUF[PARSE_POS] for CR and then
+            # immediately compares the same byte to a space (0x03DC).
+            if (
+                cond[0] == 'cmp'
+                and cond[2][0] == 'idx'
+                and nid(cond[2][1])
+                and self.gkind(cond[2][1]) == 'arr'
+                and self.gvw(cond[2][2])
+                and num(cond[3])
+            ):
+                self.bx = ('idxvar', cond[2][2][1])
             if (
                 cond[0] == 'cmp'
                 and cond[2][0] == 'idx'
@@ -5354,6 +5437,21 @@ class CG:
         self.bx = self.esbx = None
 
     def gen_opassign(self, op, lhs, rhs):
+        # far byte lvalue += uchar local  →  the far pointer loads FIRST (an
+        # immediate-free memory op can't touch AL), then the byte, then the
+        # r/m8,r8 add — `les bx,[p]; mov al,[bp+d]; add [es:bx],al`
+        # (RESOLVE_LOGICAL_DRIVE_LETTER splicing the hop count in at 0x52B5).
+        if op in ('+', '-') and self.locid(rhs) and (
+            self.lt(rhs[1]) in ('uchar', 'char')
+        ):
+            fl2 = self.far_lvalue(lhs)
+            if fl2 and fl2[2] == 'byte':
+                self.emit_les(fl2[0])
+                self.ldal(self.ld(rhs[1]))  # mov al, [bp+d]
+                d2 = fl2[1]
+                self.e26(0x00 if op == '+' else 0x28, mod8(d2) | 0x07, *d8(d2))
+                self.al = rhs[1]
+                return
         # `<byte global> <op>= <byte expr>`: compute the value in AL, then fold it
         # into memory with the r/m8,r8 form — `add [373h],al`
         # (SET_INPUT_BUFFERS_AND_DESC folding the device's edit bit into EDIT_MODE).
@@ -5957,6 +6055,37 @@ class CG:
             self.emit(0x8B, 0x56, (d + 2) & 0xFF)  # mov dx, [bp+d+2]
             self.zad()
             return
+        # A DIVIDE in the middle of a long expression destroys DX:AX, so MSC
+        # spills the running total (low -> CX, high -> SI, each just before its
+        # register dies), builds the divisor in BX, divides, and REBUILDS the
+        # total in BX:DX from the remainder.  The accumulator lives in BX:DX
+        # from here on — the trailing term adds into DX/BX and the far pointer
+        # is reached through DI, since ES:BX no longer holds it
+        # (COMPUTE_CLUSTER_INFO_FOR_FCB's data-area sector, 0x792D).
+        _dt = self._long_div_tail(node)
+        if _dt:
+            head, dividend, bdisp, k, wdisp, base = _dt
+            self.gen_long(head)  # running total -> DX:AX
+            self.emit_les(base)  # les bx, [bp+base]
+            self.emit(0x8B, 0xC8)  # mov cx, ax          (spill the low word)
+            self.e26(0x8A, mod8(bdisp) | 0x07, *d8(bdisp))  # mov al,[es:bx+d]
+            self.emit(0x2A, 0xE4)  # sub ah, ah
+            self.emit(0x8B, 0xD8)  # mov bx, ax
+            for _ in range(k):
+                self.emit(0x43)  # inc bx               (the divisor)
+            self.ldax(self.ld(dividend))  # mov ax, [bp+d]
+            self.emit(0x8B, 0xF2)  # mov si, dx          (spill the high word)
+            self.emit(0x8B, 0x7E, self.ld(base))  # mov di,[bp+base] (keep the ptr)
+            self.emit(0x2B, 0xD2)  # sub dx, dx
+            self.emit(0xF7, 0xF3)  # div bx              (remainder -> DX)
+            self.emit(0x2B, 0xDB)  # sub bx, bx          (the new high word)
+            self.emit(0x03, 0xD1)  # add dx, cx
+            self.emit(0x13, 0xDE)  # adc bx, si
+            self.e26(0x03, 0x40 | 0x10 | 0x05, wdisp)  # add dx, [es:di+d]
+            self.emit(0x83, 0xD3, 0x00)  # adc bx, 0
+            self.clob()
+            self._lbxdx = True
+            return
         if nbin(node) and node[1] in ('+', '-'):
             self.gen_long(node[2])  # accumulate in DX:AX
             # FAR-POINTER arithmetic touches only the OFFSET — C requires no
@@ -6117,6 +6246,38 @@ class CG:
         self.emit(0x83, ext, 0x00)  # adc/sbb dx, 0
         self.zad()
 
+    def _long_div_tail(self, node):
+        """`<long> + (<uint local> % (<far byte> + K)) + <far word>` — the one
+        long expression shape whose MIDDLE term needs a divide.  Both far
+        lvalues must hang off the SAME far-pointer local, because the sequence
+        keeps that pointer's segment in ES across the divide and reaches the
+        last term through DI.  Returns (head, dividend, bdisp, K, wdisp, base)
+        or None."""
+        if not (nbin(node) and node[1] == '+'):
+            return None
+        wf = self.far_lvalue(node[3])
+        inner = node[2]
+        if not (wf and wf[2] == 'word' and nbin(inner) and inner[1] == '+'):
+            return None
+        m = inner[3]
+        if not (
+            nbin(m)
+            and m[1] == '%'
+            and self.locid(m[2])
+            and wint(self.lt(m[2][1]))
+        ):
+            return None
+        d = m[3]
+        if not (nbin(d) and d[1] == '+' and num(d[3])):
+            return None
+        bf = self.far_lvalue(d[2])
+        if not (bf and bf[2] == 'byte' and bf[0] == wf[0]):
+            return None
+        base = wf[0]
+        if not (isinstance(base, str) and base in self.locals):
+            return None
+        return (inner[2], m[2][1], bf[1], d[3][1], wf[1], base)
+
     def _is_long_expr(self, e):
         """True if expression e evaluates to a 32-bit (long) value."""
         if ncast(e):
@@ -6199,6 +6360,53 @@ class CG:
         ni('shift-count', node)
 
     def gen_assign(self, lhs, rhs):
+        # `*p = K` where p is a NEAR pointer to a byte — `mov bx,[bp+d];
+        # mov byte [bx],imm` (PROCESS_PATH_LOOKUP_DRIVE's *subst flag, 0x53AF).
+        if (
+            nderef(lhs)
+            and nid(lhs[1])
+            and lhs[1][1] in self.locals
+            and self.lty(lhs[1]) in ('ptr_uchar', 'ptr_char')
+            and num(rhs)
+        ):
+            self.ldbx(self.ld(lhs[1][1]))  # mov bx, [bp+d]
+            self.emit(0xC6, 0x07, rhs[1] & 0xFF)  # mov byte [bx], imm
+            self.bx = ('nptr', lhs[1][1])
+            return
+        # `FP_OFF(g) = FP_SEG(g) = K` — both halves of one far_var take a single
+        # constant, materialised ONCE in AX and stored outermost-first
+        # (INIT_PSP invalidating DRIVER_TABLE at 0x1937).
+        if (
+            rhs[0] == 'assign'
+            and lhs[0] in ('fpoff', 'fpseg')
+            and rhs[1][0] in ('fpoff', 'fpseg')
+            and nid(lhs[1])
+            and nid(rhs[1][1])
+            and lhs[1][1] == rhs[1][1][1]
+            and lhs[1][1] in SYMS
+            and num(rhs[2])
+        ):
+            a = sa(lhs[1][1])
+            self.mvax0(rhs[2][1] & 0xFFFF)
+            for node in (lhs, rhs[1]):  # outer target first
+                self.emit(0xA3, *w16(a + (2 if node[0] == 'fpseg' else 0)))
+            self.ax = None
+            return
+        # `FP_SEG(*p) = K` / `FP_OFF(*p) = K` where p is a NEAR pointer to a far
+        # pointer — `mov bx,[bp+d]; mov word [bx+2],imm`
+        # (PARSE_FILENAME_TO_FCB clearing its work pointer's segment, 0x4C6E).
+        if (
+            lhs[0] in ('fpoff', 'fpseg')
+            and nderef(lhs[1])
+            and nid(lhs[1][1])
+            and lhs[1][1][1] in self.locals
+            and num(rhs)
+        ):
+            self.ldbx(self.ld(lhs[1][1][1]))  # mov bx, [bp+d]
+            d = 2 if lhs[0] == 'fpseg' else 0
+            self.emit(0xC7, 0x47, d, rhs[1] & 0xFF, (rhs[1] >> 8) & 0xFF)
+            self.bx = ('nptr', lhs[1][1][1])
+            return
         # Chained assignment `a = b = … = <expr>` to word globals: evaluate the
         # value once into AX, then store it to every target left-to-right
         # (MSC's `call; mov [a],ax; mov [b],ax; …` — INIT_INPUT_CURSOR's cursor
@@ -6266,6 +6474,46 @@ class CG:
                     else:
                         self.stal(self.ld(t[1]))  # mov [bp+d], al
                 self.ax = self.al = None
+                return
+
+            # A chain whose OUTER target is a far-pointer field: the value is
+            # computed once (AL / AX / DX:AX by the field's width) and stored
+            # innermost-first, each far target reloading its own ES:BX
+            # (EXEC_PROGRAM_FROM_PATH fanning the redirector's record into both
+            # the scratch directory entry and the caller's FCB, 0x559C).
+            fl0 = self.far_lvalue(lhs)
+            _gt = [self.gkind(t) in ('bvar', 'var', 'long_var') for t in targets]
+            if fl0 and any(_gt) and all(
+                g or self.far_lvalue(t) for g, t in zip(_gt, targets)
+            ):
+                kind = fl0[2]
+                if kind == 'long':
+                    self.gen_long(node)
+                elif kind == 'word':
+                    self.expr_to_ax(node)
+                else:
+                    self.expr_to_al(node)
+                for t in reversed(targets):
+                    fl = self.far_lvalue(t)
+                    if fl:
+                        self.emit_les(fl[0])
+                        d = fl[1]
+                        if kind == 'byte':
+                            self.e26(0x88, mod8(d) | 0x07, *d8(d))  # [es:bx+d],al
+                        else:
+                            self.e26(0x89, mod8(d) | 0x07, *d8(d))  # [es:bx+d],ax
+                            if kind == 'long':
+                                self.e26(0x89, 0x57, (d + 2) & 0xFF)  # [+d+2],dx
+                    else:
+                        a = SYMS[t[1]][1]
+                        if kind == 'byte':
+                            self.emit(0xA2, *w16(a))  # mov [g], al
+                        else:
+                            self.staxm(a)  # mov [g], ax
+                            if kind == 'long':
+                                self.emit(0x89, 0x16, *w16((a + 2) & 0xFFFF))  # [g+2],dx
+                self.ax = self.al = self.dx = None
+                self.axdx_var = None
                 return
         # far_var[local_dst] = far_var[local_src] — a byte copy through the SAME
         # far table: MSC loads the table offset into SI once (`les si,[tbl]`) and
@@ -6397,6 +6645,11 @@ class CG:
                 self.al = None
             self.emit(0xA2, *w16(sa(rhs[1][1])))  # mov [inner], al
             self.emit(0xA2, *w16(sa(lhs[1])))  # mov [outer], al
+            # AL still holds the value both targets now have — tag it by the
+            # INNER one, which is the target a following test reads back
+            # (INIT_PSP's `PROBED_COUNT < 5` right after the pair, 0x1865).
+            if not num(rhs[2]):
+                self.al = rhs[1][1]
             self.ax = None
             return
         # a = b = ... = num : a chain of far-word stores of one constant.  Load the
@@ -6609,6 +6862,27 @@ class CG:
                 self.emit(0x89, 0x57, 0x02)  # mov [bx+2], dx
                 self.zad()
                 return
+            # *<near ptr to far> = &global — the DS-relative build, pointer
+            # first, then the address immediate and DS itself
+            # (EXEC_PROGRAM_FROM_PATH publishing the scratch dir entry, 0x5616).
+            ga = self.near_global_addr(r[1]) if r[0] == 'addr' else None
+            if ga is not None:
+                self.ensure_bx(n11(lhs))  # mov bx, [bp+d]
+                self.mvax(ga)  # mov ax, &g
+                self.emit(0x89, 0x07)  # mov [bx], ax
+                self.emit(0x8C, 0x5F, 0x02)  # mov [bx+2], ds
+                self.ax = None
+                return
+            # *<near ptr to far> = <far-returning call> — the call comes first
+            # (it clobbers BX), then the pointer is reloaded and DX:AX stored
+            # (EXEC_PROGRAM_FROM_PATH handing back its directory entry, 0x56D9).
+            if ncall(r):
+                self.gen_call(r)  # far result → DX:AX
+                self.ensure_bx(n11(lhs))  # mov bx, [bp+d]
+                self.emit(0x89, 0x07)  # mov [bx], ax
+                self.emit(0x89, 0x57, 0x02)  # mov [bx+2], dx
+                self.zad()
+                return
         # far_local = far_var_global + <int terms> : offset = sum(terms) + [g],
         # segment = [g+2], built in AX:DX (MSC: <var term>; add ax,[g]; mov
         # dx,[g+2]; [add ax,const]; store both).  Handles a single trailing const
@@ -6747,6 +7021,129 @@ class CG:
             if nid(arr) and self.lty(arr).startswith('arr'):
                 doff = self.ld(lhs[1])
                 self.lea_ax(self.ld(arr[1]))  # lea ax, [bp-off]
+                self.emit(0x89, 0x46, doff)  # mov [bp+off], ax
+                self.emit(0x8C, 0x56, doff + 2)  # mov [bp+seg], ss
+                self.ax = None
+                return
+        # *far_local++ = <byte>  —  the pointer is loaded, its OFFSET word bumped
+        # in memory, and the store then goes through the OLD ES:BX (the bumped
+        # register form has no addressing mode once the pointer has moved)
+        # (GET_ASSIGN_PATH_FOR_DRIVE writing the copied path out, 0x76DD).
+        if (
+            nderef(lhs)
+            and lhs[1][0] == 'postinc'
+            and self.locid(lhs[1][1])
+            and pf(self.lty(lhs[1][1]))
+        ):
+            name = lhs[1][1][1]
+            self.expr_to_al(rhs)
+            self.emit_les(name)  # les bx, [bp+d]
+            self.emit(0xFF, 0x46, self.ld(name))  # inc word [bp+d]
+            self.e26(0x88, 0x07)  # mov [es:bx], al
+            self.esbx = self.bx = None  # the pointer moved out from under ES:BX
+            return
+        # arr[<word global>++] = <byte const> — the same index capture, with an
+        # immediate store (the NUL and LF terminators MAIN_ENTRY writes after a
+        # DEVICE= name and its arguments, 0x0406 / 0x0443).
+        if (
+            lhs[0] == 'idx'
+            and nid(lhs[1])
+            and self.gkind(lhs[1]) == 'arr'
+            and lhs[2][0] == 'postinc'
+            and self.gvw(lhs[2][1])
+            and num(rhs)
+        ):
+            g = SYMS[lhs[2][1][1]][1]
+            self.emit(0x8B, 0x1E, *w16(g))  # mov bx, [g]
+            self.emit(0xFF, 0x06, *w16(g))  # inc word [g]
+            self.emit(
+                0xC6, 0x87, *w16(SYMS[lhs[1][1]][1]), rhs[1]
+            )  # mov byte [bx+ARR], imm8
+            self.bx = None
+            return
+        # arrD[<word global>++] = arrS[<word global>++ / ++<word global>] — a
+        # byte copy between two near array globals, each index in its own
+        # register: the DESTINATION index is captured in BX and its global
+        # bumped, then the SOURCE index in SI (bumped after the capture for a
+        # post-inc, before it for a pre-inc), then one load/store through the
+        # two bases (MAIN_ENTRY's DEVICE= name/args and SHELL= copy loops,
+        # 0x03E3 / 0x0420 / 0x0461).
+        if (
+            lhs[0] == 'idx'
+            and nid(lhs[1])
+            and self.gkind(lhs[1]) == 'arr'
+            and lhs[2][0] == 'postinc'
+            and self.gvw(lhs[2][1])
+            and rhs[0] == 'idx'
+            and nid(rhs[1])
+            and self.gkind(rhs[1]) == 'arr'
+            and rhs[2][0] in ('postinc', 'preinc')
+            and self.gvw(rhs[2][1])
+        ):
+            gd = SYMS[lhs[2][1][1]][1]
+            gs = SYMS[rhs[2][1][1]][1]
+            self.emit(0x8B, 0x1E, *w16(gd))  # mov bx, [gd]
+            self.emit(0xFF, 0x06, *w16(gd))  # inc word [gd]
+            if rhs[2][0] == 'preinc':
+                self.emit(0xFF, 0x06, *w16(gs))  # inc word [gs]
+                self.emit(0x8B, 0x36, *w16(gs))  # mov si, [gs]
+            else:
+                self.emit(0x8B, 0x36, *w16(gs))  # mov si, [gs]
+                self.emit(0xFF, 0x06, *w16(gs))  # inc word [gs]
+            self.emit(0x8A, 0x84, *w16(SYMS[rhs[1][1]][1]))  # mov al,[si+ARRS]
+            self.emit(0x88, 0x87, *w16(SYMS[lhs[1][1]][1]))  # mov [bx+ARRD],al
+            self.bx = self.al = self.ax = None
+            return
+        # word_array_global[<word global>++] = <word expr>  —  the index is
+        # captured in BX and the global bumped BEFORE it is scaled, so the store
+        # uses the OLD index: mov bx,[g]; inc word [g]; shl bx,1; <value→AX>;
+        # mov [bx+ARR],ax  (MAIN_ENTRY appending a DEVICE= path offset, 0x03C9).
+        if (
+            lhs[0] == 'idx'
+            and nid(lhs[1])
+            and self.gkind(lhs[1]) == 'arr_w'
+            and lhs[2][0] == 'postinc'
+            and self.gvw(lhs[2][1])
+        ):
+            g = SYMS[lhs[2][1][1]][1]
+            self.emit(0x8B, 0x1E, *w16(g))  # mov bx, [g]
+            self.emit(0xFF, 0x06, *w16(g))  # inc word [g]
+            self.emit(0xD1, 0xE3)  # shl bx, 1
+            self.expr_to_ax(rhs)
+            self.emit(0x89, 0x87, *w16(SYMS[lhs[1][1]][1]))  # mov [bx+ARR], ax
+            self.bx = self.ax = None
+            return
+        # far_local = &local_array[<index>]  →  the same SS-relative build with
+        # the ELEMENT address in AX.  A constant or a register-var index folds
+        # into the lea's displacement (`lea ax,[bp+si-53h]`); a byte local has
+        # to be zero-extended into the spare index register first
+        # (EXEC_PROGRAM_FROM_PATH walking its path buffer at 0x54DF / 0x5648).
+        if pf(self.lty(lhs)):
+            a = rhs[2] if ncast(rhs) and pf(rhs[1]) else rhs
+            if (
+                a[0] == 'addr'
+                and a[1][0] == 'idx'
+                and nid(a[1][1])
+                and str(self.lty(a[1][1])).startswith('arr')
+            ):
+                arr, idx = a[1][1], a[1][2]
+                off, doff = self.ld(arr[1]), self.ld(lhs[1])
+                base, k = idx, 0
+                if nbin(idx) and idx[1] == '+' and num(idx[3]):
+                    base, k = idx[2], idx[3][1]
+                if num(idx):
+                    self.lea_ax((off + idx[1]) & 0xFF)  # lea ax, [bp+off+k]
+                elif self.rvid(base):
+                    # lea ax, [bp+si/di+off+k]
+                    self.emit(0x8D, sd(0x42, self.rv(base)), (off + k) & 0xFF)
+                elif self.locid(base) and self.ucharty(base) and k == 0:
+                    r = 'di' if 'si' in self.regvars.values() else 'si'
+                    # the mov's REG field is 110/111, not the +1 of an r/m base
+                    self.emit(0x8B, 0x76 if r == 'si' else 0x7E, self.ld(base[1]))
+                    self.emit(0x81, sd(0xE6, r), 0xFF, 0x00)  # and si/di, 0FFh
+                    self.emit(0x8D, sd(0x42, r), off & 0xFF)  # lea ax,[bp+si/di+off]
+                else:
+                    ni('gen_assign &local_arr[i]', idx)
                 self.emit(0x89, 0x46, doff)  # mov [bp+off], ax
                 self.emit(0x8C, 0x56, doff + 2)  # mov [bp+seg], ss
                 self.ax = None
@@ -7036,6 +7433,38 @@ class CG:
                     self.zaad()
                     self.axdx_var = None
                     return
+                elif not self._is_long_expr(rhs):
+                    # Widening store `<far long> = <16-bit expr>`: the value is
+                    # computed into AX FIRST (it may need its own `les`), then
+                    # the destination is loaded and the HIGH word takes an
+                    # IMMEDIATE 0 — not a `sub dx,dx` (COMPUTE_CLUSTER_INFO_FOR_FCB
+                    # writing the root directory's sector at 0x791F).
+                    self.expr_to_ax(rhs)
+                    self.emit_les(fv)
+                    self.e26(0x89, modrm, *d8(disp))  # [es:bx+d],ax
+                    self.e26(0xC7, 0x47, (disp + 2) & 0xFF, 0x00, 0x00)  # [+d+2],0
+                    self.zaad()
+                    self.axdx_var = None
+                    return
+                elif not nid(rhs):
+                    # A computed 32-bit value: build it FIRST (it needs the
+                    # registers and may `les` its own operands), then load the
+                    # destination.
+                    self.gen_long(rhs)
+                    if self._lbxdx:
+                        # ...unless a divide pushed the accumulator into BX:DX —
+                        # BX is the high word now, so the destination pointer
+                        # goes to ES:SI instead.
+                        self._lbxdx = False
+                        self.emit(0xC4, 0x76, self.ld(fv))  # les si, [bp+d]
+                        self.e26(
+                            0x89, mod8(disp) | 0x14, *d8(disp)
+                        )  # mov [es:si+d], dx
+                        self.e26(0x89, 0x5C, (disp + 2) & 0xFF)  # [es:si+d+2], bx
+                        self.zaad()
+                        self.axdx_var = None
+                        return
+                    self.emit_les(fv)
                 else:
                     self.emit_les(fv)
                     self.load_long_axdx(rhs)
@@ -7082,6 +7511,18 @@ class CG:
                 self.expr_to_ax(rhs)
                 self.e26(0x89, modrm, *d8(disp))  # mov [es:bx+d], ax
                 self.al = None  # AL is the low half of the value just loaded
+                return
+            if kind == 'byte' and nbin(rhs) and rhs[1] == '%':
+                # `<far byte> = <expr> % <divisor>` — the divide leaves the
+                # remainder in DX, so MSC loads the destination and stores DL
+                # straight out instead of routing it through AL
+                # (COMPUTE_CLUSTER_INFO_FOR_FCB's intra-sector offset, 0x796F).
+                self.expr_to_ax(rhs[2])
+                self.emit(0x2B, 0xD2)  # sub dx, dx
+                self._emit_div_operand(rhs[3])
+                self.emit_les(fv)
+                self.e26(0x88, modrm | 0x10, *d8(disp))  # mov [es:bx+d], dl
+                self.zaad()
                 return
             if kind == 'byte' and self._simple_byte_rhs(rhs):
                 # far byte store with a *simple* value (local/const arithmetic that
@@ -7421,15 +7862,23 @@ class CG:
             # matched wildcard char written to both the new-name FCB and the QCHAR
             # log (RENAME_FCB 9A57).  Load once through the QPOS[r] subscript,
             # store to QCHAR[idx++] and WORK[QPOS[r]] reusing AL and BH=0.
-            if (idx[0] == 'idx' and self.gkind(idx[1]) == 'arr' and self.rvid(idx[2])
+            # The destination may be a struct global's array member, which
+            # lowers to BASE[k + i] (WORK_FCB's f_name is WORK_FCB[1 + i]);
+            # fold that leading constant into the base for this rule only.
+            _didx, _dbase = idx, arr_addr
+            if nbin(_didx) and _didx[1] == '+' and num(_didx[2]):
+                _dbase = (_dbase + _didx[2][1]) & 0xFFFF
+                _didx = _didx[3]
+            if (_didx[0] == 'idx' and self.gkind(_didx[1]) == 'arr'
+                    and self.rvid(_didx[2])
                     and rhs[0] == 'assign'
                     and rhs[1][0] == 'idx' and self.gkind(rhs[1][1]) == 'arr'
                     and rhs[1][2][0] == 'postinc' and self.stkid(rhs[1][2][1])
                     and self.ucharty(rhs[1][2][1])
                     and rhs[2][0] == 'idx' and self.gkind(rhs[2][1]) == 'arr'
-                    and rhs[2][2] == idx):
-                qpos_base = sa(idx[1][1])
-                r_reg = self.regvars[idx[2][1]]
+                    and rhs[2][2] == _didx):
+                qpos_base = sa(_didx[1][1])
+                r_reg = self.regvars[_didx[2][1]]
                 qchar_base = sa(rhs[1][1][1])
                 idx_disp = self.ld(rhs[1][2][1][1])
                 src_base = sa(rhs[2][1][1])
@@ -7441,7 +7890,7 @@ class CG:
                 self.emit(0xFE, 0x46, idx_disp)  # inc byte [bp+idx]
                 self.emit(0x88, 0x87, *w16(qchar_base))  # mov [bx+QCHAR],al
                 self.emit(0x8A, qmod, *w16(qpos_base))  # mov bl,[si+QPOS]
-                self.emit(0x88, 0x87, *w16(arr_addr))  # mov [bx+WORK],al
+                self.emit(0x88, 0x87, *w16(_dbase))  # mov [bx+WORK],al
                 self.bx = self.al = None
                 return
             # ARR[reg + const] = ARR[reg1 + reg2] — the source's TWO-register
@@ -8039,13 +8488,9 @@ class CG:
         # `add sp` only when the epilogue's `mov sp,bp` reclaims the args with
         # nothing in between — but a `pop si/di` (saved reg) must see clean SP,
         # so don't skip when the function saves SI/DI, nor when the frame holds an
-        # address-taken local array (MSC keeps the explicit cleanup then).  A
-        # __noframe__ handler has no `mov sp,bp` at all, so it always keeps it.
+        # address-taken local array (MSC keeps the explicit cleanup then).
         tail_skip = tail and not (
-            self.uses_si
-            or self.uses_di
-            or self._has_array_local
-            or getattr(self, '_no_frame', False)
+            self.uses_si or self.uses_di or self._has_array_local
         )
         if args and not tail_skip and cleanup and target[1] not in PASCAL:
             self.emit(0x83, 0xC4, nbytes)
@@ -8286,11 +8731,6 @@ class CG:
         return False
 
     def push_arg(self, e, byte_param=False, arg0=False, far_param=False):
-        # A __noframe__ handler's word param IS the live DX register — push it
-        # straight (DOS_FN_02_CHAR_OUTPUT's `push dx`), there is no stack slot.
-        if nid(e) and e[1] == getattr(self, '_dx_argname', None):
-            self.emit(0x52)  # push dx
-            return
         # A far byte still live in AL from the store that just wrote it: only the
         # zero-extend is needed (FCB_BIT15_CHECK at 0x82C6).
         if byte_param and getattr(self, 'al', None) == ('farb', repr(e)):
@@ -8298,6 +8738,13 @@ class CG:
             self.emit(0x50)  # push ax
             self.ax = None
             self._ah_zero = True
+            return
+        # A NEAR pointer local still live in BX (a preceding `*p` deref loaded it
+        # there) is pushed straight from the register — `push bx`
+        # (INIT_PSP handing `para` on to COMPUTE_MCB_SLOT_COUNT at 0x188F).
+        if nid(e) and self.bx == ('nptr', e[1]):
+            self.emit(0x53)  # push bx
+            self._ah_zero = False
             return
         # A word global whose value is still live in AX — the store that put it
         # there was the previous statement — pushes straight from the register
@@ -9176,6 +9623,15 @@ class CG:
             if isinstance(self.ax, tuple) and self.ax[0] in ('low', 'fpoff'):
                 self.ax = None
         op = e[0]
+        # `g++` as a VALUE for a byte global: read it, bump it in memory, and the
+        # OLD value stays in AL — `mov al,[g]; inc byte [g]`
+        # (PARSE_FILENAME_TO_FCB's `fcb->f_drvcode = WORK_FCB_DRIVE++`, 0x4C9A).
+        if e[0] == 'postinc' and nid(e[1]) and self.gkind(e[1]) == 'bvar':
+            a = sa(e[1][1])
+            self.emit(0xA0, *w16(a))  # mov al, [g]
+            self.emit(0xFE, 0x06, *w16(a))  # inc byte [g]
+            self.al = self.ax = None
+            return
         # *far_local++ : the `les` captures the OLD pointer, the offset word is
         # bumped in memory, and the deref then reads through the stale BX
         # (`les bx,[p]; inc word [p]; mov al,[es:bx]` — JOIN's path-copy loop).
@@ -9348,6 +9804,22 @@ class CG:
                 self.emit(opc, e[3][1])  # <op> al, imm8
             self.al = None
             return
+        # <byte const> - <global>  —  a subtraction whose result is only a byte
+        # narrows the WHOLE expression: `mov al,imm; sub al,[g]`, reading just
+        # the global's low half (MAIN_ENTRY's `CFG_FCBS_PER_FILE =
+        # 0x0F - MAIN_LOOP_INDEX` at 0x051C, whose word-destination twin at
+        # 0x0312 keeps the AX form).
+        if (
+            op == 'bin'
+            and e[1] == '-'
+            and num(e[2])
+            and nid(e[3])
+            and self.gkind(e[3]) in ('var', 'uvar', 'bvar')
+        ):
+            self.emit(0xB0, e[2][1] & 0xFF)  # mov al, imm8
+            self.emit(0x2A, 0x06, *w16(SYMS[e[3][1]][1]))  # sub al, [g]
+            self.al = None
+            return
         # other binary ops: evaluate to AX (AL holds the low byte we want)
         if op == 'bin':
             self.gen_bin(e[1], e[2], e[3])
@@ -9356,6 +9828,13 @@ class CG:
         if self.gkind(e) == 'bvar':
             a = SYMS[e[1]][1]
             self.emit(0xA0, *w16(a))  # mov al, [a]
+            self.al = None
+            return
+        # WORD global narrowed to a byte — the low half is at the same address,
+        # so MSC just reads AL from it (MAIN_ENTRY mirroring SYS_LAST_DRIVE into
+        # its byte copy at 0x064D).
+        if self.gkind(e) in ('var', 'uvar'):
+            self.emit(0xA0, *w16(SYMS[e[1]][1]))  # mov al, [a]
             self.al = None
             return
         ni(e)
@@ -9416,6 +9895,25 @@ class CG:
             self.ldal((disp + idx[1]))  # mov al, [bp+d]
             self.zaa()
             return
+        # far_local[uchar local]  →  the INDEX takes BX (zero-extended through
+        # BL/BH, not a word load) and the POINTER's offset goes to SI, so the
+        # read is `mov bl,[bp+i]; sub bh,bh; les si,[bp+p]; mov al,[es:bx+si]`
+        # (GET_ASSIGN_PATH_FOR_DRIVE copying the CDS path out, 0x76CF).
+        if (
+            self.locid(arr)
+            and pf(self.lty(arr))
+            and self.locid(idx)
+            and self.ucharty(idx)
+            and not self.is_reg_var(idx[1])
+        ):
+            self.emit(0x8A, 0x5E, self.ld(idx[1]))  # mov bl, [bp+i]
+            self.emit(0x2A, 0xFF)  # sub bh, bh
+            self.emit(0xC4, 0x76, self.ld(arr[1]))  # les si, [bp+p]
+            self.e26(0x8A, 0x00)  # mov al, [es:bx+si]
+            self.bx = self.essi = None
+            self._bh_zero = True
+            self.zaa()
+            return
         fsi = self._far_self_idx(arr, idx)
         if fsi:
             self._far_self_idx_base(*fsi)
@@ -9434,6 +9932,13 @@ class CG:
                 self.emit(0x8B, 0x87, *w16(arr_addr))  # mov ax, [bx+addr]
                 self.bx = None
                 self.ax = None
+                return
+            if self.gvw(idx):
+                # indexed by a WORD GLOBAL: mov bx,[g]; shl bx,1; mov ax,[bx+ARR]
+                self.emit(0x8B, 0x1E, *w16(SYMS[idx[1]][1]))  # mov bx, [g]
+                self.emit(0xD1, 0xE3)  # shl bx, 1
+                self.emit(0x8B, 0x87, *w16(arr_addr))  # mov ax, [bx+addr]
+                self.bx = self.ax = None
                 return
             ni('arr_w with non-reg idx')
         # Far-pointer global indexed by a near value: les si,[tbl]; al=[es:bx+si]
@@ -9693,6 +10198,12 @@ class CG:
                 disp = self.ld(rhs[1])
                 self.emit(0x8A, 0x4E, disp)  # mov cl, [bp-N]
                 self.add_cx_tail()
+                return
+            # <expr> + word local/param  →  add ax, [bp+disp] straight from the
+            # frame (COMPUTE_CLUSTER_INFO_FOR_FCB's `dpb->d_firstdir + idx`).
+            if self.locid(rhs) and wint(self.lt(rhs[1])):
+                self.emit(0x03, 0x46, self.ld(rhs[1]) & 0xFF)  # add ax, [bp+d]
+                self.zaa()
                 return
             # <expr> + word var global  →  eval lhs to AX; add ax, [g]
             if self.gkind(rhs) == 'var':
@@ -9959,10 +10470,44 @@ class CG:
                     lhs = _v[2]
                 else:
                     rhs = _v[2]
+        # `++regvar <op> num` — the bump belongs to the CONDITION, so it is
+        # emitted before the compare and the compare then reads the register
+        # itself (EXEC_PROGRAM_FROM_PATH's `++status < 0x43` scan bound at
+        # 0x54D0).
+        if lhs[0] in ('preinc', 'predec') and self.rvid(lhs[1]) and num(rhs):
+            _r = self.rv(lhs[1])
+            self.emit(sd(0x4E if lhs[0] == 'predec' else 0x46, _r))  # inc/dec si/di
+            self._regvar_zero[_r] = False
+            if _r == 'si':
+                self.si = None
+            else:
+                self.di = None
+            lhs = lhs[1]
         # `A[B[di]] == C[di+si]` — two byte tables compared, the right side a
         # two-register sum index (RENAME_FCB's wildcard collision check).  MSC
         # evaluates the RHS first into AL via `mov bx,di; mov al,[bx+si+C]`, then
         # loads the LHS subscript `mov bl,[di+B]; sub bh,bh` and compares the
+        # arr[<uchar local>] <cmp> <byte const> : same addressing as the
+        # local-vs-local form below, with the constant as the immediate —
+        # `mov bl,al; sub bh,bh; cmp byte [bx+ARR],imm`
+        # (RESOLVE_LOGICAL_DRIVE_LETTER testing the SUBST chain head at 0x5223).
+        if (
+            lhs[0] == 'idx'
+            and self._gbarr(lhs[1]) is not None
+            and self.locid(lhs[2])
+            and self.lt(lhs[2][1]) in ('uchar', 'char')
+            and num(rhs)
+        ):
+            if self.al == lhs[2][1]:
+                self.emit(0x8A, 0xD8)  # mov bl, al
+            else:
+                self.emit(0x8A, 0x5E, self.ld(lhs[2][1]))  # mov bl, [bp+i]
+            self.emit(0x2A, 0xFF)  # sub bh, bh
+            self.emit(0x80, 0xBF, *w16(self._gbarr(lhs[1])), rhs[1] & 0xFF)
+            self.bx = ('idxloc', lhs[2][1])
+            self._bh_zero = True
+            self.emit_cc(cop, taken, True, label)
+            return
         # arr[<uchar local>] <cmp> <uchar local> : the index zero-extends into BX
         # (reusing AL when it already holds it) and the right operand goes to AL,
         # so the compare reads memory against the register —
@@ -10623,6 +11168,33 @@ class CG:
                 self.emit(0x80, sd(0xBC, reg), *w16(a), rhs[1])  # cmp byte[reg+ARR±c],imm
                 self.emit_cc(cop, taken, False, label)
                 return
+        # The same two shapes for a LOCAL byte array: a constant subscript folds
+        # into the frame displacement, a register-var subscript rides the
+        # [bp+si/di] base — either way a direct memory compare with no AL load
+        # (EXEC_PROGRAM_FROM_PATH's path-buffer scans at 0x54CA / 0x5517).
+        if (
+            lhs[0] == 'idx'
+            and nid(lhs[1])
+            and str(self.lty(lhs[1])).startswith('arr')
+            and num(rhs)
+        ):
+            off, idx, c = self.ld(n11(lhs)), lhs[2], None
+            if num(idx):
+                # cmp byte [bp+off+k], imm8
+                self.emit(0x80, 0x7E, (off + idx[1]) & 0xFF, rhs[1])
+                self.emit_cc(cop, taken, False, label)
+                return
+            if self.rvid(idx):
+                c = 0
+            elif (nbin(idx) and idx[1] in ('+', '-') and self.rvid(idx[2])
+                  and num(idx[3])):
+                c = idx[3][1] if idx[1] == '+' else -idx[3][1]
+            if c is not None:
+                reg = self.regvars[(idx if nid(idx) else idx[2])[1]]
+                # cmp byte [bp+si/di+off±c], imm8
+                self.emit(0x80, sd(0x7A, reg), (off + c) & 0xFF, rhs[1])
+                self.emit_cc(cop, taken, False, label)
+                return
         # Special: byte-array indexed by an extern var <op> num, e.g.
         # LINE_BUF[PARSE_POS] == 0x20  →  mov bx,[var] (cached); cmp byte
         # [bx+ARR], imm.  The BX load is shared across compares on the same
@@ -10924,6 +11496,21 @@ class CG:
         # Special: byte global <op> byte global  →  the RIGHT one goes to AL and
         # the left stays in memory: `mov al,[g2]; cmp [g1],al`
         # (DOS_FN_56_RENAME_FILE's source/destination drive-code check).
+        # <uchar local> <op> <byte global> : the global goes to AL and the frame
+        # slot stays as the memory operand — `mov al,[g]; cmp [bp+d],al`
+        # (INIT_PSP's drive loop against INSTALLED_COUNT at 0x1908).
+        gb0 = self.byte_global_addr(rhs)
+        if (
+            gb0 is not None
+            and self.locid(lhs)
+            and self.lt(lhs[1]) in ('uchar', 'char')
+        ):
+            if self.al != rhs[1]:
+                self.emit(0xA0, *w16(gb0))  # mov al, [g]
+                self.al = rhs[1]
+            self.emit(0x38, 0x46, self.ld(lhs[1]))  # cmp [bp+d], al
+            self.emit_cc(cop, taken, True, label)  # unsigned
+            return
         g1, g2 = self.byte_global_addr(lhs), self.byte_global_addr(rhs)
         if g1 is not None and g2 is not None:
             if self.al != rhs[1]:
@@ -11552,8 +12139,6 @@ def compile_src(src, addr_map=None):
             base = sa(name)
             cg = CG(base, unsigned)
             cg._func_ret_uchar = len(d) > 6 and d[6]
-            cg._no_bp = len(d) > 7 and d[7]
-            cg._no_frame = len(d) > 8 and d[8]
             cg.emit_func(args, body)
             out[name] = (base, bytes(cg.buf))
         return out
