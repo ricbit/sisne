@@ -1,6 +1,6 @@
 ; SISNE (PC/8086, SCOPUS, 1983) — disk 1 boot sector
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-05-26
+; Last update at 2026-07-29
 ;
         .8086
         .model tiny
@@ -16,6 +16,7 @@ DPT_HEAD_DELAY                   equ     0052Bh    ; DPT[9] — head settle dela
 
         jmp     short BOOTSTRAP                                ;#0000: EB 28
         nop                                                    ;#0002: 90
+
 BPB:
         ; BIOS Parameter Block — OEM ID "4-(2yIHC" (8 bytes ASCII)
         db      "4-(2yIHC"                                     ;#0003: 34 2D 28 32 79 49 48 ...
@@ -135,6 +136,7 @@ RELOCATE_TO_HIGH_MEM:
         cmp     byte [INITIAL_LBA_SECTOR+2], 0                 ;#0094: 80 3E 26 00 00
         jnz     short INT_1E                                   ;#0099: 75 03
         jmp     near SHOW_ERROR_AND_REBOOT                     ;#009B: E9 A2 00
+
 INT_1E:
         ; Install custom DPT, patch INT 1Eh vector, then read the boot LBA
         xor     ax, ax                                         ;#009E: 33 C0
@@ -173,6 +175,7 @@ INT_1E:
         pop     ax                                             ;#00F5: 58
         mov     cx, MSG_INVALID_DISK                           ;#00F6: B9 99 01
         jmp     far word [es:FAR_LOADER_OFFSET]                ;#00F9: 26 FF 2E 95 01
+
 LBA_TO_CHS:
         ; LBA→CHS: in dx:ax = LBA, out CL/CH/DH/DL set for INT 13h read
         div     word [BPB_SECTORS_PER_TRACK]                   ;#00FE: F7 36 18 00
@@ -245,6 +248,7 @@ READ_OK:
         jnz     short READ_LOOP_TOP                            ;#0173: 75 AD
         add     cl, 40h                                        ;#0175: 80 C1 40
         jmp     short READ_LOOP_TOP                            ;#0178: EB A8
+
 SUBROUTINE_RET:
         ; Shared `ret` used by both LBA_TO_CHS and PRINT_LOOP
         ret                                                    ;#017A: C3
@@ -258,6 +262,7 @@ LBA_TO_CHS_FAR:
         call    near LBA_TO_CHS                                ;#0182: E8 79 FF
         pop     ds                                             ;#0185: 1F
         retf                                                   ;#0186: CB
+
 PRINT_LOOP:
         ; lodsb, mask high bit, teletype via INT 10h, until terminator
         lodsb                                                  ;#0187: AC
@@ -268,6 +273,7 @@ PRINT_LOOP:
         ; INT 10h AH=0Eh — teletype output; AL=char, BH=page (0), BL=color (7)
         int     10h                                            ;#0191: CD 10
         jmp     short PRINT_LOOP                               ;#0193: EB F2
+
 FAR_LOADER_OFFSET:
         ; Runtime-built far pointer — offset word (paired with SEGMENT at +2)
         dw      006Dh                                          ;#0195: 6D 00

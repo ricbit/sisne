@@ -292,6 +292,13 @@ def would_canonicalise(bytes_):
         if i + 1 < len(bytes_) and (bytes_[i + 1] & 0xC0) == 0xC0:
             return True
 
+    # TEST r/m, r with mod=3 (reg-reg).  TEST is commutative, so JWasm is free
+    # to swap reg and r/m and emit the mirrored ModR/M byte — `test ax, bx` at
+    # 85 D8 comes back as 85 C3 (COMMAND.COM 31E1h).
+    if op in (0x84, 0x85):
+        if i + 1 < len(bytes_) and (bytes_[i + 1] & 0xC0) == 0xC0:
+            return True
+
     # MOV r/m, Sreg with reg field >= 4 (undocumented alias for reg 0..3).
     if op in (0x8C, 0x8E):
         if i + 1 < len(bytes_) and ((bytes_[i + 1] >> 3) & 7) >= 4:
@@ -624,6 +631,49 @@ def rewrite_imm16_qualifiers(lines):
     return out
 
 
+# The .asm may spell a target's accented letters in Unicode — `"n\u00e3o"` is
+# far easier to read than `"n", 84h, "o"`.  JWasm has no idea what a code page
+# is, so the letters are turned back into their bytes here, on the way out.
+# Keep in step with CODEPAGES in annotate.py.
+CODEPAGE_BYTES = {
+    "\u00c7": 0x80, "\u00e9": 0x82, "\u00e2": 0x83, "\u00e3": 0x84,
+    "\u00e7": 0x87, "\u00c3": 0x8E, "\u00c9": 0x90, "\u00e1": 0xA0,
+    "\u00ed": 0xA1, "\u00f3": 0xA2, "\u00fa": 0xA3,
+}
+
+
+def encode_codepage(lines):
+    """Rewrite `db "n\u00e3o"` as `db "n", 84h, "o"`.
+
+    Only string literals are touched, and only characters the map knows; a
+    stray non-ASCII byte anywhere else is left alone so it surfaces as an
+    assembler error rather than being silently mangled.
+    """
+    def fix_literal(m):
+        body = m.group(1)
+        if all(ch in CODEPAGE_BYTES or ord(ch) < 0x80 for ch in body) and \
+                any(ch in CODEPAGE_BYTES for ch in body):
+            parts, run = [], ""
+            for ch in body:
+                if ch in CODEPAGE_BYTES:
+                    if run:
+                        parts.append('"%s"' % run); run = ""
+                    parts.append("0%02Xh" % CODEPAGE_BYTES[ch])
+                else:
+                    run += ch
+            if run:
+                parts.append('"%s"' % run)
+            return ", ".join(parts)
+        return m.group(0)
+
+    out = []
+    for line in lines:
+        if any(ch in CODEPAGE_BYTES for ch in line):
+            line = re.sub(r'"([^"]*)"', fix_literal, line)
+        out.append(line)
+    return out
+
+
 def main():
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} <input.asm> <output.asm>", file=sys.stderr)
@@ -640,6 +690,9 @@ def main():
     # 1) NASM-style syntax → JWasm/MASM (size ptr, ds:, near ptr, dup,
     #    int 3, repe cmps, etc.). Pure textual translation.
     lines = rewrite_syntax(lines)
+
+    # 1b) Accented letters in string literals → their code-page bytes.
+    lines = encode_codepage(lines)
 
     # 1a) imm16 qualifier (FASM-only leftover) → db
     lines = rewrite_imm16_qualifiers(lines)

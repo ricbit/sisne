@@ -7,6 +7,9 @@
         .code
         org 00000h
 
+CTRL_BREAK_PENDING               equ     0F29Eh    ; Ctrl-Break flag — bit 7 key seen, bit 0 break pending
+CON_RAW_MODE_FLAG                equ     0F2A0h    ; Bit 0 puts console input in raw mode (no Ctrl-C/Ctrl-P handling)
+
 SAVED_IVT_0_TO_1F                equ     00014h    ; 64 bytes — original INT 0..1Fh vectors, saved at startup
 SAVED_IVT_20_TO_23               equ     00094h    ; 16 bytes — original INT 20h..23h vectors
 SAVED_IVT_26_27                  equ     0009Ch    ; 8 bytes — original INT 26h, 27h vectors
@@ -15,6 +18,7 @@ LAST_BYTE_SCRATCH                equ     000AAh    ; Byte buffer for READ_BYTE /
 EXEC_PB_DRIVE                    equ     000ABh    ; Drive code (1=A:, 2=B:, ...) — set if cmdline begins with "X:"
 EXEC_PARAM_BLOCK                 equ     000ACh    ; MS-DOS-style EXEC param block passed via DS:BX to INT 21h AH=4Bh
 EXEC_PB_CMDLINE_OFF              equ     000AEh    ; Offset of the length-prefixed command tail (filled from SI)
+EXEC_CMD_TAIL                    equ     000BAh    ; Length-prefixed command tail the EXEC parameter block points at
 STR_CON_DEV                      equ     00164h    ; char[]  (compiled_headers)
 MSG_STACKS_UNSUPPORTED           equ     00173h    ; char[]  (compiled_headers)
 STR_ICCMENU_PROBE                equ     00197h    ; char[]  (compiled_headers)
@@ -55,6 +59,7 @@ CURRENT_DRIVE                    equ     002E4h    ; uchar  (compiled_headers)
 CTRL_BREAK_FLAG                  equ     002E5h    ; AH=33h Ctrl-Break checking on/off
 FN5C_LOCK_FLAG                   equ     00333h    ; AH=5Ch record-locking state bit, set by DOS_FN_5C_SET_LOCK_FLAG
 BRASCII_MODE                     equ     00334h    ; BRASCII/line-ending mode — picks the GET_LINE_ENDING_TYPE table
+LINE_END_MODE                    equ     00336h    ; AH=37h AL=4/5 line-end mode byte; subfn 22 also gets and sets it
 DOT_TEMPLATE                     equ     00338h    ; uchar[0x0B]  (compiled_headers)
 DOTDOT_TEMPLATE                  equ     00344h    ; uchar[0x0B]  (compiled_headers)
 AVAILDEV_FLAG                    equ     0034Fh    ; AH=37h AL=2/3 AVAILDEV — device names outside \DEV\
@@ -123,6 +128,7 @@ EXEC_INIT_IP                     equ     0047Dh    ; Child entry IP — 100h for
 EXEC_INIT_CS                     equ     0047Fh    ; Child entry CS
 EXEC_FCB_DRIVE_BITS              equ     00481h    ; Drive-validity bits for the two FCBs the child PSP receives
 EXE_RELOC_PTR                    equ     00487h    ; Far pointer the relocation pass reads entries through
+EXE_RELOC_BUF                    equ     0048Bh    ; Relocation entries EXE_RELOC_PTR reads through by default
 EXE_HEADER_PTR                   equ     004CBh    ; Far pointer to the header buffer INT2F_FAR_FORWARD reads 1Ch bytes into
 EXE_SIGNATURE                    equ     004CFh    ; EXE header +00 — compared against 5A4Dh ("MZ")
 EXE_PAGES                        equ     004D3h    ; EXE header +04 — 512-byte pages, multiplied out to size the image
@@ -140,6 +146,10 @@ FEB_DAYS                         equ     0054Ah    ; Days in February for the ye
 TICK_COUNT_LO                    equ     00573h    ; Low word of the tick count (AH=2Ch/2Dh)
 TICK_COUNT_HI                    equ     00575h    ; ...and its high word
 DRIVER_REQ_SAVE_SI               equ     005C1h    ; SI parked across a driver request
+UPCASE_CP437_LEN                 equ     005C3h    ; Length word (128) ahead of the CP437 uppercase table at 5C5h
+UPCASE_ALT_LEN                   equ     00645h    ; Length word (128) ahead of the alternate uppercase table at 647h
+COLLATE_0_LEN                    equ     006DFh    ; Length word (256) ahead of the first collating sequence at 6E1h
+COLLATE_1_LEN                    equ     007E1h    ; Length word (256) ahead of the second collating sequence at 7E3h
 DOS_PARAM_TABLE_A                equ     008FBh    ; Word x4 — first copy of the DOS-info table words 0/1/4/5
 DOS_PARAM_TABLE_B                equ     00913h    ; Word x4 — second copy of words 2/3/6/7 of the DOS-info table
 DOS_PARAM_TABLE_A_MIRROR         equ     0091Bh    ; Mirror of DOS_PARAM_TABLE_A
@@ -6049,6 +6059,8 @@ DOS_INT21_IRET:
         ; Shared IRET epilogue — restore saved registers and return to caller
         mov     ss, ax                                         ;#4595: 8E D0
         mov     sp, di                                         ;#4597: 8B E7
+DOS_INT21_POP_REGS:
+        ; Register-restore tail of DOS_INT21_IRET, reached through a far pointer
         pop     ax                                             ;#4599: 58
         pop     bx                                             ;#459A: 5B
         pop     cx                                             ;#459B: 59
@@ -6277,6 +6289,9 @@ DOS_FN_5C_INT2F_REDIR:
         mov     bp, sp                                         ;#4728: 8B EC
         les     bp, [bp+2]                                     ;#472A: C4 6E 02
         jmp     near DOS_FN_5C_CLEAR_RESULT                    ;#472D: E9 48 FF
+
+REDIR_FLAG_GET_SET:
+        ; subfn 16 — DL picks one of the four 2E0h flags, DH the operation
         cmp     dh, 3                                          ;#4730: 80 FE 03
         jnb     short REDIR_FLAG_SET_RET                       ;#4733: 73 1D
         mov     bl, dl                                         ;#4735: 8A DA
@@ -6290,7 +6305,6 @@ DOS_FN_5C_INT2F_REDIR:
         cmp     dh, 1                                          ;#4748: 80 FE 01
         jz      short REDIR_FLAG_SET_RET                       ;#474B: 74 05
         mov     byte [bx+NETWORK_ACTIVE], 0                    ;#474D: C6 87 E0 02 00
-
 REDIR_FLAG_SET_RET:
         ; Tiny ret used by INT 2Fh redirector flag-update routine (drive 1..4 only)
         ret                                                    ;#4752: C3
@@ -6302,11 +6316,13 @@ INT2F_REDIR_GET_DRIVE_FLAG:
         les     bp, [bp+2]                                     ;#4759: C4 6E 02
         mov     [es:bp], al                                    ;#475C: 26 88 46 00
         ret                                                    ;#4760: C3
+
+GET_FCBS_PROTECTED:
+        ; subfn 17 — return CFG_FCBS_PROTECTED, 0FFh when its high byte is set
         mov     ax, [CFG_FCBS_PROTECTED]                       ;#4761: A1 1C 04
         or      ah, ah                                         ;#4764: 0A E4
         jz      short DOS_FN_5E_GET_DRIVER_COUNT               ;#4766: 74 02
         mov     al, 0FFh                                       ;#4768: B0 FF
-
 DOS_FN_5E_GET_DRIVER_COUNT:
         ; mov bx,DRIVER_COUNT driver-count word; set AH=FFh if BH non-zero
         mov     bx, [DRIVER_COUNT]                             ;#476A: 8B 1E 24 04
@@ -6317,14 +6333,19 @@ DOS_FN_5E_GET_DRIVER_COUNT:
 DOS_FN_5E_AH_FF_BRANCH:
         ; AH=FFh path — fall through to common machine-name lookup return
         jmp     short DOS_FN_5E_STORE_RESULT                   ;#4776: EB 03
-        mov     ax, [MCB_CHAIN_HEAD]                           ;#4778: A1 FC 03
 
+GET_MCB_CHAIN_HEAD:
+        ; subfn 18 — return the MCB chain head segment
+        mov     ax, [MCB_CHAIN_HEAD]                           ;#4778: A1 FC 03
 DOS_FN_5E_STORE_RESULT:
         ; mov bp,sp / les bp,[bp+2] / write AX into caller [es:bp]; common ret
         mov     bp, sp                                         ;#477B: 8B EC
         les     bp, [bp+2]                                     ;#477D: C4 6E 02
         mov     [es:bp], ax                                    ;#4780: 26 89 46 00
         ret                                                    ;#4784: C3
+
+GET_DOS_STATE_BLOCK:
+        ; subfn 19 — copy CTRL_BREAK_FLAG, CURRENT_DRIVE and friends out
         mov     di, bx                                         ;#4785: 8B FB
         mov     al, [CTRL_BREAK_FLAG]                          ;#4787: A0 E5 02
         mov     ah, [CURRENT_DRIVE]                            ;#478A: 8A 26 E4 02
@@ -6337,6 +6358,9 @@ DOS_FN_5E_STORE_RESULT:
         stosw                                                  ;#479A: AB
         pop     ax                                             ;#479B: 58
         jmp     near DOS_INT21_IRET_FROM_STACK                 ;#479C: E9 F4 FD
+
+SET_DOS_STATE_BLOCK:
+        ; subfn 20 — the inverse: load those globals from the caller buffer
         mov     ax, [es:bx]                                    ;#479F: 26 8B 07
         mov     [CTRL_BREAK_FLAG], al                          ;#47A2: A2 E5 02
         mov     [CURRENT_DRIVE], ah                            ;#47A5: 88 26 E4 02
@@ -6348,12 +6372,18 @@ DOS_FN_5E_STORE_RESULT:
         mov     [2DCh], ax                                     ;#47BB: A3 DC 02
         pop     ax                                             ;#47BE: 58
         jmp     near DOS_INT21_IRET_FROM_STACK                 ;#47BF: E9 D1 FD
+
+GET_BRASCII_MODE:
+        ; subfn 21 — return BRASCII_MODE in the caller AX
         mov     bp, sp                                         ;#47C2: 8B EC
         les     bp, [bp+2]                                     ;#47C4: C4 6E 02
         mov     ax, [BRASCII_MODE]                             ;#47C7: A1 34 03
         mov     [es:bp], ax                                    ;#47CA: 26 89 46 00
         pop     ax                                             ;#47CE: 58
         jmp     near DOS_INT21_IRET_FROM_STACK                 ;#47CF: E9 C1 FD
+
+GET_SET_LINE_END_MODE:
+        ; subfn 22 — get or set LINE_END_MODE, DL selects which
         mov     bx, 336h                                       ;#47D2: BB 36 03
         or      dl, dl                                         ;#47D5: 0A D2
         jz      short DOS_FN_5E_GET_BYTE                       ;#47D7: 74 15
@@ -6364,7 +6394,6 @@ DOS_FN_5E_STORE_RESULT:
         jbe     short DOS_FN_5E_RET                            ;#47E3: 76 05
         and     dl, 1                                          ;#47E5: 80 E2 01
         mov     [bx], dl                                       ;#47E8: 88 17
-
 DOS_FN_5E_RET:
         ; pop ax / jmp DOS_INT21_IRET_FROM_STACK — common ret of DOS_FN_5E subcalls
         pop     ax                                             ;#47EA: 58
@@ -6386,6 +6415,9 @@ DOS_FN_5E_GET_FAR_PTR:
         mov     ax, 0FA1h                                      ;#4804: B8 A1 0F
         mov     [es:bp+10h], ax                                ;#4807: 26 89 46 10
         jmp     short DOS_FN_5E_RET                            ;#480B: EB DD
+
+GET_SET_FCBS_PER_FILE:
+        ; subfn 23 — get or set CFG_FCBS_PER_FILE, DL selects which
         mov     bx, 1BFh                                       ;#480D: BB BF 01
         or      dl, dl                                         ;#4810: 0A D2
         jnz     short DOS_FN_5E_SET_FLAG_BIT                   ;#4812: 75 0F
@@ -6402,6 +6434,9 @@ DOS_FN_5E_SET_FLAG_BIT:
         mov     [bx], dl                                       ;#4826: 88 17
         pop     ax                                             ;#4828: 58
         jmp     near DOS_INT21_IRET_FROM_STACK                 ;#4829: E9 67 FD
+
+GET_SET_DOS_FLAGS:
+        ; subfn 24 — get or set INT28_GATE_FLAG and friends via the caller block
         mov     bp, sp                                         ;#482C: 8B EC
         les     bp, [bp+2]                                     ;#482E: C4 6E 02
         mov     di, [es:bp+8]                                  ;#4831: 26 8B 7E 08
@@ -6457,31 +6492,34 @@ DOS_FN_5E_RET_STORE_AL:
         mov     [es:bp], al                                    ;#488A: 26 88 46 00
         pop     ax                                             ;#488E: 58
         jmp     near DOS_INT21_IRET_FROM_STACK                 ;#488F: E9 01 FD
+
+DRIVE_INFO_SUBFN_TABLE:
+        ; 25-entry subfn table for the AL<19h dispatch at 48D8h
         dw      DRIVE_LOOKUP_BY_PHYS                           ;#4892: 6F E8
         dw      GET_DRIVE_CONFIG_BY_ID                         ;#4894: B3 E8
         dw      GET_DRIVE_INFO_BY_MEDIA                        ;#4896: DE E8
         dw      GET_CURRENT_DRIVE_NUMBER                       ;#4898: 18 E9
         dw      SET_CURRENT_DRIVE_NUMBER                       ;#489A: 3C E9
-        dw      0B63Ah                                         ;#489C: 3A B6
-        dw      0B647h                                         ;#489E: 47 B6
-        dw      0B654h                                         ;#48A0: 54 B6
-        dw      0CE2Bh                                         ;#48A2: 2B CE
+        dw      SET_AUX_HOOK_FLAG                              ;#489C: 3A B6
+        dw      SET_AUX_HOOK_MODE                              ;#489E: 47 B6
+        dw      SET_PRN_HOOK_FLAG                              ;#48A0: 54 B6
+        dw      SUBFN_08_RETURN_6                              ;#48A2: 2B CE
         dw      JOIN_DRIVE_TO_DIR                              ;#48A4: 8C 71
         dw      UNJOIN_DRIVE                                   ;#48A6: 55 75
         dw      GET_ASSIGN_PATH_FOR_DRIVE                      ;#48A8: 7E 76
         dw      SUBST_DRIVE_TO_PATH                            ;#48AA: 4F 73
-        dw      0F2E5h                                         ;#48AC: E5 F2
-        dw      0F2EAh                                         ;#48AE: EA F2
-        dw      0F2EFh                                         ;#48B0: EF F2
-        dw      4730h                                          ;#48B2: 30 47
-        dw      4761h                                          ;#48B4: 61 47
-        dw      4778h                                          ;#48B6: 78 47
-        dw      4785h                                          ;#48B8: 85 47
-        dw      479Fh                                          ;#48BA: 9F 47
-        dw      47C2h                                          ;#48BC: C2 47
-        dw      47D2h                                          ;#48BE: D2 47
-        dw      480Dh                                          ;#48C0: 0D 48
-        dw      482Ch                                          ;#48C2: 2C 48
+        dw      BRASCII_DRIVER_FN4                             ;#48AC: E5 F2
+        dw      BRASCII_DRIVER_FN5                             ;#48AE: EA F2
+        dw      BRASCII_DRIVER_FN3                             ;#48B0: EF F2
+        dw      REDIR_FLAG_GET_SET                             ;#48B2: 30 47
+        dw      GET_FCBS_PROTECTED                             ;#48B4: 61 47
+        dw      GET_MCB_CHAIN_HEAD                             ;#48B6: 78 47
+        dw      GET_DOS_STATE_BLOCK                            ;#48B8: 85 47
+        dw      SET_DOS_STATE_BLOCK                            ;#48BA: 9F 47
+        dw      GET_BRASCII_MODE                               ;#48BC: C2 47
+        dw      GET_SET_LINE_END_MODE                          ;#48BE: D2 47
+        dw      GET_SET_FCBS_PER_FILE                          ;#48C0: 0D 48
+        dw      GET_SET_DOS_FLAGS                              ;#48C2: 2C 48
 
 DOS_FN_18_RESERVED_18:
         ; INT 21h AH=18h handler (reserved 18)
@@ -6513,7 +6551,7 @@ DRIVE_INFO_DISPATCH_TABLE:
         shl     bx, 1                                          ;#48D2: D1 E3
         xchg    bp, bx                                         ;#48D4: 87 DD
         mov     al, cl                                         ;#48D6: 8A C1
-        jmp     word [cs:bp+4892h]                             ;#48D8: 2E FF A6 92 48
+        jmp     word [cs:bp+DRIVE_INFO_SUBFN_TABLE]            ;#48D8: 2E FF A6 92 48
         ;@compiled trim_trailing_name_spaces 48DD 125
         /*
          * TRIM_TRAILING_NAME_SPACES @ 0x48DD in SISNE.SIS (125 bytes).
@@ -12513,8 +12551,8 @@ INIT_STAGE2_CLEAR_FLAGS:
         ; Zero three CS-relative flag bytes and seed [1322h] = 0Dh
         xor     al, al                                         ;#AEF1: 32 C0
         mov     [cs:0F29Fh], al                                ;#AEF3: 2E A2 9F F2
-        mov     [cs:0F29Eh], al                                ;#AEF7: 2E A2 9E F2
-        mov     [cs:0F2A0h], al                                ;#AEFB: 2E A2 A0 F2
+        mov     [cs:CTRL_BREAK_PENDING], al                    ;#AEF7: 2E A2 9E F2
+        mov     [cs:CON_RAW_MODE_FLAG], al                     ;#AEFB: 2E A2 A0 F2
         mov     byte [1322h], 0Dh                              ;#AEFF: C6 06 22 13 0D
         push    ds                                             ;#AF04: 1E
         mov     ax, 0                                          ;#AF05: B8 00 00
@@ -12553,22 +12591,22 @@ INIT_STAGE2_CLEAR_FLAGS:
 
 CHECK_CTRL_BREAK_FLAGS:
         ; Read [cs:F29Eh]; if bit 7 set, call SUB_B529 first; then fall to BIT0 test
-        mov     al, [cs:0F29Eh]                                ;#AF6A: 2E A0 9E F2
+        mov     al, [cs:CTRL_BREAK_PENDING]                    ;#AF6A: 2E A0 9E F2
         test    al, 80h                                        ;#AF6E: A8 80
         jnz     short CHECK_CTRL_BREAK_BIT0                    ;#AF70: 75 07
         call    near POLL_STDIN_VIA_FCB                        ;#AF72: E8 B4 05
-        mov     al, [cs:0F29Eh]                                ;#AF75: 2E A0 9E F2
+        mov     al, [cs:CTRL_BREAK_PENDING]                    ;#AF75: 2E A0 9E F2
 CHECK_CTRL_BREAK_BIT0:
         ; Bit 7 path done — if bit 0 clear, clear flag and ret; else fall into HANDLE
         test    al, 1                                          ;#AF79: A8 01
         jnz     short HANDLE_CTRL_BREAK                        ;#AF7B: 75 07
-        mov     byte [cs:0F29Eh], 0                            ;#AF7D: 2E C6 06 9E F2 00
+        mov     byte [cs:CTRL_BREAK_PENDING], 0                ;#AF7D: 2E C6 06 9E F2 00
         ret                                                    ;#AF83: C3
 
 HANDLE_CTRL_BREAK:
         ; Clear flags, INT 2Fh AX=4900h multiplex, optionally SUB_B600, jmp INT 23h
-        mov     byte [cs:0F29Eh], 0                            ;#AF84: 2E C6 06 9E F2 00
-        mov     byte [cs:0F2A0h], 0                            ;#AF8A: 2E C6 06 A0 F2 00
+        mov     byte [cs:CTRL_BREAK_PENDING], 0                ;#AF84: 2E C6 06 9E F2 00
+        mov     byte [cs:CON_RAW_MODE_FLAG], 0                 ;#AF8A: 2E C6 06 A0 F2 00
         mov     ax, 4900h                                      ;#AF90: B8 00 49
         int     2Fh                                            ;#AF93: CD 2F
         and     al, bl                                         ;#AF95: 22 C3
@@ -12579,7 +12617,7 @@ HANDLE_CTRL_BREAK:
 HANDLE_CTRL_BREAK_INVOKE:
         ; Tail — `jmp near ptr INVOKE_INT23_CTRL_BREAK`
         jmp     near INVOKE_INT23_CTRL_BREAK                   ;#AFA0: E9 93 93
-        mov     byte [cs:0F29Eh], 81h                          ;#AFA3: 2E C6 06 9E F2 81
+        mov     byte [cs:CTRL_BREAK_PENDING], 81h              ;#AFA3: 2E C6 06 9E F2 81
         iret                                                   ;#AFA9: CF
 
 INVOKE_INT28_IDLE:
@@ -12605,6 +12643,8 @@ INVOKE_INT28_DO:
         ; Toggle the in-DOS bit at INT28_INDOS_BIT, INT 28h, toggle back, restore
         push    ax                                             ;#AFD7: 50
         xor     byte [INT28_INDOS_BIT], 1                      ;#AFD8: 80 36 D0 02 01
+INT28_ISSUE:
+        ; The INT 28h itself, between the two INT28_INDOS_BIT toggles
         int     28h                                            ;#AFDD: CD 28
         xor     byte [INT28_INDOS_BIT], 1                      ;#AFDF: 80 36 D0 02 01
         pop     ax                                             ;#AFE4: 58
@@ -12619,7 +12659,7 @@ CON_INPUT_HANDLE_SPECIAL:
         ; Handle special console input bytes — Ctrl-C (3), Ctrl-P (10h), Ctrl-S (13h)
         or      al, al                                         ;#AFEB: 0A C0
         jz      short CON_INPUT_SPECIAL_AL0                    ;#AFED: 74 18
-        test    byte [cs:0F2A0h], 1                            ;#AFEF: 2E F6 06 A0 F2 01
+        test    byte [cs:CON_RAW_MODE_FLAG], 1                 ;#AFEF: 2E F6 06 A0 F2 01
         jnz     short CON_INPUT_RAW_MODE                       ;#AFF5: 75 13
         cmp     bl, 3                                          ;#AFF7: 80 FB 03
         jz      short HANDLE_CTRL_BREAK                        ;#AFFA: 74 88
@@ -12640,7 +12680,7 @@ CON_INPUT_RAW_MODE:
         jz      short CON_INPUT_SPECIAL_RETRY                  ;#B00C: 74 0E
 TOGGLE_CTRL_S:
         ; Toggle the cs:[0F2A0h] output-pause flag (Ctrl-S behavior) and retry
-        xor     byte [cs:0F2A0h], 1                            ;#B00E: 2E 80 36 A0 F2 01
+        xor     byte [cs:CON_RAW_MODE_FLAG], 1                 ;#B00E: 2E 80 36 A0 F2 01
         jmp     short CON_INPUT_SPECIAL_RETRY                  ;#B014: EB 06
 
 TOGGLE_CTRL_P:
@@ -12797,15 +12837,15 @@ CHECK_CON_BUSY:
 CHECK_CON_BUSY_LOOP:
         ; Send cmd 0Eh CON-busy probe; on busy bit INVOKE_INT28_IDLE and retry
         push    ds                                             ;#B12D: 1E
-        cmp     byte [cs:0F29Eh], 81h                          ;#B12E: 2E 80 3E 9E F2 81
+        cmp     byte [cs:CTRL_BREAK_PENDING], 81h              ;#B12E: 2E 80 3E 9E F2 81
         jz      short CHECK_CON_BUSY_SIGNAL                    ;#B134: 74 57
         lds     di, [bp+4]                                     ;#B136: C5 7E 04
         push    cs                                             ;#B139: 0E
         pop     es                                             ;#B13A: 07
-        mov     bx, 0F2B5h                                     ;#B13B: BB B5 F2
+        mov     bx, CON_HOOK_TABLES                            ;#B13B: BB B5 F2
         mov     byte [cs:0F2B7h], 5                            ;#B13E: 2E C6 06 B7 F2 05
         mov     word [cs:0F2C7h], 1                            ;#B144: 2E C7 06 C7 F2 01 00
-        mov     byte [cs:0F2B5h], 0Eh                          ;#B14B: 2E C6 06 B5 F2 0E
+        mov     byte [cs:CON_HOOK_TABLES], 0Eh                 ;#B14B: 2E C6 06 B5 F2 0E
         call    near CALL_DRIVER_STRATEGY_INT                  ;#B151: E8 2E 24
         test    word [cs:0F2B8h], 200h                         ;#B154: 2E F7 06 B8 F2 00 02
         jz      short CON_INPUT_DRIVER_PACKET                  ;#B15B: 74 16
@@ -12820,7 +12860,7 @@ CHECK_CON_BUSY_LOOP:
 CON_INPUT_DRIVER_PACKET:
         ; Cmd 4 + size 16h packet; call driver, classify result byte at [F2CFh]
         mov     byte [cs:0F2B7h], 4                            ;#B173: 2E C6 06 B7 F2 04
-        mov     byte [cs:0F2B5h], 16h                          ;#B179: 2E C6 06 B5 F2 16
+        mov     byte [cs:CON_HOOK_TABLES], 16h                 ;#B179: 2E C6 06 B5 F2 16
         call    near CALL_DRIVER_STRATEGY_INT                  ;#B17F: E8 00 24
         mov     bl, [cs:0F2CFh]                                ;#B182: 2E 8A 1E CF F2
         mov     al, [cs:0F2C7h]                                ;#B187: 2E A0 C7 F2
@@ -12828,7 +12868,7 @@ CON_INPUT_DRIVER_PACKET:
 
 CHECK_CON_BUSY_SIGNAL:
         ; Critical-section signal — clear F29Eh, set BL=3, AL=1, fall to store
-        mov     byte [cs:0F29Eh], 0                            ;#B18D: 2E C6 06 9E F2 00
+        mov     byte [cs:CTRL_BREAK_PENDING], 0                ;#B18D: 2E C6 06 9E F2 00
         mov     bl, 3                                          ;#B193: B3 03
         mov     al, 1                                          ;#B195: B0 01
 CHECK_CON_BUSY_STORE:
@@ -12843,7 +12883,7 @@ CHECK_CON_BUSY_STORE:
 
 CON_INPUT_DRIVER_LOOP:
         ; Driver cmd 5 (input) with break-flag check; INT 28h idle on busy
-        cmp     byte [cs:0F29Eh], 81h                          ;#B1A1: 2E 80 3E 9E F2 81
+        cmp     byte [cs:CTRL_BREAK_PENDING], 81h              ;#B1A1: 2E 80 3E 9E F2 81
         jz      short CON_INPUT_DRIVER_SIGNAL                  ;#B1A7: 74 48
         push    bp                                             ;#B1A9: 55
         mov     bp, sp                                         ;#B1AA: 8B EC
@@ -12854,10 +12894,10 @@ CON_INPUT_DRIVER_LOOP:
         mov     di, [bp+4]                                     ;#B1B3: 8B 7E 04
         mov     bx, cs                                         ;#B1B6: 8C CB
         mov     es, bx                                         ;#B1B8: 8E C3
-        mov     bx, 0F2B5h                                     ;#B1BA: BB B5 F2
+        mov     bx, CON_HOOK_TABLES                            ;#B1BA: BB B5 F2
         mov     byte [cs:0F2B7h], 5                            ;#B1BD: 2E C6 06 B7 F2 05
         mov     byte [cs:0F2C7h], 1                            ;#B1C3: 2E C6 06 C7 F2 01
-        mov     byte [cs:0F2B5h], 0Eh                          ;#B1C9: 2E C6 06 B5 F2 0E
+        mov     byte [cs:CON_HOOK_TABLES], 0Eh                 ;#B1C9: 2E C6 06 B5 F2 0E
         call    near CALL_DRIVER_STRATEGY_INT                  ;#B1CF: E8 B0 23
         test    word [cs:0F2B8h], 200h                         ;#B1D2: 2E F7 06 B8 F2 00 02
         jz      short CON_INPUT_DRIVER_FETCH                   ;#B1D9: 74 0E
@@ -12893,8 +12933,8 @@ DEVICE_OUTPUT_PACKET:
         lds     di, [bp+4]                                     ;#B1F9: C5 7E 04
         push    cs                                             ;#B1FC: 0E
         pop     es                                             ;#B1FD: 07
-        mov     bx, 0F2B5h                                     ;#B1FE: BB B5 F2
-        mov     byte [cs:0F2B5h], 1Ah                          ;#B201: 2E C6 06 B5 F2 1A
+        mov     bx, CON_HOOK_TABLES                            ;#B1FE: BB B5 F2
+        mov     byte [cs:CON_HOOK_TABLES], 1Ah                 ;#B201: 2E C6 06 B5 F2 1A
         mov     byte [cs:0F2B7h], 4                            ;#B207: 2E C6 06 B7 F2 04
         mov     ax, [bp+0Ch]                                   ;#B20D: 8B 46 0C
         mov     [cs:0F2C7h], ax                                ;#B210: 2E A3 C7 F2
@@ -12923,9 +12963,9 @@ CON_CLOSE_OUTPUT:
         mov     di, [bp+4]                                     ;#B243: 8B 7E 04
         mov     bx, cs                                         ;#B246: 8C CB
         mov     es, bx                                         ;#B248: 8E C3
-        mov     bx, 0F2B5h                                     ;#B24A: BB B5 F2
+        mov     bx, CON_HOOK_TABLES                            ;#B24A: BB B5 F2
         mov     byte [cs:0F2B7h], 7                            ;#B24D: 2E C6 06 B7 F2 07
-        mov     byte [cs:0F2B5h], 0Dh                          ;#B253: 2E C6 06 B5 F2 0D
+        mov     byte [cs:CON_HOOK_TABLES], 0Dh                 ;#B253: 2E C6 06 B5 F2 0D
         call    near CALL_DRIVER_STRATEGY_INT                  ;#B259: E8 26 23
         pop     di                                             ;#B25C: 5F
         pop     ds                                             ;#B25D: 1F
@@ -12995,14 +13035,14 @@ CON_WRITE_AFTER_TAB:
         mov     byte [cs:0F2CFh], 20h                          ;#B2A9: 2E C6 06 CF F2 20
 CON_WRITE_PREPARE:
         ; Raise break-flag bit 7 in [cs:F29Eh] and toggle the [cs:F2E4h] alternator
-        or      byte [cs:0F29Eh], 80h                          ;#B2AF: 2E 80 0E 9E F2 80
+        or      byte [cs:CTRL_BREAK_PENDING], 80h              ;#B2AF: 2E 80 0E 9E F2 80
         xor     byte [cs:0F2E4h], 1                            ;#B2B5: 2E 80 36 E4 F2 01
         jz      short CON_WRITE_RESOLVE_ECHO                   ;#B2BB: 74 0E
 CON_WRITE_WAIT_LOOP:
         ; Wait/IDLE top — poll SUB_B549, call INT 28h, re-check break state
         call    near POLL_STDIN_BREAK                          ;#B2BD: E8 89 02
         call    near INVOKE_INT28_IDLE                         ;#B2C0: E8 E7 FC
-        test    byte [cs:0F2A0h], 1                            ;#B2C3: 2E F6 06 A0 F2 01
+        test    byte [cs:CON_RAW_MODE_FLAG], 1                 ;#B2C3: 2E F6 06 A0 F2 01
         jnz     short CON_WRITE_REENTRY                        ;#B2C9: 75 98
 CON_WRITE_RESOLVE_ECHO:
         ; Probe [cs:F2E2h] echo source — if set, read it via segment 40h:[bx]
@@ -13036,7 +13076,7 @@ CON_WRITE_VIA_DRIVER:
         mov     byte [cs:0F2C7h], 1                            ;#B2FF: 2E C6 06 C7 F2 01
         push    cs                                             ;#B305: 0E
         pop     es                                             ;#B306: 07
-        mov     bx, 0F2B5h                                     ;#B307: BB B5 F2
+        mov     bx, CON_HOOK_TABLES                            ;#B307: BB B5 F2
         call    near CALL_DRIVER_STRATEGY_INT                  ;#B30A: E8 75 22
 CON_WRITE_LOOP_BACK:
         ; Decrement column counter [cs:F2A1h]; if not zero loop to RESOLVE_ECHO
@@ -13056,7 +13096,7 @@ CON_WRITE_HANDLE_BREAK:
         mov     byte [cs:0F2C7h], 1                            ;#B324: 2E C6 06 C7 F2 01
         push    cs                                             ;#B32A: 0E
         pop     es                                             ;#B32B: 07
-        mov     bx, 0F2B5h                                     ;#B32C: BB B5 F2
+        mov     bx, CON_HOOK_TABLES                            ;#B32C: BB B5 F2
         cmp     byte [cs:0F2CFh], 10h                          ;#B32F: 2E 80 3E CF F2 10
         jz      short CON_WRITE_BREAK_ARM_ECHO                 ;#B335: 74 05
         call    near CALL_DRIVER_STRATEGY_INT                  ;#B337: E8 48 22
@@ -13117,7 +13157,7 @@ CON_WRITE_STRING_CALL_DRIVER:
 
 CON_WRITE_STRING_CHECK_BREAK:
         ; Test cs:[F29Eh] critical flag — set means do CHECK_CTRL_BREAK_FLAGS
-        test    byte [cs:0F29Eh], 1                            ;#B3AF: 2E F6 06 9E F2 01
+        test    byte [cs:CTRL_BREAK_PENDING], 1                ;#B3AF: 2E F6 06 9E F2 01
         jz      short CON_WRITE_STRING_CHECK_BREAK_ALT         ;#B3B5: 74 05
         call    near CHECK_CTRL_BREAK_FLAGS                    ;#B3B7: E8 B0 FB
         jmp     short CON_WRITE_STRING_ADVANCE                 ;#B3BA: EB 0A
@@ -13187,7 +13227,7 @@ CON_WRITE_STRING_BREAK_WAIT:
         mov     word [cs:0F2C3h], 0F2CFh                       ;#B435: 2E C7 06 C3 F2 CF F2
         call    near CHECK_CTRL_BREAK_FLAGS                    ;#B43C: E8 2B FB
         mov     word [cs:0F2C3h], 0F2D1h                       ;#B43F: 2E C7 06 C3 F2 D1 F2
-        test    byte [cs:0F2A0h], 1                            ;#B446: 2E F6 06 A0 F2 01
+        test    byte [cs:CON_RAW_MODE_FLAG], 1                 ;#B446: 2E F6 06 A0 F2 01
         jz      short CON_OUTPUT_BIT_TEST                      ;#B44C: 74 08
         mov     es, [bp+6]                                     ;#B44E: 8E 46 06
         jmp     short CON_WRITE_STRING_BREAK_WAIT              ;#B451: EB DC
@@ -13217,7 +13257,7 @@ CON_OUT_BIT0_TEST:
         push    ds                                             ;#B472: 1E
         push    cs                                             ;#B473: 0E
         pop     es                                             ;#B474: 07
-        mov     bx, 0F2B5h                                     ;#B475: BB B5 F2
+        mov     bx, CON_HOOK_TABLES                            ;#B475: BB B5 F2
         lds     di, [CON_SFT_ECHO]                             ;#B478: C5 3E B8 03
         mov     byte [cs:0F2B7h], 8                            ;#B47C: 2E C6 06 B7 F2 08
         mov     byte [cs:0F2C7h], 1                            ;#B482: 2E C6 06 C7 F2 01
@@ -13242,7 +13282,7 @@ CON_OUT_VIA_STRATEGY:
         pop     ds                                             ;#B4AB: 1F
         push    cs                                             ;#B4AC: 0E
         pop     es                                             ;#B4AD: 07
-        mov     bx, 0F2B5h                                     ;#B4AE: BB B5 F2
+        mov     bx, CON_HOOK_TABLES                            ;#B4AE: BB B5 F2
         call    near CALL_DRIVER_STRATEGY_INT                  ;#B4B1: E8 CE 20
         push    ds                                             ;#B4B4: 1E
         pop     es                                             ;#B4B5: 07
@@ -13337,7 +13377,7 @@ POLL_STDIN_PROBE:
         ; Direct entry — set up packet cmd 5, dispatch via SUB_D582, classify result
         mov     ax, cs                                         ;#B550: 8C C8
         mov     es, ax                                         ;#B552: 8E C0
-        mov     bx, 0F2B5h                                     ;#B554: BB B5 F2
+        mov     bx, CON_HOOK_TABLES                            ;#B554: BB B5 F2
         mov     byte [cs:0F2B7h], 5                            ;#B557: 2E C6 06 B7 F2 05
         mov     byte [cs:0F2C7h], 1                            ;#B55D: 2E C6 06 C7 F2 01
         call    near CALL_DRIVER_STRATEGY_INT                  ;#B563: E8 1C 20
@@ -13346,7 +13386,7 @@ POLL_STDIN_PROBE:
         mov     al, [cs:0F2C2h]                                ;#B56F: 2E A0 C2 F2
         cmp     al, 10h                                        ;#B573: 3C 10
         jz      short POLL_STDIN_TOGGLE_ECHO                   ;#B575: 74 22
-        test    byte [cs:0F2A0h], 1                            ;#B577: 2E F6 06 A0 F2 01
+        test    byte [cs:CON_RAW_MODE_FLAG], 1                 ;#B577: 2E F6 06 A0 F2 01
         jnz     short POLL_STDIN_TOGGLE_PAUSE                  ;#B57D: 75 08
         cmp     al, 3                                          ;#B57F: 3C 03
         jz      short POLL_STDIN_SET_BREAK                     ;#B581: 74 0E
@@ -13354,12 +13394,12 @@ POLL_STDIN_PROBE:
         jnz     short POLL_STDIN_RET                           ;#B585: 75 35
 POLL_STDIN_TOGGLE_PAUSE:
         ; Ctrl-S — toggle [cs:F2A0h] bit 0 pause flag; gate AL=03 (Ctrl-C)
-        xor     byte [cs:0F2A0h], 1                            ;#B587: 2E 80 36 A0 F2 01
+        xor     byte [cs:CON_RAW_MODE_FLAG], 1                 ;#B587: 2E 80 36 A0 F2 01
         cmp     al, 3                                          ;#B58D: 3C 03
         jnz     short POLL_STDIN_CONSUME_KEY                   ;#B58F: 75 0E
 POLL_STDIN_SET_BREAK:
         ; Ctrl-C — set [cs:F29Eh] bit 0 break-pending flag
-        or      byte [cs:0F29Eh], 1                            ;#B591: 2E 80 0E 9E F2 01
+        or      byte [cs:CTRL_BREAK_PENDING], 1                ;#B591: 2E 80 0E 9E F2 01
         jmp     short POLL_STDIN_CONSUME_KEY                   ;#B597: EB 06
 
 POLL_STDIN_TOGGLE_ECHO:
@@ -13375,7 +13415,7 @@ POLL_STDIN_CONSUME_KEY:
         pop     word [cs:0F2D1h]                               ;#B5B7: 2E 8F 06 D1 F2
 POLL_STDIN_RET:
         ; Common exit — raise [cs:F29Eh] bit 7 ("polled"), restore regs
-        or      byte [cs:0F29Eh], 80h                          ;#B5BC: 2E 80 0E 9E F2 80
+        or      byte [cs:CTRL_BREAK_PENDING], 80h              ;#B5BC: 2E 80 0E 9E F2 80
         pop     ds                                             ;#B5C2: 1F
         pop     di                                             ;#B5C3: 5F
         pop     bp                                             ;#B5C4: 5D
@@ -13464,22 +13504,29 @@ PRINT_STRING_RET:
         ; End of string (NUL byte) — pop bp, ret 2
         pop     bp                                             ;#B636: 5D
         ret     2                                              ;#B637: C2 02 00
+
+SET_AUX_HOOK_FLAG:
+        ; subfn 5 — store AL into the 5-byte table at cs:0F2D3h indexed by DL
         cmp     dl, 4                                          ;#B63A: 80 FA 04
         jnbe    short AUX_HOOK_FN0_STORE_RET                   ;#B63D: 77 07
         mov     si, dx                                         ;#B63F: 8B F2
         mov     [cs:si+0F2D3h], al                             ;#B641: 2E 88 84 D3 F2
-
 AUX_HOOK_FN0_STORE_RET:
         ; Store AL at cs:[si+F2D3h] (per-AUX-port flag 0), ret
         ret                                                    ;#B646: C3
+
+SET_AUX_HOOK_MODE:
+        ; subfn 6 — store AL into the 4-byte table at cs:0F2D8h indexed by DL
         cmp     dl, 3                                          ;#B647: 80 FA 03
         jnbe    short AUX_HOOK_FN1_STORE_RET                   ;#B64A: 77 07
         mov     si, dx                                         ;#B64C: 8B F2
         mov     [cs:si+0F2D8h], al                             ;#B64E: 2E 88 84 D8 F2
-
 AUX_HOOK_FN1_STORE_RET:
         ; Store AL at cs:[si+F2D8h] (per-AUX-port flag 1), ret
         ret                                                    ;#B653: C3
+
+SET_PRN_HOOK_FLAG:
+        ; subfn 7 — store AL into the 4-byte table at cs:0F2DCh indexed by DL
         cmp     dl, 3                                          ;#B654: 80 FA 03
         jnbe    short SET_INT17_PORT_FLAG_RET                  ;#B657: 77 20
         mov     si, dx                                         ;#B659: 8B F2
@@ -13489,7 +13536,6 @@ AUX_HOOK_FN1_STORE_RET:
         test    al, 80h                                        ;#B664: A8 80
         jz      short INT17_FLAG_EVEN_PAD                      ;#B666: 74 01
         inc     dx                                             ;#B668: 42
-
 INT17_FLAG_EVEN_PAD:
         ; AL bit-7 clear branch — DX stays 0 and walks the per-port flag pair
         shl     si, 1                                          ;#B669: D1 E6
@@ -13511,7 +13557,7 @@ INT17_PRINTER_HOOK_ENTRY:
 INT17_PRINTER_HOOK_BODY:
         ; INT 17h hook body — check busy + per-port flag, chain to original ISR
         push    bx                                             ;#B686: 53
-        test    byte [cs:0F29Eh], 1                            ;#B687: 2E F6 06 9E F2 01
+        test    byte [cs:CTRL_BREAK_PENDING], 1                ;#B687: 2E F6 06 9E F2 01
         jnz     short INT17_HOOK_DISABLED                      ;#B68D: 75 1A
         mov     bx, dx                                         ;#B68F: 8B DA
         cmp     byte [cs:bx+0F2D3h], 1                         ;#B691: 2E 80 BF D3 F2 01
@@ -13540,7 +13586,7 @@ INT17_HOOK_CHAIN:
 INT14_AUX_HOOK_ENTRY:
         ; INT 14h hook entry — guard on bit-7 of per-port flag and dispatch
         push    bx                                             ;#B6B4: 53
-        test    byte [cs:0F29Eh], 1                            ;#B6B5: 2E F6 06 9E F2 01
+        test    byte [cs:CTRL_BREAK_PENDING], 1                ;#B6B5: 2E F6 06 9E F2 01
         jnz     short INT14_HOOK_DISABLED_TAIL                 ;#B6BB: 75 22
         mov     bx, dx                                         ;#B6BD: 8B DA
         test    byte [cs:bx+0F2DCh], 80h                       ;#B6BF: 2E F6 87 DC F2 80
@@ -13560,7 +13606,7 @@ INT14_HOOK_DISABLED_TAIL:
         ; Hook disabled / busy — clear cs:[0F29Eh] bit 0 if AH non-zero
         or      ah, ah                                         ;#B6DF: 0A E4
         jz      short INT14_AUX_IRET_AH99                      ;#B6E1: 74 06
-        and     byte [cs:0F29Eh], 0FEh                         ;#B6E3: 2E 80 26 9E F2 FE
+        and     byte [cs:CTRL_BREAK_PENDING], 0FEh             ;#B6E3: 2E 80 26 9E F2 FE
 INT14_AUX_IRET_AH99:
         ; Set AH=99h before the add-sp/iret tail of INT14_AUX hook
         mov     ah, 99h                                        ;#B6E9: B4 99
@@ -16893,6 +16939,9 @@ DOS_FN_30_GET_DOS_VERSION:
         mov     word [di+4], 0                                 ;#CE24: C7 45 04 00 00
         pop     ds                                             ;#CE29: 1F
         ret                                                    ;#CE2A: C3
+
+SUBFN_08_RETURN_6:
+        ; subfn 8 — write the constant 6 into the caller AX; what 6 denotes is unclear
         mov     bp, sp                                         ;#CE2B: 8B EC
         les     di, [bp+2]                                     ;#CE2D: C4 7E 02
         mov     word [es:di], 6                                ;#CE30: 26 C7 05 06 00
@@ -17136,6 +17185,9 @@ BRASCII_DRIVER_RET_PACKET:
         les     di, [538h]                                     ;#CFCF: C4 3E 38 05
         clc                                                    ;#CFD3: F8
         ret                                                    ;#CFD4: C3
+
+BRASCII_MODE_PROBE:
+        ; Entry inside BRASCII_DRIVER_RET_PACKET that branches on BRASCII_MODE
         push    ds                                             ;#CFD5: 1E
         push    bx                                             ;#CFD6: 53
         mov     bx, 0FA1h                                      ;#CFD7: BB A1 0F
@@ -17150,6 +17202,9 @@ BRASCII_XLAT_FROM_DOS_INFO:
         lds     bx, [DOS_PARAM_TABLE_A]                        ;#CFE8: C5 1E FB 08
         add     bx, 2                                          ;#CFEC: 83 C3 02
         jmp     short BRASCII_XLAT_HIGH_BYTE                   ;#CFEF: EB 0C
+
+BRASCII_XLAT_ENTRY:
+        ; Entry inside BRASCII_XLAT_FROM_DOS_INFO, sets DS=0FA1h first
         push    ds                                             ;#CFF1: 1E
         push    bx                                             ;#CFF2: 53
         push    ax                                             ;#CFF3: 50
@@ -17157,7 +17212,6 @@ BRASCII_XLAT_FROM_DOS_INFO:
         mov     ds, ax                                         ;#CFF7: 8E D8
         call    near GET_LINE_ENDING_TYPE                      ;#CFF9: E8 3D 01
         pop     ax                                             ;#CFFC: 58
-
 BRASCII_XLAT_HIGH_BYTE:
         ; BRASCII translate: if AL >= 80h, subtract 80h and xlat against BX table
         cmp     al, 80h                                        ;#CFFD: 3C 80
@@ -18228,7 +18282,7 @@ BIND_DEVICE_EPILOGUE:
 
 DEV_STRATEGY_COMMON:
         ; Standard DOS device-driver strategy entry — stash request packet ES:BX
-        mov     [cs:0ED2Eh], bx                                ;#D644: 2E 89 1E 2E ED
+        mov     [cs:CS_SCRATCH_LOW], bx                        ;#D644: 2E 89 1E 2E ED
         mov     [cs:0ED30h], es                                ;#D649: 2E 8C 06 30 ED
         retf                                                   ;#D64E: CB
 
@@ -18247,7 +18301,7 @@ DEV_DRIVER_DISPATCH:
         mov     [0ED34h], ss                                   ;#D65E: 8C 16 34 ED
         mov     ss, bx                                         ;#D662: 8E D3
         mov     sp, 0EE3Eh                                     ;#D664: BC 3E EE
-        les     di, [0ED2Eh]                                   ;#D667: C4 3E 2E ED
+        les     di, [CS_SCRATCH_LOW]                           ;#D667: C4 3E 2E ED
         mov     bl, [es:di+2]                                  ;#D66B: 26 8A 5D 02
         sub     bh, bh                                         ;#D66F: 2A FF
         shl     bx, 1                                          ;#D671: D1 E3
@@ -18650,7 +18704,7 @@ INT17_RETURN_RETRY:
 
 INT17_PRN_BUSY_FLAG_CHECK:
         ; Test cs:[F29Eh] busy-flag — branch to time-out vs busy error code
-        test    byte [cs:0F29Eh], 1                            ;#D8BF: 2E F6 06 9E F2 01
+        test    byte [cs:CTRL_BREAK_PENDING], 1                ;#D8BF: 2E F6 06 9E F2 01
         jz      short INT17_PRN_TIMEOUT                        ;#D8C5: 74 05
         mov     ax, 103h                                       ;#D8C7: B8 03 01
         jmp     short INT17_RETURN_ERROR                       ;#D8CA: EB 08
@@ -19461,28 +19515,21 @@ BIOS_MEDIA_BYTE_TABLE:
         ; raw
         db      0FEh, 0FFh, 0FCh, 0FDh                         ;#DE12
         db      0F9h, 0F9h, 0F0h                               ;#DE16
-        test    al, 7Fh                                        ;#DE19: A8 7F
-        add     [bx+si], al                                    ;#DE1B: 00 00
-        add     [bp+si], al                                    ;#DE1D: 00 02
-        or      [bp+di], al                                    ;#DE1F: 08 03
-        db      0FFh                                           ;#DE21: FF
-        inc     word [bx+si]                                   ;#DE22: FF 00
-        add     [bx+si], al                                    ;#DE24: 00 00
-        add     al, [si]                                       ;#DE26: 02 04
-        add     bh, [bx]                                       ;#DE28: 02 3F
-        inc     byte [bp+di]                                   ;#DE2A: FE 03
-        add     [bx+si], al                                    ;#DE2C: 00 00
-        add     al, 4                                          ;#DE2E: 04 04
-        add     bh, [bx]                                       ;#DE30: 02 3F
-        cli                                                    ;#DE32: FA
-        pop     es                                             ;#DE33: 07
-        add     [bx+si], al                                    ;#DE34: 00 00
-        add     al, 8                                          ;#DE36: 04 08
-        add     di, [bp-0Ch]                                   ;#DE38: 03 7E F4
-        db      0Fh                                            ;#DE3B: 0F
-        add     [bx+si], al                                    ;#DE3C: 00 00
-        add     al, 10h                                        ;#DE3E: 04 10
-        db      4                                              ;#DE40: 04
+
+PARTITION_SIZE_TABLE:
+        ; Five 8-byte classes: dword sector limit at +0, cluster params at +4
+        ; Format: FORMAT_HEX
+        ; raw
+        db      0A8h, 7Fh, 0, 0                                ;#DE19
+        db      0, 2, 8, 3                                     ;#DE1D
+        db      0FFh, 0FFh, 0, 0                               ;#DE21
+        db      0, 2, 4, 2                                     ;#DE25
+        db      3Fh, 0FEh, 3, 0                                ;#DE29
+        db      0, 4, 4, 2                                     ;#DE2D
+        db      3Fh, 0FAh, 7, 0                                ;#DE31
+        db      0, 4, 8, 3                                     ;#DE35
+        db      7Eh, 0F4h, 0Fh, 0                              ;#DE39
+        db      0, 4, 10h, 4                                   ;#DE3D
 
 MSG_PROMPT_INSERT_DISK_1:
         ; "\r\n  Coloque o disco referente \`a unidade " (Portuguese disk-swap prompt)
@@ -19533,14 +19580,14 @@ BPB_HANDLER_PTR_TABLE:
         ; 6-entry word table — handler offsets indexed by matched media code
         dw      DRV_CMD_IOCTL_OUTPUT                           ;#DEAF: DC E4
         dw      COPY_BPB_AND_DRIVER_BYTES                      ;#DEB1: 0B E4
-        dw      0E533h                                         ;#DEB3: 33 E5
-        dw      0E537h                                         ;#DEB5: 37 E5
-        dw      0E53Bh                                         ;#DEB7: 3B E5
-        dw      0E53Fh                                         ;#DEB9: 3F E5
+        dw      BPB_HANDLER_41_DONE                            ;#DEB3: 33 E5
+        dw      BPB_HANDLER_61_DONE                            ;#DEB5: 37 E5
+        dw      BPB_HANDLER_42_DONE                            ;#DEB7: 3B E5
+        dw      BPB_HANDLER_62_SET                             ;#DEB9: 3F E5
 
 DEV_STRATEGY_DISK:
         ; Strategy entry for CLOCK$ and the block driver — packet ES:BX to cs:[F040h]
-        mov     [cs:0F040h], bx                                ;#DEBB: 2E 89 1E 40 F0
+        mov     [cs:INT13_DRIVER_VARS], bx                     ;#DEBB: 2E 89 1E 40 F0
 DEV_STRATEGY_DISK_SEG:
         ; Second half of DEV_STRATEGY_DISK — save ES into cs:[F042h] and retf
         mov     [cs:0F042h], es                                ;#DEC0: 2E 8C 06 42 F0
@@ -19567,7 +19614,7 @@ INT13_INSTALL_HANDLER:
         push    cs                                             ;#DEDC: 0E
         pop     ss                                             ;#DEDD: 17
         mov     sp, 0F296h                                     ;#DEDE: BC 96 F2
-        les     di, [0F040h]                                   ;#DEE1: C4 3E 40 F0
+        les     di, [INT13_DRIVER_VARS]                        ;#DEE1: C4 3E 40 F0
         mov     bl, [es:di+2]                                  ;#DEE5: 26 8A 5D 02
         sub     bh, bh                                         ;#DEE9: 2A FF
         shl     bx, 1                                          ;#DEEB: D1 E3
@@ -19620,16 +19667,16 @@ STORE_DRIVE_TYPE_PARAMS:
         pop     cx                                             ;#DF39: 59
         mov     al, ah                                         ;#DF3A: 8A C4
         xor     ah, ah                                         ;#DF3C: 32 E4
-        mov     [bx+0F071h], al                                ;#DF3E: 88 87 71 F0
+        mov     [bx+DRIVE_TYPE_TABLE], al                      ;#DF3E: 88 87 71 F0
         mov     [bx+0F072h], al                                ;#DF42: 88 87 72 F0
         mov     di, ax                                         ;#DF46: 8B F8
         mov     al, [di+BIOS_DRIVE_TYPE_TO_SPT]                ;#DF48: 8A 85 83 DE
-        mov     [bx+0F075h], al                                ;#DF4C: 88 87 75 F0
+        mov     [bx+DRIVE_SPT_TABLE], al                       ;#DF4C: 88 87 75 F0
         inc     bx                                             ;#DF50: 43
         loop    INT13_DETECT_DRIVE_LOOP                        ;#DF51: E2 CF
         sub     ax, ax                                         ;#DF53: 2B C0
         mov     es, ax                                         ;#DF55: 8E C0
-        mov     word [es:78h], 0F066h                          ;#DF57: 26 C7 06 78 00 66 F0
+        mov     word [es:78h], DISKETTE_PARAM_TABLE            ;#DF57: 26 C7 06 78 00 66 F0
         mov     [es:7Ah], cs                                   ;#DF5E: 26 8C 0E 7A 00
         mov     [es:504h], al                                  ;#DF63: 26 A2 04 05
         mov     ax, SISNE_INT13_HOOK                           ;#DF67: B8 45 E9
@@ -19752,7 +19799,7 @@ PARTITION_FOUND_PROBE:
         mov     [di+8], ax                                     ;#E05F: 89 45 08
         mov     dx, [si+0Eh]                                   ;#E062: 8B 54 0E
         mov     [di+15h], dx                                   ;#E065: 89 55 15
-        mov     bx, 0DE19h                                     ;#E068: BB 19 DE
+        mov     bx, PARTITION_SIZE_TABLE                       ;#E068: BB 19 DE
 PART_SIZE_TABLE_LOOP:
         ; Scan size-class table at DE19h (stride 8) until DX:AX <= entry threshold
         cmp     dx, [bx+2]                                     ;#E06B: 3B 57 02
@@ -19854,14 +19901,14 @@ COPY_PHYS_DRIVE_RECORDS_LOOP:
         push    cx                                             ;#E12A: 51
         push    bx                                             ;#E12B: 53
         xor     ah, ah                                         ;#E12C: 32 E4
-        mov     al, [bx+0F071h]                                ;#E12E: 8A 87 71 F0
+        mov     al, [bx+DRIVE_TYPE_TABLE]                      ;#E12E: 8A 87 71 F0
         mov     cl, 17h                                        ;#E132: B1 17
         mul     cl                                             ;#E134: F6 E1
         mov     si, 0DD43h                                     ;#E136: BE 43 DD
         add     si, ax                                         ;#E139: 03 F0
         mov     ax, bx                                         ;#E13B: 8B C3
         mul     cl                                             ;#E13D: F6 E1
-        mov     di, 0F079h                                     ;#E13F: BF 79 F0
+        mov     di, DRIVE_CONFIG_WORKING                       ;#E13F: BF 79 F0
         add     di, ax                                         ;#E142: 03 F8
         shl     bx, 1                                          ;#E144: D1 E3
         mov     [bx+0DE88h], di                                ;#E146: 89 BF 88 DE
@@ -19912,7 +19959,7 @@ SCAN_LOGICAL_DRIVE_TABLE:
         mov     cl, [0F044h]                                   ;#E1A0: 8A 0E 44 F0
 SCAN_LDT_FILL_LOOP_BODY:
         ; Top of LDT fill loop — read F071h alias, dec, decode type for current drive
-        mov     al, [bx+0F071h]                                ;#E1A4: 8A 87 71 F0
+        mov     al, [bx+DRIVE_TYPE_TABLE]                      ;#E1A4: 8A 87 71 F0
         dec     al                                             ;#E1A8: FE C8
         cmp     al, 3                                          ;#E1AA: 3C 03
         jnz     short SCAN_LDT_STORE_TYPE_FIELD                ;#E1AC: 75 02
@@ -20003,7 +20050,7 @@ LOOKUP_DRIVE_CONFIG_CACHED:
         jz      short LOOKUP_DRIVE_CHECK_TICK_FRESH            ;#E25F: 74 11
         mov     cl, 17h                                        ;#E261: B1 17
         mul     cl                                             ;#E263: F6 E1
-        add     ax, 0F079h                                     ;#E265: 05 79 F0
+        add     ax, DRIVE_CONFIG_WORKING                       ;#E265: 05 79 F0
         mov     si, ax                                         ;#E268: 8B F0
         mov     al, [0F05Bh]                                   ;#E26A: A0 5B F0
         cmp     al, [si+0Ah]                                   ;#E26D: 3A 44 0A
@@ -20033,7 +20080,7 @@ OPEN_PHYS_DRIVE_STORE_INDEX:
         mov     [0F04Eh], al                                   ;#E296: A2 4E F0
         mov     bl, al                                         ;#E299: 8A D8
         xor     bh, bh                                         ;#E29B: 32 FF
-        mov     al, [bx+0F071h]                                ;#E29D: 8A 87 71 F0
+        mov     al, [bx+DRIVE_TYPE_TABLE]                      ;#E29D: 8A 87 71 F0
         xor     ah, ah                                         ;#E2A1: 32 E4
         mov     [0F05Ch], ax                                   ;#E2A3: A3 5C F0
         push    es                                             ;#E2A6: 06
@@ -20097,7 +20144,7 @@ LOOKUP_MEDIA_DESCRIPTOR_LOOP:
 
 COPY_DRIVE_CONFIG_TO_F079:
         ; Copy 13h bytes of drive config (DI = base + 17h * cur drive) to [F079h]
-        mov     di, 0F079h                                     ;#E31C: BF 79 F0
+        mov     di, DRIVE_CONFIG_WORKING                       ;#E31C: BF 79 F0
         mov     cl, [0F04Eh]                                   ;#E31F: 8A 0E 4E F0
         xor     ch, ch                                         ;#E323: 32 ED
         jcxz    COPY_DRIVE_CONFIG_REP                          ;#E325: E3 05
@@ -20176,7 +20223,7 @@ BUILD_PHYS_DRIVE_CONFIG_PTR:
 
 PICK_DRV_CFG_LOGICAL_BASE:
         ; Logical drive — base from ds:[F079h], walk stride 17h per drive index
-        mov     bx, 0F079h                                     ;#E39D: BB 79 F0
+        mov     bx, DRIVE_CONFIG_WORKING                       ;#E39D: BB 79 F0
         or      cl, cl                                         ;#E3A0: 0A C9
         jz      short PICK_DRIVE_CONFIG_RET                    ;#E3A2: 74 0E
         cmp     byte [0F04Ah], 0                               ;#E3A4: 80 3E 4A F0 00
@@ -20209,7 +20256,7 @@ DRV_CMD_BUILD_BPB:
         shl     bx, 1                                          ;#E3CF: D1 E3
         mov     ax, [es:bx+BPB_HANDLER_PTR_TABLE]              ;#E3D1: 26 8B 87 AF DE
         call    near LOOKUP_FORMAT_TABLE                       ;#E3D6: E8 0F 00
-        les     di, [cs:0F040h]                                ;#E3D9: 2E C4 3E 40 F0
+        les     di, [cs:INT13_DRIVER_VARS]                     ;#E3D9: 2E C4 3E 40 F0
         les     di, [es:di+13h]                                ;#E3DE: 26 C4 7D 13
         call    ax                                             ;#E3E2: FF D0
         pop     di                                             ;#E3E4: 5F
@@ -20425,12 +20472,24 @@ DRV_WRITE_OK_RET:
         ; AX=100h success tail for drive-write IOCTL path
         mov     ax, 100h                                       ;#E52F: B8 00 01
         ret                                                    ;#E532: C3
+
+BPB_HANDLER_41_DONE:
+        ; BPB scan code 41h — nothing to do, return AX=0100h (done, no error)
         mov     ax, 100h                                       ;#E533: B8 00 01
         ret                                                    ;#E536: C3
+
+BPB_HANDLER_61_DONE:
+        ; BPB scan code 61h — nothing to do, return AX=0100h
         mov     ax, 100h                                       ;#E537: B8 00 01
         ret                                                    ;#E53A: C3
+
+BPB_HANDLER_42_DONE:
+        ; BPB scan code 42h — nothing to do, return AX=0100h
         mov     ax, 100h                                       ;#E53B: B8 00 01
         ret                                                    ;#E53E: C3
+
+BPB_HANDLER_62_SET:
+        ; BPB scan code 62h — set cs:0F057h to 4, then the drive-request path
         mov     byte [cs:0F057h], 4                            ;#E53F: 2E C6 06 57 F0 04
         cmp     dl, [cs:0F044h]                                ;#E545: 2E 3A 16 44 F0
         jnb     short DRV_REQ_OPEN_AND_OP                      ;#E54A: 73 0B
@@ -21487,14 +21546,24 @@ MUL32_BY_WORD:
         add     dx, bx                                         ;#EC28: 03 D3
         pop     bp                                             ;#EC2A: 5D
         ret     8                                              ;#EC2B: C2 08 00
+
+DIVMOD32_BIN:
+        ; divmod32_bin entry — AL=1 into DIVMOD_MODE_FLAG, then the shared body
         mov     al, 1                                          ;#EC2E: B0 01
         jmp     short DIVMOD32_BODY_ENTRY                      ;#EC30: EB 03
-        add     [bp+si], dh                                    ;#EC32: 00 32
-        db      0C0h                                           ;#EC34: C0
 
+DIVMOD_MODE_FLAG:
+        ; Binary/decimal mode byte — DIVMOD32_BODY_ENTRY stores AL here via cs:
+        ; Format: FORMAT_HEX
+        ; raw
+        db      0                                              ;#EC32
+
+DIVMOD32:
+        ; divmod32 entry — AL=0 into DIVMOD_MODE_FLAG, falls into the shared body
+        xor     al, al                                         ;#EC33: 32 C0
 DIVMOD32_BODY_ENTRY:
         ; Common entry after bin/dec-mode flag store — pushes bp and starts 32b divmod
-        mov     [cs:0EC32h], al                                ;#EC35: 2E A2 32 EC
+        mov     [cs:DIVMOD_MODE_FLAG], al                      ;#EC35: 2E A2 32 EC
 DIVMOD32_ENTRY:
         ; 32-bit divmod entry — push bp; DX:AX = dividend / divisor based on EC32h flag
         push    bp                                             ;#EC39: 55
@@ -21510,7 +21579,7 @@ DIVMOD32_ENTRY:
         mov     bx, ax                                         ;#EC4E: 8B D8
         mov     ax, [bp+4]                                     ;#EC50: 8B 46 04
         div     cx                                             ;#EC53: F7 F1
-        cmp     byte [cs:0EC32h], 1                            ;#EC55: 2E 80 3E 32 EC 01
+        cmp     byte [cs:DIVMOD_MODE_FLAG], 1                  ;#EC55: 2E 80 3E 32 EC 01
         jz      short DIVMOD32_DECIMAL_QUOTIENT                ;#EC5B: 74 04
         mov     dx, bx                                         ;#EC5D: 8B D3
         jmp     short DIVMOD32_RETURN_8                        ;#EC5F: EB 5B
@@ -21554,7 +21623,7 @@ DIVMOD32_FIXUP_QUOTIENT:
         sbb     dx, [bp+0Ah]                                   ;#EC9E: 1B 56 0A
 DIVMOD32_FORMAT_RESULT:
         ; 32-bit div tail — check [EC32h] flag to return quotient or remainder
-        cmp     byte [cs:0EC32h], 1                            ;#ECA1: 2E 80 3E 32 EC 01
+        cmp     byte [cs:DIVMOD_MODE_FLAG], 1                  ;#ECA1: 2E 80 3E 32 EC 01
         jz      short DIVMOD32_NEGATE_REMAINDER                ;#ECA7: 74 06
         xor     dx, dx                                         ;#ECA9: 33 D2
         mov     ax, si                                         ;#ECAB: 8B C6
@@ -21649,45 +21718,425 @@ PANIC_PRINT_ERROR_CODE:
 PANIC_HANG_FOREVER:
         ; Spin-forever `jmp $` after panic message has been printed
         jmp     short PANIC_HANG_FOREVER                       ;#ED2C: EB FE
-        db      15 dup (0)
-        nop                                                    ;#ED3D: 90
-        db      808 dup (0)
-        db      0DFh                                           ;#F066: DF
-        add     ah, [di]                                       ;#F067: 02 25
-        add     dl, [bp+si]                                    ;#F069: 02 12
-        sbb     di, di                                         ;#F06B: 1B FF
-        push    sp                                             ;#F06D: 54
-        db      0F6h                                           ;#F06E: F6
-        db      0Fh                                            ;#F06F: 0F
-        add     al, 0                                          ;#F070: 04 00
-        add     [bx+si], al                                    ;#F072: 00 00
-        add     [bx+di], cl                                    ;#F074: 00 09
-        or      [bx+di], cx                                    ;#F076: 09 09
-        or      [bx+si], ax                                    ;#F078: 09 00
-        db      91 dup (0)
-        nop                                                    ;#F0D5: 90
-        db      469 dup (0)
+
+CS_SCRATCH_LOW:
+DEV_PACKET_SAVE:
+        ; Request packet ES:BX parked here by DEV_STRATEGY_COMMON
+        ; Format: FORMAT_HEX
+        ; raw
+        db      0, 0, 0, 0                                     ;#ED2E
+        db      0, 0, 0, 0                                     ;#ED32
+        db      0, 0, 0, 0                                     ;#ED36
+        db      0, 0, 0, 90h                                   ;#ED3A
+        db      0, 0, 0, 0                                     ;#ED3E
+        db      0, 0, 0, 0                                     ;#ED42
+        db      0, 0, 0, 0                                     ;#ED46
+        db      0, 0, 0, 0                                     ;#ED4A
+        db      0, 0, 0, 0                                     ;#ED4E
+        db      0, 0, 0, 0                                     ;#ED52
+        db      0, 0, 0, 0                                     ;#ED56
+        db      0, 0, 0, 0                                     ;#ED5A
+        db      0, 0, 0, 0                                     ;#ED5E
+        db      0, 0, 0, 0                                     ;#ED62
+        db      0, 0, 0, 0                                     ;#ED66
+        db      0, 0, 0, 0                                     ;#ED6A
+        db      0, 0, 0, 0                                     ;#ED6E
+        db      0, 0, 0, 0                                     ;#ED72
+        db      0, 0, 0, 0                                     ;#ED76
+        db      0, 0, 0, 0                                     ;#ED7A
+        db      0, 0, 0, 0                                     ;#ED7E
+        db      0, 0, 0, 0                                     ;#ED82
+        db      0, 0, 0, 0                                     ;#ED86
+        db      0, 0, 0, 0                                     ;#ED8A
+        db      0, 0, 0, 0                                     ;#ED8E
+        db      0, 0, 0, 0                                     ;#ED92
+        db      0, 0, 0, 0                                     ;#ED96
+        db      0, 0, 0, 0                                     ;#ED9A
+        db      0, 0, 0, 0                                     ;#ED9E
+        db      0, 0, 0, 0                                     ;#EDA2
+        db      0, 0, 0, 0                                     ;#EDA6
+        db      0, 0, 0, 0                                     ;#EDAA
+        db      0, 0, 0, 0                                     ;#EDAE
+        db      0, 0, 0, 0                                     ;#EDB2
+        db      0, 0, 0, 0                                     ;#EDB6
+        db      0, 0, 0, 0                                     ;#EDBA
+        db      0, 0, 0, 0                                     ;#EDBE
+        db      0, 0, 0, 0                                     ;#EDC2
+        db      0, 0, 0, 0                                     ;#EDC6
+        db      0, 0, 0, 0                                     ;#EDCA
+        db      0, 0, 0, 0                                     ;#EDCE
+        db      0, 0, 0, 0                                     ;#EDD2
+        db      0, 0, 0, 0                                     ;#EDD6
+        db      0, 0, 0, 0                                     ;#EDDA
+        db      0, 0, 0, 0                                     ;#EDDE
+        db      0, 0, 0, 0                                     ;#EDE2
+        db      0, 0, 0, 0                                     ;#EDE6
+        db      0, 0, 0, 0                                     ;#EDEA
+        db      0, 0, 0, 0                                     ;#EDEE
+        db      0, 0, 0, 0                                     ;#EDF2
+        db      0, 0, 0, 0                                     ;#EDF6
+        db      0, 0, 0, 0                                     ;#EDFA
+        db      0, 0, 0, 0                                     ;#EDFE
+        db      0, 0, 0, 0                                     ;#EE02
+        db      0, 0, 0, 0                                     ;#EE06
+        db      0, 0, 0, 0                                     ;#EE0A
+        db      0, 0, 0, 0                                     ;#EE0E
+        db      0, 0, 0, 0                                     ;#EE12
+        db      0, 0, 0, 0                                     ;#EE16
+        db      0, 0, 0, 0                                     ;#EE1A
+        db      0, 0, 0, 0                                     ;#EE1E
+        db      0, 0, 0, 0                                     ;#EE22
+        db      0, 0, 0, 0                                     ;#EE26
+        db      0, 0, 0, 0                                     ;#EE2A
+        db      0, 0, 0, 0                                     ;#EE2E
+        db      0, 0, 0, 0                                     ;#EE32
+        db      0, 0, 0, 0                                     ;#EE36
+        db      0, 0, 0, 0                                     ;#EE3A
+        db      0, 0, 0, 0                                     ;#EE3E
+        db      0, 0, 0, 0                                     ;#EE42
+        db      0, 0, 0, 0                                     ;#EE46
+        db      0, 0, 0, 0                                     ;#EE4A
+        db      0, 0, 0, 0                                     ;#EE4E
+        db      0, 0, 0, 0                                     ;#EE52
+        db      0, 0, 0, 0                                     ;#EE56
+        db      0, 0, 0, 0                                     ;#EE5A
+        db      0, 0, 0, 0                                     ;#EE5E
+        db      0, 0, 0, 0                                     ;#EE62
+        db      0, 0, 0, 0                                     ;#EE66
+        db      0, 0, 0, 0                                     ;#EE6A
+        db      0, 0, 0, 0                                     ;#EE6E
+        db      0, 0, 0, 0                                     ;#EE72
+        db      0, 0, 0, 0                                     ;#EE76
+        db      0, 0, 0, 0                                     ;#EE7A
+        db      0, 0, 0, 0                                     ;#EE7E
+        db      0, 0, 0, 0                                     ;#EE82
+        db      0, 0, 0, 0                                     ;#EE86
+        db      0, 0, 0, 0                                     ;#EE8A
+        db      0, 0, 0, 0                                     ;#EE8E
+        db      0, 0, 0, 0                                     ;#EE92
+        db      0, 0, 0, 0                                     ;#EE96
+        db      0, 0, 0, 0                                     ;#EE9A
+        db      0, 0, 0, 0                                     ;#EE9E
+        db      0, 0, 0, 0                                     ;#EEA2
+        db      0, 0, 0, 0                                     ;#EEA6
+        db      0, 0, 0, 0                                     ;#EEAA
+        db      0, 0, 0, 0                                     ;#EEAE
+        db      0, 0, 0, 0                                     ;#EEB2
+        db      0, 0, 0, 0                                     ;#EEB6
+        db      0, 0, 0, 0                                     ;#EEBA
+        db      0, 0, 0, 0                                     ;#EEBE
+        db      0, 0, 0, 0                                     ;#EEC2
+        db      0, 0, 0, 0                                     ;#EEC6
+        db      0, 0, 0, 0                                     ;#EECA
+        db      0, 0, 0, 0                                     ;#EECE
+        db      0, 0, 0, 0                                     ;#EED2
+        db      0, 0, 0, 0                                     ;#EED6
+        db      0, 0, 0, 0                                     ;#EEDA
+        db      0, 0, 0, 0                                     ;#EEDE
+        db      0, 0, 0, 0                                     ;#EEE2
+        db      0, 0, 0, 0                                     ;#EEE6
+        db      0, 0, 0, 0                                     ;#EEEA
+        db      0, 0, 0, 0                                     ;#EEEE
+        db      0, 0, 0, 0                                     ;#EEF2
+        db      0, 0, 0, 0                                     ;#EEF6
+        db      0, 0, 0, 0                                     ;#EEFA
+        db      0, 0, 0, 0                                     ;#EEFE
+        db      0, 0, 0, 0                                     ;#EF02
+        db      0, 0, 0, 0                                     ;#EF06
+        db      0, 0, 0, 0                                     ;#EF0A
+        db      0, 0, 0, 0                                     ;#EF0E
+        db      0, 0, 0, 0                                     ;#EF12
+        db      0, 0, 0, 0                                     ;#EF16
+        db      0, 0, 0, 0                                     ;#EF1A
+        db      0, 0, 0, 0                                     ;#EF1E
+        db      0, 0, 0, 0                                     ;#EF22
+        db      0, 0, 0, 0                                     ;#EF26
+        db      0, 0, 0, 0                                     ;#EF2A
+        db      0, 0, 0, 0                                     ;#EF2E
+        db      0, 0, 0, 0                                     ;#EF32
+        db      0, 0, 0, 0                                     ;#EF36
+        db      0, 0, 0, 0                                     ;#EF3A
+        db      0, 0, 0, 0                                     ;#EF3E
+        db      0, 0, 0, 0                                     ;#EF42
+        db      0, 0, 0, 0                                     ;#EF46
+        db      0, 0, 0, 0                                     ;#EF4A
+        db      0, 0, 0, 0                                     ;#EF4E
+        db      0, 0, 0, 0                                     ;#EF52
+        db      0, 0, 0, 0                                     ;#EF56
+        db      0, 0, 0, 0                                     ;#EF5A
+        db      0, 0, 0, 0                                     ;#EF5E
+        db      0, 0, 0, 0                                     ;#EF62
+        db      0, 0, 0, 0                                     ;#EF66
+        db      0, 0, 0, 0                                     ;#EF6A
+        db      0, 0, 0, 0                                     ;#EF6E
+        db      0, 0, 0, 0                                     ;#EF72
+        db      0, 0, 0, 0                                     ;#EF76
+        db      0, 0, 0, 0                                     ;#EF7A
+        db      0, 0, 0, 0                                     ;#EF7E
+        db      0, 0, 0, 0                                     ;#EF82
+        db      0, 0, 0, 0                                     ;#EF86
+        db      0, 0, 0, 0                                     ;#EF8A
+        db      0, 0, 0, 0                                     ;#EF8E
+        db      0, 0, 0, 0                                     ;#EF92
+        db      0, 0, 0, 0                                     ;#EF96
+        db      0, 0, 0, 0                                     ;#EF9A
+        db      0, 0, 0, 0                                     ;#EF9E
+        db      0, 0, 0, 0                                     ;#EFA2
+        db      0, 0, 0, 0                                     ;#EFA6
+        db      0, 0, 0, 0                                     ;#EFAA
+        db      0, 0, 0, 0                                     ;#EFAE
+        db      0, 0, 0, 0                                     ;#EFB2
+        db      0, 0, 0, 0                                     ;#EFB6
+        db      0, 0, 0, 0                                     ;#EFBA
+        db      0, 0, 0, 0                                     ;#EFBE
+        db      0, 0, 0, 0                                     ;#EFC2
+        db      0, 0, 0, 0                                     ;#EFC6
+        db      0, 0, 0, 0                                     ;#EFCA
+        db      0, 0, 0, 0                                     ;#EFCE
+        db      0, 0, 0, 0                                     ;#EFD2
+        db      0, 0, 0, 0                                     ;#EFD6
+        db      0, 0, 0, 0                                     ;#EFDA
+        db      0, 0, 0, 0                                     ;#EFDE
+        db      0, 0, 0, 0                                     ;#EFE2
+        db      0, 0, 0, 0                                     ;#EFE6
+        db      0, 0, 0, 0                                     ;#EFEA
+        db      0, 0, 0, 0                                     ;#EFEE
+        db      0, 0, 0, 0                                     ;#EFF2
+        db      0, 0, 0, 0                                     ;#EFF6
+        db      0, 0, 0, 0                                     ;#EFFA
+        db      0, 0, 0, 0                                     ;#EFFE
+        db      0, 0, 0, 0                                     ;#F002
+        db      0, 0, 0, 0                                     ;#F006
+        db      0, 0, 0, 0                                     ;#F00A
+        db      0, 0, 0, 0                                     ;#F00E
+        db      0, 0, 0, 0                                     ;#F012
+        db      0, 0, 0, 0                                     ;#F016
+        db      0, 0, 0, 0                                     ;#F01A
+        db      0, 0, 0, 0                                     ;#F01E
+        db      0, 0, 0, 0                                     ;#F022
+        db      0, 0, 0, 0                                     ;#F026
+        db      0, 0, 0, 0                                     ;#F02A
+        db      0, 0, 0, 0                                     ;#F02E
+        db      0, 0, 0, 0                                     ;#F032
+        db      0, 0, 0, 0                                     ;#F036
+        db      0, 0, 0, 0                                     ;#F03A
+        db      0, 0                                           ;#F03E
+
+INT13_DRIVER_VARS:
+        ; Code-segment variables for the INT 13h layer, incl. the DEV_STRATEGY_DISK save
+        ; Format: FORMAT_HEX
+        ; raw
+        db      0, 0, 0, 0                                     ;#F040
+        db      0, 0, 0, 0                                     ;#F044
+        db      0, 0, 0, 0                                     ;#F048
+        db      0, 0, 0, 0                                     ;#F04C
+        db      0, 0, 0, 0                                     ;#F050
+        db      0, 0, 0, 0                                     ;#F054
+        db      0, 0, 0, 0                                     ;#F058
+        db      0, 0, 0, 0                                     ;#F05C
+        db      0, 0, 0, 0                                     ;#F060
+        db      0, 0                                           ;#F064
+
+DISKETTE_PARAM_TABLE:
+        ; BIOS diskette parameter table — installed at 0:0078h as the INT 1Eh vector
+        ; Format: FORMAT_HEX
+        ; raw
+        db      0DFh, 2, 25h, 2                                ;#F066
+        db      12h, 1Bh, 0FFh, 54h                            ;#F06A
+        db      0F6h, 0Fh, 4                                   ;#F06E
+
+DRIVE_TYPE_TABLE:
+        ; INT 13h AH=08h drive type per physical drive, filled at detect time
+        ; Format: FORMAT_HEX
+        ; raw
+        db      0, 0, 0, 0                                     ;#F071
+
+DRIVE_SPT_TABLE:
+        ; Sectors/track per physical drive, from BIOS_DRIVE_TYPE_TO_SPT
+        ; Format: FORMAT_HEX
+        ; raw
+        db      9, 9, 9, 9                                     ;#F075
+
+DRIVE_CONFIG_WORKING:
+        ; Live 17h-byte drive configs, filled from DRIVE_CONFIG_TABLE at detect time
+        ; Format: FORMAT_HEX
+        ; raw
+        db      0, 0, 0, 0                                     ;#F079
+        db      0, 0, 0, 0                                     ;#F07D
+        db      0, 0, 0, 0                                     ;#F081
+        db      0, 0, 0, 0                                     ;#F085
+        db      0, 0, 0, 0                                     ;#F089
+        db      0, 0, 0, 0                                     ;#F08D
+        db      0, 0, 0, 0                                     ;#F091
+        db      0, 0, 0, 0                                     ;#F095
+        db      0, 0, 0, 0                                     ;#F099
+        db      0, 0, 0, 0                                     ;#F09D
+        db      0, 0, 0, 0                                     ;#F0A1
+        db      0, 0, 0, 0                                     ;#F0A5
+        db      0, 0, 0, 0                                     ;#F0A9
+        db      0, 0, 0, 0                                     ;#F0AD
+        db      0, 0, 0, 0                                     ;#F0B1
+        db      0, 0, 0, 0                                     ;#F0B5
+        db      0, 0, 0, 0                                     ;#F0B9
+        db      0, 0, 0, 0                                     ;#F0BD
+        db      0, 0, 0, 0                                     ;#F0C1
+        db      0, 0, 0, 0                                     ;#F0C5
+        db      0, 0, 0, 0                                     ;#F0C9
+        db      0, 0, 0, 0                                     ;#F0CD
+        db      0, 0, 0, 0                                     ;#F0D1
+        db      90h, 0, 0, 0                                   ;#F0D5
+        db      0, 0, 0, 0                                     ;#F0D9
+        db      0, 0, 0, 0                                     ;#F0DD
+        db      0, 0, 0, 0                                     ;#F0E1
+        db      0, 0, 0, 0                                     ;#F0E5
+        db      0, 0, 0, 0                                     ;#F0E9
+        db      0, 0, 0, 0                                     ;#F0ED
+        db      0, 0, 0, 0                                     ;#F0F1
+        db      0, 0, 0, 0                                     ;#F0F5
+        db      0, 0, 0, 0                                     ;#F0F9
+        db      0, 0, 0, 0                                     ;#F0FD
+        db      0, 0, 0, 0                                     ;#F101
+        db      0, 0, 0, 0                                     ;#F105
+        db      0, 0, 0, 0                                     ;#F109
+        db      0, 0, 0, 0                                     ;#F10D
+        db      0, 0, 0, 0                                     ;#F111
+        db      0, 0, 0, 0                                     ;#F115
+        db      0, 0, 0, 0                                     ;#F119
+        db      0, 0, 0, 0                                     ;#F11D
+        db      0, 0, 0, 0                                     ;#F121
+        db      0, 0, 0, 0                                     ;#F125
+        db      0, 0, 0, 0                                     ;#F129
+        db      0, 0, 0, 0                                     ;#F12D
+        db      0, 0, 0, 0                                     ;#F131
+        db      0, 0, 0, 0                                     ;#F135
+        db      0, 0, 0, 0                                     ;#F139
+        db      0, 0, 0, 0                                     ;#F13D
+        db      0, 0, 0, 0                                     ;#F141
+        db      0, 0, 0, 0                                     ;#F145
+        db      0, 0, 0, 0                                     ;#F149
+        db      0, 0, 0, 0                                     ;#F14D
+        db      0, 0, 0, 0                                     ;#F151
+        db      0, 0, 0, 0                                     ;#F155
+        db      0, 0, 0, 0                                     ;#F159
+        db      0, 0, 0, 0                                     ;#F15D
+        db      0, 0, 0, 0                                     ;#F161
+        db      0, 0, 0, 0                                     ;#F165
+        db      0, 0, 0, 0                                     ;#F169
+        db      0, 0, 0, 0                                     ;#F16D
+        db      0, 0, 0, 0                                     ;#F171
+        db      0, 0, 0, 0                                     ;#F175
+        db      0, 0, 0, 0                                     ;#F179
+        db      0, 0, 0, 0                                     ;#F17D
+        db      0, 0, 0, 0                                     ;#F181
+        db      0, 0, 0, 0                                     ;#F185
+        db      0, 0, 0, 0                                     ;#F189
+        db      0, 0, 0, 0                                     ;#F18D
+        db      0, 0, 0, 0                                     ;#F191
+        db      0, 0, 0, 0                                     ;#F195
+        db      0, 0, 0, 0                                     ;#F199
+        db      0, 0, 0, 0                                     ;#F19D
+        db      0, 0, 0, 0                                     ;#F1A1
+        db      0, 0, 0, 0                                     ;#F1A5
+        db      0, 0, 0, 0                                     ;#F1A9
+        db      0, 0, 0, 0                                     ;#F1AD
+        db      0, 0, 0, 0                                     ;#F1B1
+        db      0, 0, 0, 0                                     ;#F1B5
+        db      0, 0, 0, 0                                     ;#F1B9
+        db      0, 0, 0, 0                                     ;#F1BD
+        db      0, 0, 0, 0                                     ;#F1C1
+        db      0, 0, 0, 0                                     ;#F1C5
+        db      0, 0, 0, 0                                     ;#F1C9
+        db      0, 0, 0, 0                                     ;#F1CD
+        db      0, 0, 0, 0                                     ;#F1D1
+        db      0, 0, 0, 0                                     ;#F1D5
+        db      0, 0, 0, 0                                     ;#F1D9
+        db      0, 0, 0, 0                                     ;#F1DD
+        db      0, 0, 0, 0                                     ;#F1E1
+        db      0, 0, 0, 0                                     ;#F1E5
+        db      0, 0, 0, 0                                     ;#F1E9
+        db      0, 0, 0, 0                                     ;#F1ED
+        db      0, 0, 0, 0                                     ;#F1F1
+        db      0, 0, 0, 0                                     ;#F1F5
+        db      0, 0, 0, 0                                     ;#F1F9
+        db      0, 0, 0, 0                                     ;#F1FD
+        db      0, 0, 0, 0                                     ;#F201
+        db      0, 0, 0, 0                                     ;#F205
+        db      0, 0, 0, 0                                     ;#F209
+        db      0, 0, 0, 0                                     ;#F20D
+        db      0, 0, 0, 0                                     ;#F211
+        db      0, 0, 0, 0                                     ;#F215
+        db      0, 0, 0, 0                                     ;#F219
+        db      0, 0, 0, 0                                     ;#F21D
+        db      0, 0, 0, 0                                     ;#F221
+        db      0, 0, 0, 0                                     ;#F225
+        db      0, 0, 0, 0                                     ;#F229
+        db      0, 0, 0, 0                                     ;#F22D
+        db      0, 0, 0, 0                                     ;#F231
+        db      0, 0, 0, 0                                     ;#F235
+        db      0, 0, 0, 0                                     ;#F239
+        db      0, 0, 0, 0                                     ;#F23D
+        db      0, 0, 0, 0                                     ;#F241
+        db      0, 0, 0, 0                                     ;#F245
+        db      0, 0, 0, 0                                     ;#F249
+        db      0, 0, 0, 0                                     ;#F24D
+        db      0, 0, 0, 0                                     ;#F251
+        db      0, 0, 0, 0                                     ;#F255
+        db      0, 0, 0, 0                                     ;#F259
+        db      0, 0, 0, 0                                     ;#F25D
+        db      0, 0, 0, 0                                     ;#F261
+        db      0, 0, 0, 0                                     ;#F265
+        db      0, 0, 0, 0                                     ;#F269
+        db      0, 0, 0, 0                                     ;#F26D
+        db      0, 0, 0, 0                                     ;#F271
+        db      0, 0, 0, 0                                     ;#F275
+        db      0, 0, 0, 0                                     ;#F279
+        db      0, 0, 0, 0                                     ;#F27D
+        db      0, 0, 0, 0                                     ;#F281
+        db      0, 0, 0, 0                                     ;#F285
+        db      0, 0, 0, 0                                     ;#F289
+        db      0, 0, 0, 0                                     ;#F28D
+        db      0, 0, 0, 0                                     ;#F291
+        db      0, 0, 0, 0                                     ;#F295
+        db      0, 0, 0, 0                                     ;#F299
+        db      0, 0, 0, 0                                     ;#F29D
+        db      0, 0, 0, 0                                     ;#F2A1
+        db      0, 0, 0, 0                                     ;#F2A5
+        db      0, 0                                           ;#F2A9
 
 MSG_CTRL_BREAK:
         ; "\r\n<BRK>\r\n" (printed when DOS Ctrl-Break check fires)
         ; Format: FORMAT_STRING
         db      0Dh, 0Ah, "<BRK>", 0Dh, 0Ah, 0                 ;#F2AB: 0D 0A 3C 42 52 4B 3E 0D 0A 00
-        or      ax, 0                                          ;#F2B5: 0D 00 00
-        db      11 dup (0)
-        iret                                                   ;#F2C3: CF
-        repne   jo short 0F2C7h                                ;#F2C4: F2 70 00
-        add     [bx+si], ax                                    ;#F2C7: 01 00
-        db      19 dup (0)
-        db      0FFh                                           ;#F2DC: FF
-        db      0FFh                                           ;#F2DD: FF
-        db      0FFh                                           ;#F2DE: FF
-        inc     word [bx+si]                                   ;#F2DF: FF 00
-        add     [bx+si], al                                    ;#F2E1: 00 00
-        add     [bx+si], al                                    ;#F2E3: 00 00
+
+CON_HOOK_TABLES:
+        ; AUX hook flags at F2D3h/F2D8h, printer flags at F2DCh, echo source at F2E2h
+        ; Format: FORMAT_HEX
+        ; raw
+        db      0Dh, 0, 0, 0                                   ;#F2B5
+        db      0, 0, 0, 0                                     ;#F2B9
+        db      0, 0, 0, 0                                     ;#F2BD
+        db      0, 0, 0CFh, 0F2h                               ;#F2C1
+        db      70h, 0, 1, 0                                   ;#F2C5
+        db      0, 0, 0, 0                                     ;#F2C9
+        db      0, 0, 0, 0                                     ;#F2CD
+        db      0, 0, 0, 0                                     ;#F2D1
+        db      0, 0, 0, 0                                     ;#F2D5
+        db      0, 0, 0, 0FFh                                  ;#F2D9
+        db      0FFh, 0FFh, 0FFh, 0                            ;#F2DD
+        db      0, 0, 0, 0                                     ;#F2E1
+
+BRASCII_DRIVER_FN4:
+        ; subfn 13 — call the BRASCII driver with AH=4
         mov     ah, 4                                          ;#F2E5: B4 04
         jmp     near CALL_BRASCII_DRIVER                       ;#F2E7: E9 23 DC
+
+BRASCII_DRIVER_FN5:
+        ; subfn 14 — call the BRASCII driver with AH=5
         mov     ah, 5                                          ;#F2EA: B4 05
         jmp     near CALL_BRASCII_DRIVER                       ;#F2EC: E9 1E DC
+
+BRASCII_DRIVER_FN3:
+        ; subfn 15 — BRASCII driver AH=3, result stripped of bit 7
         mov     bp, sp                                         ;#F2EF: 8B EC
         mov     di, [bp+4]                                     ;#F2F1: 8B 7E 04
         mov     es, di                                         ;#F2F4: 8E C7
@@ -21696,7 +22145,6 @@ MSG_CTRL_BREAK:
         call    near CALL_BRASCII_DRIVER                       ;#F2FB: E8 0F DC
         jb      short BRASCII_AH3_STORE_RESULT                 ;#F2FE: 72 02
         sub     al, 80h                                        ;#F300: 2C 80
-
 BRASCII_AH3_STORE_RESULT:
         ; Strip bit 7 from AL result of BRASCII AH=3 driver call, store to es:[bp]
         mov     si, 0                                          ;#F302: BE 00 00
@@ -21754,23 +22202,19 @@ DS_INIT_IVT_AND_EXEC:
         db      0, 0, 0, 0                                     ;#F3A4
         db      0, 0, 0, 0                                     ;#F3A8
         db      0, 0, 0, 0                                     ;#F3AC
-        db      12h, 46h, 70h, 0                               ;#F3B0
+        dw      NUL_DEV_HEADER, 70h                            ;#F3B0
         db      0, 0, 0, 0                                     ;#F3B4
         db      0, 0, 0, 0                                     ;#F3B8
-        db      0, 0, 0BAh, 0                                  ;#F3BC
-        db      0A1h, 0Fh, 0ABh, 0                             ;#F3C0
-        db      0A1h, 0Fh, 0ABh, 0                             ;#F3C4
-        db      0A1h, 0Fh, 0                                   ;#F3C8
+        db      0, 0                                           ;#F3BC
+        dw      EXEC_CMD_TAIL, 0FA1h                           ;#F3BE
+        dw      EXEC_PB_DRIVE, 0FA1h                           ;#F3C2
+        dw      EXEC_PB_DRIVE, 0FA1h                           ;#F3C6
+        db      0                                              ;#F3CA
 
 MSG_INVALID_CONFIG_VALUE:
-        ; "\rValor invalido em comando BRASCII ou COUNTRY\r\n\07\0" — head
+        ; "\rValor inválido em comando BRASCII ou COUNTRY\r\n\07\0"
         ; Format: FORMAT_STRING
-        db      0Dh, "Valor inv", 0A0h                         ;#F3CB: 0D 56 61 6C 6F 72 20 69 6E 76 A0
-
-MSG_INVALID_CONFIG_VALUE_TAIL:
-        ; Continuation bytes of MSG_INVALID_CONFIG_VALUE (split at 0xA0 accent)
-        ; Format: FORMAT_STRING
-        db      "lido em comando BRASCII ou COUNTRY", 0Dh, 0Ah, 7, 0 ;#F3D6: 6C 69 64 6F 20 65 6D 20 63 6F 6D 61 6E 64 6F 20 42 52 41 53 43 49 49 20 6F 75 20 43 4F 55 4E 54 52 59 0D 0A 07 00
+        db      0Dh, "Valor inválido em comando BRASCII ou COUNTRY", 0Dh, 0Ah, 7, 0 ;#F3CB: 0D 56 61 6C 6F 72 20 69 6E 76 A0 6C 69 64 6F 20 65 6D 20 63 6F 6D 61 6E 64 6F 20 42 52 41 53 43 49 49 20 6F 75 20 43 4F 55 4E 54 52 59 0D 0A 07 00
 
 CFG_KW_BREAK:
         ; "BREAK\0" — CONFIG.SYS directive keyword (KEYWORD_PTR_TABLE entry)
@@ -21873,9 +22317,9 @@ STR_CONFIG_SYS:
         db      "CONFIG.SYS", 0                                ;#F478: 43 4F 4E 46 49 47 2E 53 59 53 00
 
 MSG_STACKS_NOT_IMPLEMENTED:
-        ; "Comando STACKS nao implementado.\r\n\07\0" error
+        ; "Comando STACKS não implementado.\r\n\07\0" error
         ; Format: FORMAT_STRING
-        db      "Comando STACKS n", 84h, "o implementado.", 0Dh, 0Ah, 7, 0 ;#F483: 43 6F 6D 61 6E 64 6F 20 53 54 41 43 4B 53 20 6E 84 6F 20 69 6D 70 6C 65 6D 65 6E 74 61 64 6F 2E 0D 0A 07 00
+        db      "Comando STACKS não implementado.", 0Dh, 0Ah, 7, 0 ;#F483: 43 6F 6D 61 6E 64 6F 20 53 54 41 43 4B 53 20 6E 84 6F 20 69 6D 70 6C 65 6D 65 6E 74 61 64 6F 2E 0D 0A 07 00
 
 STR_ICCMENU_SYS_1:
         ; "ICCMENU.SYS\0" filename (primary)
@@ -21962,12 +22406,12 @@ MSG_ERROR_IN_COMMAND:
 MSG_INVALID_COMMAND:
         ; "Comando invalido\0" — bad-directive error fragment
         ; Format: FORMAT_STRING
-        db      "Comando inv", 0A0h, "lido", 0                 ;#F59B: 43 6F 6D 61 6E 64 6F 20 69 6E 76 A0 6C 69 64 6F 00
+        db      "Comando inválido", 0                          ;#F59B: 43 6F 6D 61 6E 64 6F 20 69 6E 76 A0 6C 69 64 6F 00
 
 MSG_IN_CONFIG_FILE:
-        ; " no arquivo de configuracao\r\n\07\0" — error suffix
+        ; " no arquivo de configuração\r\n\07\0" — error suffix
         ; Format: FORMAT_STRING
-        db      " no arquivo de configura", 87h, 84h, "o", 0Dh, 0Ah, 7, 0 ;#F5AC: 20 6E 6F 20 61 72 71 75 69 76 6F 20 64 65 20 63 6F 6E 66 69 67 75 72 61 87 84 6F 0D 0A 07 00
+        db      " no arquivo de configuração", 0Dh, 0Ah, 7, 0  ;#F5AC: 20 6E 6F 20 61 72 71 75 69 76 6F 20 64 65 20 63 6F 6E 66 69 67 75 72 61 87 84 6F 0D 0A 07 00
         db      0                                              ;#F5CB: 00
 
 STR_CON_FCB_NAME:
@@ -21993,16 +22437,17 @@ DS_INIT_SDA_FLAGS:
         db      0, 0CDh, 28h, 0BCh                             ;#F601
         db      0, 17h, 80h, 18h                               ;#F605
         db      20h, 1Ah, 0A0h, 1Bh                            ;#F609
-        db      0E0h, 1Ch, 14h, 0                              ;#F60D
-        db      0A1h, 0Fh, 10h, 4                              ;#F611
-        db      14h, 4, 0A1h, 0Fh                              ;#F615
-        db      0E0h, 1Ch, 2Eh, 0EDh                           ;#F619
-        db      70h, 0, 0E5h, 0F2h                             ;#F61D
-        db      0FFh, 0FFh, 0FFh, 0FFh                         ;#F621
-        db      0FFh, 0FFh, 99h, 45h                           ;#F625
-        db      70h, 0, 0DDh, 0AFh                             ;#F629
-        db      70h, 0, 50h, 3                                 ;#F62D
-        db      0A1h, 0Fh                                      ;#F631
+        db      0E0h, 1Ch                                      ;#F60D
+        dw      SAVED_IVT_0_TO_1F, 0FA1h                       ;#F60F
+        db      10h, 4                                         ;#F613
+        dw      DPB_TABLE, 0FA1h                               ;#F615
+        db      0E0h, 1Ch                                      ;#F619
+        dw      DEV_PACKET_SAVE, 70h                           ;#F61B
+        db      0E5h, 0F2h, 0FFh, 0FFh                         ;#F61F
+        db      0FFh, 0FFh, 0FFh, 0FFh                         ;#F623
+        dw      DOS_INT21_POP_REGS, 70h                        ;#F627
+        dw      INT28_ISSUE, 70h                               ;#F62B
+        dw      PSP_COPY_FLAG, 0FA1h                           ;#F62F
 
 FCB_NAME_BLANK_TPL:
         ; 15-byte all-spaces template (used to clear FCB name+ext fields)
@@ -22035,7 +22480,12 @@ FCB_NAME_DOTDOT_TPL:
         db      2Eh, 2Eh, 20h, 20h                             ;#F654
         db      20h, 20h, 20h, 20h                             ;#F658
         db      20h, 20h, 20h, 0FFh                            ;#F65C
-        add     [bx+si], al                                    ;#F660: 00 00
+
+DS_INIT_PSP_COPY_FLAG:
+        ; DS 350h..351h — PSP_COPY_FLAG and its pad byte
+        ; Format: FORMAT_HEX
+        ; raw
+        db      0, 0                                           ;#F660
 
 FCB_NAME_DEV_TPL:
         ; "DEV" + 8 spaces + NUL — FCB-style filename for "DEV" directory
@@ -22101,48 +22551,50 @@ DS_INIT_DRIVER_PTRS:
         db      0, 0, 0, 0                                     ;#F6E7
         db      0, 0, 0, 0                                     ;#F6EB
         db      0, 0, 0, 1                                     ;#F6EF
-        db      1, 0E1h, 3, 0A1h                               ;#F6F3
-        db      0Fh, 0E2h, 3, 0A1h                             ;#F6F7
-        db      0Fh, 0E3h, 3, 0A1h                             ;#F6FB
-        db      0Fh, 0A0h, 0F2h, 70h                           ;#F6FF
-        db      0, 9Eh, 0F2h, 70h                              ;#F703
-        db      0, 0FFh, 0FFh, 0FFh                            ;#F707
-        db      0FFh, 0, 0, 0                                  ;#F70B
-        db      0, 0, 0, 0                                     ;#F70F
-        db      0, 0, 0, 0D6h                                  ;#F713
-        db      0D8h, 70h, 0, 0B8h                             ;#F717
-        db      0DBh, 70h, 0, 0                                ;#F71B
-        db      2, 0, 0, 0                                     ;#F71F
-        db      0, 0, 0, 0                                     ;#F723
-        db      0, 0, 0, 0                                     ;#F727
-        db      0, 8, 0, 0                                     ;#F72B
-        db      0, 12h, 46h, 70h                               ;#F72F
-        db      0, 10h, 0, 0                                   ;#F733
-        db      0, 0, 0, 0                                     ;#F737
-        db      0, 0, 0, 0                                     ;#F73B
-        db      0, 0, 0, 0                                     ;#F73F
-        db      0, 0, 0, 0                                     ;#F743
-        db      0, 0, 0, 0                                     ;#F747
-        db      0, 0, 0, 0                                     ;#F74B
-        db      0, 0, 0, 0                                     ;#F74F
-        db      0, 0, 0, 0                                     ;#F753
-        db      0, 0, 0, 0                                     ;#F757
-        db      0, 0, 0, 0                                     ;#F75B
-        db      0, 0, 0, 0                                     ;#F75F
-        db      0, 0, 0, 0                                     ;#F763
-        db      80h, 2, 40h, 6                                 ;#F767
-        db      8, 4, 4, 8                                     ;#F76B
-        db      2, 0, 0, 0                                     ;#F76F
-        db      0, 0, 0, 0                                     ;#F773
-        db      0, 0, 0, 0                                     ;#F777
-        db      0, 0, 0, 0                                     ;#F77B
-        db      0, 0, 0, 0                                     ;#F77F
-        db      0, 0, 0, 0                                     ;#F783
-        db      0, 0, 0, 0                                     ;#F787
-        db      0, 0, 0, 0                                     ;#F78B
-        db      0, 0, 0, 0                                     ;#F78F
-        db      0, 0, 0, 0                                     ;#F793
-        db      8Bh, 4, 0A1h, 0Fh                              ;#F797
+        db      1                                              ;#F6F3
+        dw      INT28_GATE_FLAG, 0FA1h                         ;#F6F4
+        dw      INT28_IDLE_FLAG, 0FA1h                         ;#F6F8
+        dw      CON_BUSY_FLAG, 0FA1h                           ;#F6FC
+        dw      CON_RAW_MODE_FLAG, 70h                         ;#F700
+        dw      CTRL_BREAK_PENDING, 70h                        ;#F704
+        db      0FFh, 0FFh, 0FFh, 0FFh                         ;#F708
+        db      0, 0, 0, 0                                     ;#F70C
+        db      0, 0, 0, 0                                     ;#F710
+        db      0, 0                                           ;#F714
+        dw      CLOCK_DEV_HEADER, 70h                          ;#F716
+        dw      CON_DEV_HEADER, 70h                            ;#F71A
+        db      0, 2, 0, 0                                     ;#F71E
+        db      0, 0, 0, 0                                     ;#F722
+        db      0, 0, 0, 0                                     ;#F726
+        db      0, 0, 8, 0                                     ;#F72A
+        db      0, 0                                           ;#F72E
+        dw      NUL_DEV_HEADER, 70h                            ;#F730
+        db      10h, 0, 0, 0                                   ;#F734
+        db      0, 0, 0, 0                                     ;#F738
+        db      0, 0, 0, 0                                     ;#F73C
+        db      0, 0, 0, 0                                     ;#F740
+        db      0, 0, 0, 0                                     ;#F744
+        db      0, 0, 0, 0                                     ;#F748
+        db      0, 0, 0, 0                                     ;#F74C
+        db      0, 0, 0, 0                                     ;#F750
+        db      0, 0, 0, 0                                     ;#F754
+        db      0, 0, 0, 0                                     ;#F758
+        db      0, 0, 0, 0                                     ;#F75C
+        db      0, 0, 0, 0                                     ;#F760
+        db      0, 0, 0, 80h                                   ;#F764
+        db      2, 40h, 6, 8                                   ;#F768
+        db      4, 4, 8, 2                                     ;#F76C
+        db      0, 0, 0, 0                                     ;#F770
+        db      0, 0, 0, 0                                     ;#F774
+        db      0, 0, 0, 0                                     ;#F778
+        db      0, 0, 0, 0                                     ;#F77C
+        db      0, 0, 0, 0                                     ;#F780
+        db      0, 0, 0, 0                                     ;#F784
+        db      0, 0, 0, 0                                     ;#F788
+        db      0, 0, 0, 0                                     ;#F78C
+        db      0, 0, 0, 0                                     ;#F790
+        db      0, 0, 0                                        ;#F794
+        dw      EXE_RELOC_BUF, 0FA1h                           ;#F797
         db      0, 0, 0, 0                                     ;#F79B
         db      0, 0, 0, 0                                     ;#F79F
         db      0, 0, 0, 0                                     ;#F7A3
@@ -22159,7 +22611,7 @@ DS_INIT_DRIVER_PTRS:
         db      0, 0, 0, 0                                     ;#F7CF
         db      0, 0, 0, 0                                     ;#F7D3
         db      0, 0, 0, 0                                     ;#F7D7
-        db      0CFh, 4, 0A1h, 0Fh                             ;#F7DB
+        dw      EXE_SIGNATURE, 0FA1h                           ;#F7DB
         db      0, 0, 0, 0                                     ;#F7DF
         db      0, 0, 0, 0                                     ;#F7E3
         db      0, 0, 0, 0                                     ;#F7E7
@@ -22207,7 +22659,7 @@ DS_INIT_DRIVER_PTRS:
         db      0, 2Ch, 0, 2Eh                                 ;#F88F
         db      0, 2Dh, 0, 3Ah                                 ;#F893
         db      0, 0, 2, 0                                     ;#F897
-        db      0F1h, 0CFh, 70h, 0                             ;#F89B
+        dw      BRASCII_XLAT_ENTRY, 70h                        ;#F89B
         db      2Ch, 0, 0, 0                                   ;#F89F
         db      0, 0, 0, 0                                     ;#F8A3
         db      0, 0, 0, 0                                     ;#F8A7
@@ -22216,260 +22668,259 @@ DS_INIT_DRIVER_PTRS:
         db      0, 2Eh, 0, 2Ch                                 ;#F8B3
         db      0, 2Fh, 0, 3Ah                                 ;#F8B7
         db      0, 2, 2, 1                                     ;#F8BB
-        db      0D5h, 0CFh, 70h, 0                             ;#F8BF
+        dw      BRASCII_MODE_PROBE, 70h                        ;#F8BF
         db      2Ch, 0, 0, 0                                   ;#F8C3
         db      0, 0, 0, 0                                     ;#F8C7
         db      0, 0, 0, 0                                     ;#F8CB
         db      0FFh, 0FFh, 77h, 5                             ;#F8CF
-        db      80h, 0                                         ;#F8D3
 
 UPCASE_TABLE_CP437:
         ; Uppercase map for 80h..0FFh — 81h->9Ah, 82h->90h, 87h->80h
         ; Format: FORMAT_HEX
         ; raw
-        db      80h, 9Ah, 90h, 41h                             ;#F8D5
-        db      8Eh, 41h, 8Fh, 80h                             ;#F8D9
-        db      45h, 45h, 45h, 49h                             ;#F8DD
-        db      49h, 49h, 8Eh, 8Fh                             ;#F8E1
-        db      90h, 92h, 92h, 4Fh                             ;#F8E5
-        db      99h, 4Fh, 55h, 55h                             ;#F8E9
-        db      59h, 99h, 9Ah, 9Bh                             ;#F8ED
-        db      9Ch, 9Dh, 9Eh, 9Fh                             ;#F8F1
-        db      41h, 49h, 4Fh, 55h                             ;#F8F5
-        db      0A5h, 0A5h, 0A6h, 0A7h                         ;#F8F9
-        db      0A8h, 0A9h, 0AAh, 0ABh                         ;#F8FD
-        db      0ACh, 0ADh, 0AEh, 0AFh                         ;#F901
-        db      0B0h, 0B1h, 0B2h, 0B3h                         ;#F905
-        db      0B4h, 0B5h, 0B6h, 0B7h                         ;#F909
-        db      0B8h, 0B9h, 0BAh, 0BBh                         ;#F90D
-        db      0BCh, 0BDh, 0BEh, 0BFh                         ;#F911
-        db      0C0h, 0C1h, 0C2h, 0C3h                         ;#F915
-        db      0C4h, 0C5h, 0C6h, 0C7h                         ;#F919
-        db      0C8h, 0C9h, 0CAh, 0CBh                         ;#F91D
-        db      0CCh, 0CDh, 0CEh, 0CFh                         ;#F921
-        db      0D0h, 0D1h, 0D2h, 0D3h                         ;#F925
-        db      0D4h, 0D5h, 0D6h, 0D7h                         ;#F929
-        db      0D8h, 0D9h, 0DAh, 0DBh                         ;#F92D
-        db      0DCh, 0DDh, 0DEh, 0DFh                         ;#F931
-        db      0E0h, 0E1h, 0E2h, 0E3h                         ;#F935
-        db      0E4h, 0E5h, 0E6h, 0E7h                         ;#F939
-        db      0E8h, 0E9h, 0EAh, 0EBh                         ;#F93D
-        db      0ECh, 0EDh, 0EEh, 0EFh                         ;#F941
-        db      0F0h, 0F1h, 0F2h, 0F3h                         ;#F945
-        db      0F4h, 0F5h, 0F6h, 0F7h                         ;#F949
-        db      0F8h, 0F9h, 0FAh, 0FBh                         ;#F94D
-        db      0FCh, 0FDh, 0FEh, 0FFh                         ;#F951
-        db      80h, 0                                         ;#F955
+        db      80h, 0, 80h, 9Ah                               ;#F8D3
+        db      90h, 41h, 8Eh, 41h                             ;#F8D7
+        db      8Fh, 80h, 45h, 45h                             ;#F8DB
+        db      45h, 49h, 49h, 49h                             ;#F8DF
+        db      8Eh, 8Fh, 90h, 92h                             ;#F8E3
+        db      92h, 4Fh, 99h, 4Fh                             ;#F8E7
+        db      55h, 55h, 59h, 99h                             ;#F8EB
+        db      9Ah, 9Bh, 9Ch, 9Dh                             ;#F8EF
+        db      9Eh, 9Fh, 41h, 49h                             ;#F8F3
+        db      4Fh, 55h, 0A5h, 0A5h                           ;#F8F7
+        db      0A6h, 0A7h, 0A8h, 0A9h                         ;#F8FB
+        db      0AAh, 0ABh, 0ACh, 0ADh                         ;#F8FF
+        db      0AEh, 0AFh, 0B0h, 0B1h                         ;#F903
+        db      0B2h, 0B3h, 0B4h, 0B5h                         ;#F907
+        db      0B6h, 0B7h, 0B8h, 0B9h                         ;#F90B
+        db      0BAh, 0BBh, 0BCh, 0BDh                         ;#F90F
+        db      0BEh, 0BFh, 0C0h, 0C1h                         ;#F913
+        db      0C2h, 0C3h, 0C4h, 0C5h                         ;#F917
+        db      0C6h, 0C7h, 0C8h, 0C9h                         ;#F91B
+        db      0CAh, 0CBh, 0CCh, 0CDh                         ;#F91F
+        db      0CEh, 0CFh, 0D0h, 0D1h                         ;#F923
+        db      0D2h, 0D3h, 0D4h, 0D5h                         ;#F927
+        db      0D6h, 0D7h, 0D8h, 0D9h                         ;#F92B
+        db      0DAh, 0DBh, 0DCh, 0DDh                         ;#F92F
+        db      0DEh, 0DFh, 0E0h, 0E1h                         ;#F933
+        db      0E2h, 0E3h, 0E4h, 0E5h                         ;#F937
+        db      0E6h, 0E7h, 0E8h, 0E9h                         ;#F93B
+        db      0EAh, 0EBh, 0ECh, 0EDh                         ;#F93F
+        db      0EEh, 0EFh, 0F0h, 0F1h                         ;#F943
+        db      0F2h, 0F3h, 0F4h, 0F5h                         ;#F947
+        db      0F6h, 0F7h, 0F8h, 0F9h                         ;#F94B
+        db      0FAh, 0FBh, 0FCh, 0FDh                         ;#F94F
+        db      0FEh, 0FFh                                     ;#F953
 
 UPCASE_TABLE_ALT:
         ; The alternate translation table GET_LINE_ENDING_TYPE hands back as type 1
         ; Format: FORMAT_HEX
         ; raw
-        db      80h, 9Ah, 90h, 8Fh                             ;#F957
-        db      8Eh, 96h, 86h, 80h                             ;#F95B
-        db      89h, 89h, 8Ah, 8Bh                             ;#F95F
-        db      8Ch, 8Dh, 8Eh, 8Fh                             ;#F963
-        db      90h, 92h, 92h, 98h                             ;#F967
-        db      99h, 95h, 96h, 97h                             ;#F96B
-        db      98h, 99h, 9Ah, 9Bh                             ;#F96F
-        db      9Ch, 9Dh, 9Eh, 9Fh                             ;#F973
-        db      86h, 8Dh, 95h, 97h                             ;#F977
-        db      0A5h, 0A5h, 0A6h, 0A7h                         ;#F97B
-        db      0A8h, 0A9h, 0AAh, 0ABh                         ;#F97F
-        db      0ACh, 0ADh, 0AEh, 0AFh                         ;#F983
-        db      0B0h, 0B1h, 0B2h, 0B3h                         ;#F987
-        db      0B4h, 0B5h, 0B6h, 0B7h                         ;#F98B
-        db      0B8h, 0B9h, 0BAh, 0BBh                         ;#F98F
-        db      0BCh, 0BDh, 0BEh, 0BFh                         ;#F993
-        db      0C0h, 0C1h, 0C2h, 0C3h                         ;#F997
-        db      0C4h, 0C5h, 0C6h, 0C7h                         ;#F99B
-        db      0C8h, 0C9h, 0CAh, 0CBh                         ;#F99F
-        db      0CCh, 0CDh, 0CEh, 0CFh                         ;#F9A3
-        db      0D0h, 0D1h, 0D2h, 0D3h                         ;#F9A7
-        db      0D4h, 0D5h, 0D6h, 0D7h                         ;#F9AB
-        db      0D8h, 0D9h, 0DAh, 0DBh                         ;#F9AF
-        db      0DCh, 0DDh, 0DEh, 0DFh                         ;#F9B3
-        db      0E0h, 0E1h, 0E2h, 0E3h                         ;#F9B7
-        db      0E4h, 0E5h, 0E6h, 0E7h                         ;#F9BB
-        db      0E8h, 0E9h, 0EAh, 0EBh                         ;#F9BF
-        db      0ECh, 0EDh, 0EEh, 0EFh                         ;#F9C3
-        db      0F0h, 0F1h, 0F2h, 0F3h                         ;#F9C7
-        db      0F4h, 0F5h, 0F6h, 0F7h                         ;#F9CB
-        db      0F8h, 0F9h, 0FAh, 0FBh                         ;#F9CF
-        db      0FCh, 0FDh, 0FEh, 0FFh                         ;#F9D3
-        db      16h                                            ;#F9D7
+        db      80h, 0, 80h, 9Ah                               ;#F955
+        db      90h, 8Fh, 8Eh, 96h                             ;#F959
+        db      86h, 80h, 89h, 89h                             ;#F95D
+        db      8Ah, 8Bh, 8Ch, 8Dh                             ;#F961
+        db      8Eh, 8Fh, 90h, 92h                             ;#F965
+        db      92h, 98h, 99h, 95h                             ;#F969
+        db      96h, 97h, 98h, 99h                             ;#F96D
+        db      9Ah, 9Bh, 9Ch, 9Dh                             ;#F971
+        db      9Eh, 9Fh, 86h, 8Dh                             ;#F975
+        db      95h, 97h, 0A5h, 0A5h                           ;#F979
+        db      0A6h, 0A7h, 0A8h, 0A9h                         ;#F97D
+        db      0AAh, 0ABh, 0ACh, 0ADh                         ;#F981
+        db      0AEh, 0AFh, 0B0h, 0B1h                         ;#F985
+        db      0B2h, 0B3h, 0B4h, 0B5h                         ;#F989
+        db      0B6h, 0B7h, 0B8h, 0B9h                         ;#F98D
+        db      0BAh, 0BBh, 0BCh, 0BDh                         ;#F991
+        db      0BEh, 0BFh, 0C0h, 0C1h                         ;#F995
+        db      0C2h, 0C3h, 0C4h, 0C5h                         ;#F999
+        db      0C6h, 0C7h, 0C8h, 0C9h                         ;#F99D
+        db      0CAh, 0CBh, 0CCh, 0CDh                         ;#F9A1
+        db      0CEh, 0CFh, 0D0h, 0D1h                         ;#F9A5
+        db      0D2h, 0D3h, 0D4h, 0D5h                         ;#F9A9
+        db      0D6h, 0D7h, 0D8h, 0D9h                         ;#F9AD
+        db      0DAh, 0DBh, 0DCh, 0DDh                         ;#F9B1
+        db      0DEh, 0DFh, 0E0h, 0E1h                         ;#F9B5
+        db      0E2h, 0E3h, 0E4h, 0E5h                         ;#F9B9
+        db      0E6h, 0E7h, 0E8h, 0E9h                         ;#F9BD
+        db      0EAh, 0EBh, 0ECh, 0EDh                         ;#F9C1
+        db      0EEh, 0EFh, 0F0h, 0F1h                         ;#F9C5
+        db      0F2h, 0F3h, 0F4h, 0F5h                         ;#F9C9
+        db      0F6h, 0F7h, 0F8h, 0F9h                         ;#F9CD
+        db      0FAh, 0FBh, 0FCh, 0FDh                         ;#F9D1
+        db      0FEh, 0FFh                                     ;#F9D5
 
 FILENAME_CHAR_TABLE:
         ; Count then the characters that may not appear in a filename
         ; Format: FORMAT_HEX
         ; raw
-        db      0, 1, 0, 0FFh                                  ;#F9D8
-        db      0, 0, 20h, 2                                   ;#F9DC
-        db      0Eh, 2Eh, 22h, 2Fh                             ;#F9E0
-        db      5Ch, 5Bh, 5Dh, 3Ah                             ;#F9E4
-        db      7Ch, 3Ch, 3Eh, 2Bh                             ;#F9E8
-        db      3Dh, 3Bh, 2Ch, 0                               ;#F9EC
+        db      16h, 0, 1, 0                                   ;#F9D7
+        db      0FFh, 0, 0, 20h                                ;#F9DB
+        db      2, 0Eh, 2Eh, 22h                               ;#F9DF
+        db      2Fh, 5Ch, 5Bh, 5Dh                             ;#F9E3
+        db      3Ah, 7Ch, 3Ch, 3Eh                             ;#F9E7
+        db      2Bh, 3Dh, 3Bh, 2Ch                             ;#F9EB
 
 COLLATE_TABLE_0:
         ; 256-entry collating sequence (identity)
         ; Format: FORMAT_HEX
         ; raw
-        db      1, 0, 1, 2                                     ;#F9F0
-        db      3, 4, 5, 6                                     ;#F9F4
-        db      7, 8, 9, 0Ah                                   ;#F9F8
-        db      0Bh, 0Ch, 0Dh, 0Eh                             ;#F9FC
-        db      0Fh, 10h, 11h, 12h                             ;#FA00
-        db      13h, 14h, 15h, 16h                             ;#FA04
-        db      17h, 18h, 19h, 1Ah                             ;#FA08
-        db      1Bh, 1Ch, 1Dh, 1Eh                             ;#FA0C
-        db      1Fh, 20h, 21h, 22h                             ;#FA10
-        db      23h, 24h, 25h, 26h                             ;#FA14
-        db      27h, 28h, 29h, 2Ah                             ;#FA18
-        db      2Bh, 2Ch, 2Dh, 2Eh                             ;#FA1C
-        db      2Fh, 30h, 31h, 32h                             ;#FA20
-        db      33h, 34h, 35h, 36h                             ;#FA24
-        db      37h, 38h, 39h, 3Ah                             ;#FA28
-        db      3Bh, 3Ch, 3Dh, 3Eh                             ;#FA2C
-        db      3Fh, 40h, 41h, 42h                             ;#FA30
-        db      43h, 44h, 45h, 46h                             ;#FA34
-        db      47h, 48h, 49h, 4Ah                             ;#FA38
-        db      4Bh, 4Ch, 4Dh, 4Eh                             ;#FA3C
-        db      4Fh, 50h, 51h, 52h                             ;#FA40
-        db      53h, 54h, 55h, 56h                             ;#FA44
-        db      57h, 58h, 59h, 5Ah                             ;#FA48
-        db      5Bh, 5Ch, 5Dh, 5Eh                             ;#FA4C
-        db      5Fh, 60h, 41h, 42h                             ;#FA50
-        db      43h, 44h, 45h, 46h                             ;#FA54
-        db      47h, 48h, 49h, 4Ah                             ;#FA58
-        db      4Bh, 4Ch, 4Dh, 4Eh                             ;#FA5C
-        db      4Fh, 50h, 51h, 52h                             ;#FA60
-        db      53h, 54h, 55h, 56h                             ;#FA64
-        db      57h, 58h, 59h, 5Ah                             ;#FA68
-        db      7Bh, 7Ch, 7Dh, 7Eh                             ;#FA6C
-        db      7Fh, 43h, 55h, 45h                             ;#FA70
-        db      41h, 41h, 41h, 41h                             ;#FA74
-        db      43h, 45h, 45h, 45h                             ;#FA78
-        db      49h, 49h, 49h, 41h                             ;#FA7C
-        db      41h, 45h, 41h, 41h                             ;#FA80
-        db      4Fh, 4Fh, 4Fh, 55h                             ;#FA84
-        db      55h, 59h, 4Fh, 55h                             ;#FA88
-        db      24h, 24h, 24h, 24h                             ;#FA8C
-        db      24h, 41h, 49h, 4Fh                             ;#FA90
-        db      55h, 4Eh, 4Eh, 0A6h                            ;#FA94
-        db      0A7h, 3Fh, 0A9h, 0AAh                          ;#FA98
-        db      0ABh, 0ACh, 21h, 22h                           ;#FA9C
-        db      22h, 0B0h, 0B1h, 0B2h                          ;#FAA0
-        db      0B3h, 0B4h, 0B5h, 0B6h                         ;#FAA4
-        db      0B7h, 0B8h, 0B9h, 0BAh                         ;#FAA8
-        db      0BBh, 0BCh, 0BDh, 0BEh                         ;#FAAC
-        db      0BFh, 0C0h, 0C1h, 0C2h                         ;#FAB0
-        db      0C3h, 0C4h, 0C5h, 0C6h                         ;#FAB4
-        db      0C7h, 0C8h, 0C9h, 0CAh                         ;#FAB8
-        db      0CBh, 0CCh, 0CDh, 0CEh                         ;#FABC
-        db      0CFh, 0D0h, 0D1h, 0D2h                         ;#FAC0
-        db      0D3h, 0D4h, 0D5h, 0D6h                         ;#FAC4
-        db      0D7h, 0D8h, 0D9h, 0DAh                         ;#FAC8
-        db      0DBh, 0DCh, 0DDh, 0DEh                         ;#FACC
-        db      0DFh, 0E0h, 53h, 0E2h                          ;#FAD0
-        db      0E3h, 0E4h, 0E5h, 0E6h                         ;#FAD4
-        db      0E7h, 0E8h, 0E9h, 0EAh                         ;#FAD8
-        db      0EBh, 0ECh, 0EDh, 0EEh                         ;#FADC
-        db      0EFh, 0F0h, 0F1h, 0F2h                         ;#FAE0
-        db      0F3h, 0F4h, 0F5h, 0F6h                         ;#FAE4
-        db      0F7h, 0F8h, 0F9h, 0FAh                         ;#FAE8
-        db      0FBh, 0FCh, 0FDh, 0FEh                         ;#FAEC
-        db      0FFh, 0                                        ;#FAF0
+        db      0, 1, 0, 1                                     ;#F9EF
+        db      2, 3, 4, 5                                     ;#F9F3
+        db      6, 7, 8, 9                                     ;#F9F7
+        db      0Ah, 0Bh, 0Ch, 0Dh                             ;#F9FB
+        db      0Eh, 0Fh, 10h, 11h                             ;#F9FF
+        db      12h, 13h, 14h, 15h                             ;#FA03
+        db      16h, 17h, 18h, 19h                             ;#FA07
+        db      1Ah, 1Bh, 1Ch, 1Dh                             ;#FA0B
+        db      1Eh, 1Fh, 20h, 21h                             ;#FA0F
+        db      22h, 23h, 24h, 25h                             ;#FA13
+        db      26h, 27h, 28h, 29h                             ;#FA17
+        db      2Ah, 2Bh, 2Ch, 2Dh                             ;#FA1B
+        db      2Eh, 2Fh, 30h, 31h                             ;#FA1F
+        db      32h, 33h, 34h, 35h                             ;#FA23
+        db      36h, 37h, 38h, 39h                             ;#FA27
+        db      3Ah, 3Bh, 3Ch, 3Dh                             ;#FA2B
+        db      3Eh, 3Fh, 40h, 41h                             ;#FA2F
+        db      42h, 43h, 44h, 45h                             ;#FA33
+        db      46h, 47h, 48h, 49h                             ;#FA37
+        db      4Ah, 4Bh, 4Ch, 4Dh                             ;#FA3B
+        db      4Eh, 4Fh, 50h, 51h                             ;#FA3F
+        db      52h, 53h, 54h, 55h                             ;#FA43
+        db      56h, 57h, 58h, 59h                             ;#FA47
+        db      5Ah, 5Bh, 5Ch, 5Dh                             ;#FA4B
+        db      5Eh, 5Fh, 60h, 41h                             ;#FA4F
+        db      42h, 43h, 44h, 45h                             ;#FA53
+        db      46h, 47h, 48h, 49h                             ;#FA57
+        db      4Ah, 4Bh, 4Ch, 4Dh                             ;#FA5B
+        db      4Eh, 4Fh, 50h, 51h                             ;#FA5F
+        db      52h, 53h, 54h, 55h                             ;#FA63
+        db      56h, 57h, 58h, 59h                             ;#FA67
+        db      5Ah, 7Bh, 7Ch, 7Dh                             ;#FA6B
+        db      7Eh, 7Fh, 43h, 55h                             ;#FA6F
+        db      45h, 41h, 41h, 41h                             ;#FA73
+        db      41h, 43h, 45h, 45h                             ;#FA77
+        db      45h, 49h, 49h, 49h                             ;#FA7B
+        db      41h, 41h, 45h, 41h                             ;#FA7F
+        db      41h, 4Fh, 4Fh, 4Fh                             ;#FA83
+        db      55h, 55h, 59h, 4Fh                             ;#FA87
+        db      55h, 24h, 24h, 24h                             ;#FA8B
+        db      24h, 24h, 41h, 49h                             ;#FA8F
+        db      4Fh, 55h, 4Eh, 4Eh                             ;#FA93
+        db      0A6h, 0A7h, 3Fh, 0A9h                          ;#FA97
+        db      0AAh, 0ABh, 0ACh, 21h                          ;#FA9B
+        db      22h, 22h, 0B0h, 0B1h                           ;#FA9F
+        db      0B2h, 0B3h, 0B4h, 0B5h                         ;#FAA3
+        db      0B6h, 0B7h, 0B8h, 0B9h                         ;#FAA7
+        db      0BAh, 0BBh, 0BCh, 0BDh                         ;#FAAB
+        db      0BEh, 0BFh, 0C0h, 0C1h                         ;#FAAF
+        db      0C2h, 0C3h, 0C4h, 0C5h                         ;#FAB3
+        db      0C6h, 0C7h, 0C8h, 0C9h                         ;#FAB7
+        db      0CAh, 0CBh, 0CCh, 0CDh                         ;#FABB
+        db      0CEh, 0CFh, 0D0h, 0D1h                         ;#FABF
+        db      0D2h, 0D3h, 0D4h, 0D5h                         ;#FAC3
+        db      0D6h, 0D7h, 0D8h, 0D9h                         ;#FAC7
+        db      0DAh, 0DBh, 0DCh, 0DDh                         ;#FACB
+        db      0DEh, 0DFh, 0E0h, 53h                          ;#FACF
+        db      0E2h, 0E3h, 0E4h, 0E5h                         ;#FAD3
+        db      0E6h, 0E7h, 0E8h, 0E9h                         ;#FAD7
+        db      0EAh, 0EBh, 0ECh, 0EDh                         ;#FADB
+        db      0EEh, 0EFh, 0F0h, 0F1h                         ;#FADF
+        db      0F2h, 0F3h, 0F4h, 0F5h                         ;#FAE3
+        db      0F6h, 0F7h, 0F8h, 0F9h                         ;#FAE7
+        db      0FAh, 0FBh, 0FCh, 0FDh                         ;#FAEB
+        db      0FEh, 0FFh                                     ;#FAEF
 
 COLLATE_TABLE_1:
         ; Second 256-entry collating sequence
         ; Format: FORMAT_HEX
         ; raw
-        db      1, 0, 1, 2                                     ;#FAF2
-        db      3, 4, 5, 6                                     ;#FAF6
-        db      7, 8, 9, 0Ah                                   ;#FAFA
-        db      0Bh, 0Ch, 0Dh, 0Eh                             ;#FAFE
-        db      0Fh, 10h, 11h, 12h                             ;#FB02
-        db      13h, 14h, 15h, 16h                             ;#FB06
-        db      17h, 18h, 19h, 1Ah                             ;#FB0A
-        db      1Bh, 1Ch, 1Dh, 1Eh                             ;#FB0E
-        db      1Fh, 20h, 21h, 22h                             ;#FB12
-        db      23h, 24h, 25h, 26h                             ;#FB16
-        db      27h, 28h, 29h, 2Ah                             ;#FB1A
-        db      2Bh, 2Ch, 2Dh, 2Eh                             ;#FB1E
-        db      2Fh, 30h, 31h, 32h                             ;#FB22
-        db      33h, 34h, 35h, 36h                             ;#FB26
-        db      37h, 38h, 39h, 3Ah                             ;#FB2A
-        db      3Bh, 3Ch, 3Dh, 3Eh                             ;#FB2E
-        db      3Fh, 40h, 41h, 42h                             ;#FB32
-        db      43h, 44h, 45h, 46h                             ;#FB36
-        db      47h, 48h, 49h, 4Ah                             ;#FB3A
-        db      4Bh, 4Ch, 4Dh, 4Eh                             ;#FB3E
-        db      4Fh, 50h, 51h, 52h                             ;#FB42
-        db      53h, 54h, 55h, 56h                             ;#FB46
-        db      57h, 58h, 59h, 5Ah                             ;#FB4A
-        db      5Bh, 5Ch, 5Dh, 5Eh                             ;#FB4E
-        db      5Fh, 60h, 41h, 42h                             ;#FB52
-        db      43h, 44h, 45h, 46h                             ;#FB56
-        db      47h, 48h, 49h, 4Ah                             ;#FB5A
-        db      4Bh, 4Ch, 4Dh, 4Eh                             ;#FB5E
-        db      4Fh, 50h, 51h, 52h                             ;#FB62
-        db      53h, 54h, 55h, 56h                             ;#FB66
-        db      57h, 58h, 59h, 5Ah                             ;#FB6A
-        db      7Bh, 7Ch, 7Dh, 7Eh                             ;#FB6E
-        db      7Fh, 43h, 55h, 45h                             ;#FB72
-        db      41h, 41h, 41h, 41h                             ;#FB76
-        db      43h, 45h, 45h, 8Ah                             ;#FB7A
-        db      8Bh, 8Ch, 49h, 41h                             ;#FB7E
-        db      41h, 45h, 41h, 41h                             ;#FB82
-        db      4Fh, 4Fh, 4Fh, 41h                             ;#FB86
-        db      55h, 4Fh, 4Fh, 55h                             ;#FB8A
-        db      24h, 24h, 24h, 24h                             ;#FB8E
-        db      24h, 41h, 49h, 4Fh                             ;#FB92
-        db      55h, 4Eh, 4Eh, 0A6h                            ;#FB96
-        db      0A7h, 3Fh, 0A9h, 0AAh                          ;#FB9A
-        db      0ABh, 0ACh, 21h, 22h                           ;#FB9E
-        db      22h, 0B0h, 0B1h, 0B2h                          ;#FBA2
-        db      0B3h, 0B4h, 0B5h, 0B6h                         ;#FBA6
-        db      0B7h, 0B8h, 0B9h, 0BAh                         ;#FBAA
-        db      0BBh, 0BCh, 0BDh, 0BEh                         ;#FBAE
-        db      0BFh, 0C0h, 0C1h, 0C2h                         ;#FBB2
-        db      0C3h, 0C4h, 0C5h, 0C6h                         ;#FBB6
-        db      0C7h, 0C8h, 0C9h, 0CAh                         ;#FBBA
-        db      0CBh, 0CCh, 0CDh, 0CEh                         ;#FBBE
-        db      0CFh, 0D0h, 0D1h, 0D2h                         ;#FBC2
-        db      0D3h, 0D4h, 0D5h, 0D6h                         ;#FBC6
-        db      0D7h, 0D8h, 0D9h, 0DAh                         ;#FBCA
-        db      0DBh, 0DCh, 0DDh, 0DEh                         ;#FBCE
-        db      0DFh, 0E0h, 53h, 0E2h                          ;#FBD2
-        db      0E3h, 0E4h, 0E5h, 0E6h                         ;#FBD6
-        db      0E7h, 0E8h, 0E9h, 0EAh                         ;#FBDA
-        db      0EBh, 0ECh, 0EDh, 0EEh                         ;#FBDE
-        db      0EFh, 0F0h, 0F1h, 0F2h                         ;#FBE2
-        db      0F3h, 0F4h, 0F5h, 0F6h                         ;#FBE6
-        db      0F7h, 0F8h, 0F9h, 0FAh                         ;#FBEA
-        db      0FBh, 0FCh, 0FDh, 0FEh                         ;#FBEE
-        db      0FFh, 1                                        ;#FBF2
+        db      0, 1, 0, 1                                     ;#FAF1
+        db      2, 3, 4, 5                                     ;#FAF5
+        db      6, 7, 8, 9                                     ;#FAF9
+        db      0Ah, 0Bh, 0Ch, 0Dh                             ;#FAFD
+        db      0Eh, 0Fh, 10h, 11h                             ;#FB01
+        db      12h, 13h, 14h, 15h                             ;#FB05
+        db      16h, 17h, 18h, 19h                             ;#FB09
+        db      1Ah, 1Bh, 1Ch, 1Dh                             ;#FB0D
+        db      1Eh, 1Fh, 20h, 21h                             ;#FB11
+        db      22h, 23h, 24h, 25h                             ;#FB15
+        db      26h, 27h, 28h, 29h                             ;#FB19
+        db      2Ah, 2Bh, 2Ch, 2Dh                             ;#FB1D
+        db      2Eh, 2Fh, 30h, 31h                             ;#FB21
+        db      32h, 33h, 34h, 35h                             ;#FB25
+        db      36h, 37h, 38h, 39h                             ;#FB29
+        db      3Ah, 3Bh, 3Ch, 3Dh                             ;#FB2D
+        db      3Eh, 3Fh, 40h, 41h                             ;#FB31
+        db      42h, 43h, 44h, 45h                             ;#FB35
+        db      46h, 47h, 48h, 49h                             ;#FB39
+        db      4Ah, 4Bh, 4Ch, 4Dh                             ;#FB3D
+        db      4Eh, 4Fh, 50h, 51h                             ;#FB41
+        db      52h, 53h, 54h, 55h                             ;#FB45
+        db      56h, 57h, 58h, 59h                             ;#FB49
+        db      5Ah, 5Bh, 5Ch, 5Dh                             ;#FB4D
+        db      5Eh, 5Fh, 60h, 41h                             ;#FB51
+        db      42h, 43h, 44h, 45h                             ;#FB55
+        db      46h, 47h, 48h, 49h                             ;#FB59
+        db      4Ah, 4Bh, 4Ch, 4Dh                             ;#FB5D
+        db      4Eh, 4Fh, 50h, 51h                             ;#FB61
+        db      52h, 53h, 54h, 55h                             ;#FB65
+        db      56h, 57h, 58h, 59h                             ;#FB69
+        db      5Ah, 7Bh, 7Ch, 7Dh                             ;#FB6D
+        db      7Eh, 7Fh, 43h, 55h                             ;#FB71
+        db      45h, 41h, 41h, 41h                             ;#FB75
+        db      41h, 43h, 45h, 45h                             ;#FB79
+        db      8Ah, 8Bh, 8Ch, 49h                             ;#FB7D
+        db      41h, 41h, 45h, 41h                             ;#FB81
+        db      41h, 4Fh, 4Fh, 4Fh                             ;#FB85
+        db      41h, 55h, 4Fh, 4Fh                             ;#FB89
+        db      55h, 24h, 24h, 24h                             ;#FB8D
+        db      24h, 24h, 41h, 49h                             ;#FB91
+        db      4Fh, 55h, 4Eh, 4Eh                             ;#FB95
+        db      0A6h, 0A7h, 3Fh, 0A9h                          ;#FB99
+        db      0AAh, 0ABh, 0ACh, 21h                          ;#FB9D
+        db      22h, 22h, 0B0h, 0B1h                           ;#FBA1
+        db      0B2h, 0B3h, 0B4h, 0B5h                         ;#FBA5
+        db      0B6h, 0B7h, 0B8h, 0B9h                         ;#FBA9
+        db      0BAh, 0BBh, 0BCh, 0BDh                         ;#FBAD
+        db      0BEh, 0BFh, 0C0h, 0C1h                         ;#FBB1
+        db      0C2h, 0C3h, 0C4h, 0C5h                         ;#FBB5
+        db      0C6h, 0C7h, 0C8h, 0C9h                         ;#FBB9
+        db      0CAh, 0CBh, 0CCh, 0CDh                         ;#FBBD
+        db      0CEh, 0CFh, 0D0h, 0D1h                         ;#FBC1
+        db      0D2h, 0D3h, 0D4h, 0D5h                         ;#FBC5
+        db      0D6h, 0D7h, 0D8h, 0D9h                         ;#FBC9
+        db      0DAh, 0DBh, 0DCh, 0DDh                         ;#FBCD
+        db      0DEh, 0DFh, 0E0h, 53h                          ;#FBD1
+        db      0E2h, 0E3h, 0E4h, 0E5h                         ;#FBD5
+        db      0E6h, 0E7h, 0E8h, 0E9h                         ;#FBD9
+        db      0EAh, 0EBh, 0ECh, 0EDh                         ;#FBDD
+        db      0EEh, 0EFh, 0F0h, 0F1h                         ;#FBE1
+        db      0F2h, 0F3h, 0F4h, 0F5h                         ;#FBE5
+        db      0F6h, 0F7h, 0F8h, 0F9h                         ;#FBE9
+        db      0FAh, 0FBh, 0FCh, 0FDh                         ;#FBED
+        db      0FEh, 0FFh                                     ;#FBF1
 
-DS_FAR_PTR_TABLE:
-        ; Far pointers into the data segment — offset then the 0FA1h selector
+DS_COUNTRY_PTR_TABLE:
+        ; Far pointers to the country tables; LOAD_DOS_PARAM_TABLE rewrites them
         ; Format: FORMAT_HEX
         ; raw
-        db      0, 0EBh, 8, 37h                                ;#FBF4
-        db      0, 0F7h, 8, 0C3h                               ;#FBF8
-        db      5, 0A1h, 0Fh, 0C3h                             ;#FBFC
-        db      5, 0A1h, 0Fh, 45h                              ;#FC00
-        db      6, 0A1h, 0Fh, 0C3h                             ;#FC04
-        db      5, 0A1h, 0Fh, 0C3h                             ;#FC08
-        db      5, 0A1h, 0Fh, 45h                              ;#FC0C
-        db      6, 0A1h, 0Fh, 0C3h                             ;#FC10
-        db      5, 0A1h, 0Fh, 0DFh                             ;#FC14
-        db      6, 0A1h, 0Fh, 45h                              ;#FC18
-        db      6, 0A1h, 0Fh, 0E1h                             ;#FC1C
-        db      7, 0A1h, 0Fh, 0C3h                             ;#FC20
-        db      5, 0A1h, 0Fh, 0DFh                             ;#FC24
-        db      6, 0A1h, 0Fh, 0C3h                             ;#FC28
-        db      5, 0A1h, 0Fh, 0DFh                             ;#FC2C
-        db      6, 0A1h, 0Fh                                   ;#FC30
+        db      1, 0, 0EBh, 8                                  ;#FBF3
+        db      37h, 0, 0F7h, 8                                ;#FBF7
+        dw      UPCASE_CP437_LEN, 0FA1h                        ;#FBFB
+        dw      UPCASE_CP437_LEN, 0FA1h                        ;#FBFF
+        dw      UPCASE_ALT_LEN, 0FA1h                          ;#FC03
+        dw      UPCASE_CP437_LEN, 0FA1h                        ;#FC07
+        dw      UPCASE_CP437_LEN, 0FA1h                        ;#FC0B
+        dw      UPCASE_ALT_LEN, 0FA1h                          ;#FC0F
+        dw      UPCASE_CP437_LEN, 0FA1h                        ;#FC13
+        dw      COLLATE_0_LEN, 0FA1h                           ;#FC17
+        dw      UPCASE_ALT_LEN, 0FA1h                          ;#FC1B
+        dw      COLLATE_1_LEN, 0FA1h                           ;#FC1F
+        dw      UPCASE_CP437_LEN, 0FA1h                        ;#FC23
+        dw      COLLATE_0_LEN, 0FA1h                           ;#FC27
+        dw      UPCASE_CP437_LEN, 0FA1h                        ;#FC2B
+        dw      COLLATE_0_LEN, 0FA1h                           ;#FC2F
 
 EXT_ERROR_CLASS_TABLE:
         ; LOOKUP_ERROR primary scan: 4-byte (code, class, action, locus), 0-terminated

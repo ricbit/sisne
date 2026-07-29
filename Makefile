@@ -14,7 +14,7 @@
 PYTHON ?= python3
 JWASM  ?= jwasm
 
-GAMES := boot init sisne_sis
+GAMES := boot init sisne_sis command_com
 BINS  := $(addsuffix .bin,$(GAMES))
 
 all: verify

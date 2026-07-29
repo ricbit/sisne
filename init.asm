@@ -1,6 +1,6 @@
 ; SISNE (PC/8086, SCOPUS, 1983) — disk 1 init (LBA 12, first data sector loaded by the boot)
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-05-26
+; Last update at 2026-07-29
 ;
         .8086
         .model tiny
@@ -10,6 +10,7 @@
 
         jmp     short INIT_ENTRY                               ;#0000: EB 1A
         nop                                                    ;#0002: 90
+
 BPB_BYTES_PER_SECTOR:
         ; Bytes per sector (= 0200h) — at BPB+0 (vs boot BPB+0x0B)
         dw      200h                                           ;#0003: 00 02
@@ -136,6 +137,7 @@ COMPARE_FILENAME:
         sub     cx, 0FFEBh                                     ;#00A7: 83 E9 EB
         add     di, cx                                         ;#00AA: 03 F9
         jmp     short SCAN_DIR_ENTRIES                         ;#00AC: EB CC
+
 FILE_FOUND:
         ; Names matched — read the entry's first cluster, walk the FAT chain to load
         add     di, 0Fh                                        ;#00AE: 83 C7 0F
@@ -154,6 +156,7 @@ FILE_FOUND:
         call    near CHECK_READ_WITHIN_STACK                   ;#00D2: E8 FD 00
         jnb     short CALL_HELPER_PROBE                        ;#00D5: 73 02
         jmp     short SHOW_ERROR_AND_HANG                      ;#00D7: EB A7
+
 CALL_HELPER_PROBE:
         ; No-overlap branch — far-call the boot helper for next sector
         ; Far-call boot's LBA_TO_CHS_FAR helper (= LBA→CHS + INT 13h read)
@@ -205,6 +208,7 @@ READ_CURRENT_CLUSTER:
         jb      short LOAD_NEXT_FILE_CHUNK                     ;#0130: 72 33
         add     [SECTOR_BUFFER_COUNT], ch                      ;#0132: 00 2E 20 00
         jmp     short WALK_FAT_CHAIN                           ;#0136: EB C5
+
 NEXT_CLUSTER_RETRY:
         ; Retry-friendly entry: push BX, recompute count from [SECTOR_BUFFER_COUNT]
         push    bx                                             ;#0138: 53
@@ -213,6 +217,7 @@ NEXT_CLUSTER_RETRY:
         call    near CHECK_READ_WITHIN_STACK                   ;#0140: E8 8F 00
         jnb     short ADJUST_AND_COPY_TO_HIGH                  ;#0143: 73 03
         jmp     near SHOW_ERROR_AND_HANG                       ;#0145: E9 38 FF
+
 ADJUST_AND_COPY_TO_HIGH:
         ; After a cluster read, shift ES forward and far-call the boot's helper again
         push    es                                             ;#0148: 06
@@ -233,6 +238,7 @@ ADJUST_AND_COPY_TO_HIGH:
         pop     ds                                             ;#0161: 1F
         jmp     short BUMP_ES_AND_CONTINUE                     ;#0162: EB 14
         nop                                                    ;#0164: 90
+
 LOAD_NEXT_FILE_CHUNK:
         ; Tail of the cluster loop — fetch next cluster's data
         push    bx                                             ;#0165: 53
@@ -242,6 +248,7 @@ LOAD_NEXT_FILE_CHUNK:
         call    near CHECK_READ_WITHIN_STACK                   ;#016C: E8 63 00
         jnb     short CALL_HELPER_LAST_CHUNK                   ;#016F: 73 03
         jmp     near SHOW_ERROR_AND_HANG                       ;#0171: E9 0C FF
+
 CALL_HELPER_LAST_CHUNK:
         ; Tail of LOAD_NEXT_FILE_CHUNK — far-call the boot's helper again
         ; Far-call the boot's LBA_TO_CHS_FAR — last chunk read of the file
@@ -257,11 +264,13 @@ BUMP_ES_AND_CONTINUE:
         cmp     bx, 0FFFh                                      ;#0183: 81 FB FF 0F
         jz      short READ_DRIVE_AND_JUMP                      ;#0187: 74 03
         jmp     near AFTER_FIRST_READ                          ;#0189: E9 57 FF
+
 READ_DRIVE_AND_JUMP:
         ; Drive number → DL, far-JMP to 70h:0 (the entry point of the loaded program)
         mov     dl, [INIT_DRIVE_NUMBER]                        ;#018C: 8A 16 1A 00
         ; Hand off to the loaded SISNE.SIS program at 70h:0 (= linear 700h)
         jmp     far 70h:0                                      ;#0190: EA 00 00 70 00
+
 PRINT_LOOP:
         ; lodsb / and 7Fh / INT 10h teletype — same shape as the boot's PRINT_LOOP
         lodsb                                                  ;#0195: AC
@@ -272,6 +281,7 @@ PRINT_LOOP:
         ; INT 10h AH=0Eh — teletype output; AL=char, BH=page (0), BL=color (7)
         int     10h                                            ;#019F: CD 10
         jmp     short PRINT_LOOP                               ;#01A1: EB F2
+
 PRINT_RET:
         ; Shared `ret` for PRINT_LOOP and CHECK_FITS_BELOW_STACK
         ret                                                    ;#01A3: C3
