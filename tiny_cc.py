@@ -85,6 +85,7 @@ KW = {
     'extern',
     'for',
     'register',
+    'inline',
     'goto',
     'far',
     'do',
@@ -103,6 +104,12 @@ KW = {
 # `p->field` desugars at emit_func entry into the same cast+offset AST the rest
 # of the codegen already handles, so member access is byte-identical to the
 # explicit `*(T far *)(p + off)` spelling.
+PROTOS = {}  # func name -> tuple of parameter type strings, for arg checking
+ARG_WARNINGS = []  # mismatches found while emitting calls
+INLINES = {}  # name -> (params, body) for `inline` helpers, expanded at
+# the call site: MSC 3.x had no inlining, so these are a SOURCE-LEVEL
+# abstraction only — the emitted bytes are exactly what the open-coded body
+# produced, which is what keeps a refactor byte-exact.
 STRUCTS = {}
 # extern global name -> declared C type string (the struct tag survives here;
 # SYMS keeps only the kind) — lets `->` resolve through struct-ptr GLOBALS.
@@ -305,6 +312,16 @@ def _param_group_is_far(grp):
     )
 
 
+def _param_group_type(g):
+    """Type string of one parameter group: `struct fcb far *fcb` gives
+    'ptr_far_struct:fcb'.  Returns None when the group is not a plain
+    declaration (a prototype-less `()` or a function pointer)."""
+    try:
+        return parse_type(Parser(list(g) + [('end', None)]))
+    except Exception:
+        return None
+
+
 def parse_extern(p):
     ty = parse_type(p)
     is_pascal = bool(p.acc('kw', 'pascal'))  # callee-cleaned (ret N) helper
@@ -337,6 +354,8 @@ def parse_extern(p):
             groups.append(grp)
         param_bytes = tuple(_param_group_is_byte(g) for g in groups)
         param_far = tuple(_param_group_is_far(g) for g in groups)
+        if groups != [[('kw', 'void')]]:
+            PROTOS[name] = tuple(_param_group_type(g) for g in groups)
         kind = decl_kind(ty, True, False)
     elif p.acc('op', '['):
         while not p.acc('op', ']'):
@@ -720,6 +739,8 @@ def parse_struct_def(p):
 def parse(toks):
     STRUCTS.clear()
     GLOBTY.clear()
+    INLINES.clear()
+    PROTOS.clear()
     p = Parser(toks)
     out = []
     while p.pk()[0] != 'end':
@@ -727,9 +748,40 @@ def parse(toks):
             out.append(parse_extern(p))
         elif p.pk() == ('kw', 'struct') and p.pk(2) == ('op', '{'):
             parse_struct_def(p)  # definition, emits nothing
+        elif p.acc('kw', 'inline'):
+            f = parse_function(p)
+            INLINES[f[1]] = (f[2], f[3])  # (params, body) — emits nothing
         else:
-            out.append(parse_function(p))
+            f = parse_function(p)
+            PROTOS[f[1]] = tuple(ty for ty, _ in f[2])
+            out.append(f)
     return out
+
+
+def fold_deref_addr(node):
+    """`*(&x)` is `x`.  Textual parameter substitution creates that shape
+    whenever an inline takes a pointer-to-pointer and the caller passes `&var`
+    — which is how an inline mutates one of the caller's variables while
+    staying valid C for any other compiler."""
+    if isinstance(node, tuple):
+        if (len(node) == 2 and node[0] == 'deref'
+                and isinstance(node[1], tuple) and node[1][0] == 'addr'):
+            return fold_deref_addr(node[1][1])
+        return tuple(fold_deref_addr(x) for x in node)
+    if isinstance(node, list):
+        return [fold_deref_addr(x) for x in node]
+    return node
+
+
+def subst_params(node, mapping):
+    """Replace `('id', param)` with the caller's argument AST, everywhere."""
+    if isinstance(node, tuple):
+        if node and node[0] == 'id' and node[1] in mapping:
+            return mapping[node[1]]
+        return tuple(subst_params(x, mapping) for x in node)
+    if isinstance(node, list):
+        return [subst_params(x, mapping) for x in node]
+    return node
 
 
 def mod8(disp):
@@ -2440,7 +2492,12 @@ class CG:
                 delta = 0
                 out = []
                 for t in terms:
-                    if (
+                    if nbin(t) and t[1] == '*' and num(t[2]) and num(t[3]):
+                        # A LITERAL subscript: `p->b_rec[0]` scales to `35h * 0`,
+                        # which is a constant, not a multiply — fold it so it
+                        # can meet the field displacement like any other.
+                        out.append(('num', (t[2][1] * t[3][1]) & 0xFFFF))
+                    elif (
                         nbin(t)
                         and t[1] == '*'
                         and num(t[2])
@@ -2596,6 +2653,15 @@ class CG:
                 return e
             if nbin(e) and e[1] == '+' and num(e[3]):
                 return ('bin', '+', e[2], ('num', e[3][1] + c))
+            # A NESTED struct member (`p->d_ent.de_date`) lowers to a cast over
+            # `p + off` and then wants the inner member's offset added to it.
+            # The intermediate cast only names the sub-struct; the address is
+            # one sum, so merge into it rather than stacking a second `+` on
+            # top of the cast — which is the AST the equivalent one-level
+            # spelling produces, and the only one the store paths handle.
+            if e[0] == 'cast' and nbin(e[2]) and e[2][1] == '+' and num(e[2][3]):
+                return ('cast', e[1],
+                        ('bin', '+', e[2][2], ('num', e[2][3][1] + c)))
             return ('bin', '+', e, ('num', c))
 
         def is_base_far(n):
@@ -2615,6 +2681,18 @@ class CG:
             off, fty = STRUCTS[tag][fld]
             pfx = 'ptr_far_' if is_base_far(base) else 'ptr_'
             lbase = scaled_base(base) if scaled else rw(base)
+            # `((struct T far *)p)->fld` — once the field's offset is known the
+            # cast has done its job, and the address arithmetic is the same as
+            # the `(unsigned char far *)p + off` spelling's, which carries no
+            # cast at all.  Drop it so both spellings reach the same paths.
+            if (
+                lbase[0] == 'cast'
+                and lbase[1].startswith('ptr_')
+                and nid(lbase[2])
+                and (ptr_ty(lbase[2]) or '').startswith('ptr_')
+                and ptr_ty(lbase[2]).startswith('ptr_far_') == lbase[1].startswith('ptr_far_')
+            ):
+                lbase = lbase[2]
             if fty in ('char', 'uchar'):
                 if not scaled:
                     return ('idx', lbase, ('num', off))
@@ -2635,6 +2713,12 @@ class CG:
             else:
                 ni('arrow field type', fty)
             addr = padd(lbase, off)
+            # `(uint far *)(dir_entry far *)p` — the sub-struct cast a nested
+            # member left behind is dead once the field's own cast goes on top
+            # of it, and only the single-cast form has a store path.
+            if addr[0] == 'cast' and addr[1].startswith('ptr_') and (
+                addr[1].startswith('ptr_far_') == cast.startswith('ptr_far_')):
+                addr = addr[2]
             return ('deref', ('cast', cast, addr))
 
         def rw(n):
@@ -2665,6 +2749,15 @@ class CG:
                 and STRUCTS[tag_of(n[1][1])][n[1][2]][1].startswith('arr_')
                 and not STRUCTS[tag_of(n[1][1])][n[1][2]][1].startswith('arr_struct')
             ):
+                # A struct GLOBAL's array member is its OWN symbol — the header
+                # registers `NAME.field` at base+off — so subscript that rather
+                # than lowering to `NAME[off + i]`.  Same address either way, but
+                # every plain ARR[...] rule then applies unchanged instead of
+                # each one having to learn to fold a leading constant.
+                if (nid(n[1][1])
+                        and types.get(n[1][1][1]) is None
+                        and GLOBTY.get(n[1][1][1], '').startswith('struct:')):
+                    return ('idx', ('id', n[1][1][1] + '.' + n[1][2]), rw(n[2]))
                 off, fty = STRUCTS[tag_of(n[1][1])][n[1][2]]
                 elemty = fty[4:]  # 'arr_uchar' -> 'uchar'
                 # A scaled struct-table base (`DPB_TABLE[drive].c_path`) folds to
@@ -2677,7 +2770,16 @@ class CG:
                     if num(n[2]):
                         return ('idx', base, ('num', off + n[2][1]))
                     idxe = rw(n[2])
-                    return ('idx', base, ('bin', '+', ('num', off), idxe) if off else idxe)
+                    if not off:
+                        return ('idx', base, idxe)
+                    # Term order follows what the member's address costs.  A NEAR
+                    # global (`WORK_FCB.f_name[i]`) has a known address, so the
+                    # constant leads and folds into the displacement; through a
+                    # FAR pointer (`INPUT_BUF->i_text[i]`) it has to be added at
+                    # run time, which is the order the equivalent raw spelling
+                    # `INPUT_BUF[i + 2]` parses to.
+                    ce, ie = ('num', off), idxe
+                    return ('idx', base, ('bin', '+', *((ie, ce) if far else (ce, ie))))
                 elemsz = _type_size(elemty)
                 if num(n[2]):
                     addr = ('bin', '+', base, ('num', off + elemsz * n[2][1]))
@@ -2783,7 +2885,34 @@ class CG:
 
         return rw(body)
 
+    def _expand_inlines(self, body):
+        """Splice each `inline` helper's body in at its call site, with the
+        caller's arguments substituted for the parameters.  Runs BEFORE every
+        other body pass so the result is indistinguishable from writing the
+        body out longhand — which is what makes an inline refactor byte-exact.
+        MSC 3.x had no inlining, so this exists only to let one repeated
+        sequence be named and read as a unit."""
+        if not INLINES:
+            return body
+
+        def walk(stmts):
+            out = []
+            for s in stmts:
+                if (s[0] == 'expr' and ncall(s[1]) and nid(s[1][1])
+                        and s[1][1][1] in INLINES):
+                    params, ibody = INLINES[s[1][1][1]]
+                    if len(params) != len(s[1][2]):
+                        ni('inline arity', s[1])
+                    m = {pn: a for (_, pn), a in zip(params, s[1][2])}
+                    out.extend(walk(fold_deref_addr(subst_params(ibody, m))))
+                    continue
+                out.append(tuple(walk(c) if isinstance(c, list) else c for c in s))
+            return out
+
+        return walk(body)
+
     def emit_func(self, args, body):
+        body = self._expand_inlines(body)
         body = self._resolve_arrows(args, body)
         body = self._fold_scaled_index(body)
         # A trailing bare `return;` is a semantic no-op — control falls into the
@@ -5548,6 +5677,15 @@ class CG:
             self.emit(0x01 if op == '+' else 0x29, 0x46, disp)  # add/sub [bp+disp], ax
             self.al = None
             return
+        # FP_OFF/FP_SEG(far_GLOBAL) +=/-= <expr in AX>  →  add/sub [g], ax on
+        # the word itself, the direct-address twin of the [bp+disp] forms
+        # around it (COPY_FCB_FRAGMENT_AND_ADVANCE stepping CACHED_MCB).
+        if op in ('+', '-') and lhs[0] in ('fpoff', 'fpseg') and self.gfar(lhs[1]):
+            addr = SYMS[n11(lhs)][1] + (2 if lhs[0] == 'fpseg' else 0)
+            self.expr_to_ax(rhs)  # rhs → ax
+            self.emit(0x01 if op == '+' else 0x29, 0x06, *w16(addr))
+            self.al = None
+            return
         # FP_SEG(far_local) +=/-= <expr in AX>  →  add/sub [bp+disp+2], ax (the
         # segment word).  Used to paragraph-normalize a far buffer in place:
         # FP_SEG(buf) += FP_OFF(buf) >> 4.
@@ -7957,11 +8095,15 @@ class CG:
             # zero in BH, so MSC stores THAT rather than materialising another
             # (SUBST clearing the 11-byte FCB name area).
             _i = None
-            if nbin(idx) and idx[1] == '+' and num(rhs) and rhs[1] == 0:
-                if num(idx[2]) and self.locid(idx[3]):
+            if num(rhs) and rhs[1] == 0:
+                if nbin(idx) and idx[1] == '+' and num(idx[2]) and self.locid(idx[3]):
                     _i, _k = idx[3], idx[2][1]
-                elif num(idx[3]) and self.locid(idx[2]):
+                elif nbin(idx) and idx[1] == '+' and num(idx[3]) and self.locid(idx[2]):
                     _i, _k = idx[2], idx[3][1]
+                elif self.locid(idx):
+                    # the member offset may already be in the base, when the
+                    # subscript is a struct global's array member by name
+                    _i, _k = idx, 0
             if _i is not None and self.lt(_i[1]) in ('uchar', 'char'):
                 self.emit(0x8A, 0x5E, self.ld(_i[1]))  # mov bl, [bp+d]
                 self.emit(0x2A, 0xFF)  # sub bh, bh
@@ -8385,6 +8527,60 @@ class CG:
             return
         raise NameError(name)
 
+    def _arg_type(self, e):
+        """Best-effort type string for a call argument; None when unknown."""
+        if ncast(e):
+            return e[1]
+        if nid(e):
+            n = e[1]
+            if n in self.locals:
+                t = self.lt(n)
+                return t[4:] if t.startswith('reg_') else t
+            if n in GLOBTY:
+                g = GLOBTY[n]
+                # an ARRAY global decays to a pointer to its element type
+                return g if g.startswith('ptr') else None
+            k = self.gkind(e)
+            if k == 'arr':
+                return 'ptr_uchar'
+            if k == 'bvar':
+                return 'uchar'
+            if k in ('var', 'uvar'):
+                return 'uint'
+            return None
+        if e[0] == 'addr' and nid(e[1]):
+            g = GLOBTY.get(e[1][1])
+            return 'ptr_far_' + g if g and not g.startswith('ptr') else None
+        if num(e):
+            return 'int'
+        return None
+
+    def _check_args(self, name, args):
+        """Warn when an argument's type cannot be the parameter's.  Only the
+        mismatches that have actually been bugs here are reported: a pointer
+        against a non-pointer, and two pointers to DIFFERENT structs — the
+        class that made build_device_cmd_block take an untyped buffer and
+        compute_cluster_info_for_fcb take the wrong record."""
+        proto = PROTOS.get(name)
+        if not proto or len(proto) != len(args):
+            return
+        for i, (want, a) in enumerate(zip(proto, args)):
+            got = self._arg_type(a)
+            if not want or not got or want == got:
+                continue
+            # an ARRAY decays to a pointer to its elements — not a mismatch
+            wp = want.startswith('ptr') or want.startswith('arr')
+            gp = got.startswith('ptr') or got.startswith('arr')
+            if wp != gp:
+                ARG_WARNINGS.append(
+                    "%s arg %d: %s passed where %s expected" % (name, i + 1, got, want))
+            elif wp and 'void' not in want and 'void' not in got:
+                ws = want[want.find('struct:'):] if 'struct:' in want else None
+                gs = got[got.find('struct:'):] if 'struct:' in got else None
+                if ws and gs and ws != gs:
+                    ARG_WARNINGS.append(
+                        "%s arg %d: %s passed where %s expected" % (name, i + 1, got, want))
+
     def gen_call(self, e, tail=False, cleanup=True, share_lbl=None,
                  share_ax_lbl=None):
         target = e[1]
@@ -8392,6 +8588,7 @@ class CG:
         if not nid(target) or SYMS[target[1]][0] not in ('func', 'far_func'):
             raise NotImplementedError
         addr = SYMS[target[1]][1]
+        self._check_args(target[1], args)
         # MSC zeroes a `0` argument with `sub ax,ax` for the pascal long
         # helpers (vs `xor ax,ax` for cdecl calls).
         self._pascal_call = target[1] in PASCAL
