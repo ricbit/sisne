@@ -1,6 +1,6 @@
 ; SISNE (PC/8086, SCOPUS, 1983) — disk 1 main program (SISNE.SIS, loaded by init)
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-07-29
+; Last update at 2026-07-30
 ;
         .8086
         .model tiny
@@ -26,13 +26,13 @@ STR_ICCMENU_EXEC                 equ     001A3h    ; char[]  (compiled_headers)
 STR_AUX_PATH                     equ     001AFh    ; char[]  (compiled_headers)
 STR_CON_PATH                     equ     001B4h    ; char[]  (compiled_headers)
 STR_PRN_PATH                     equ     001B9h    ; char[]  (compiled_headers)
-CFG_FCBS_PER_FILE                equ     001BFh    ; CONFIG byte set by the OPTIONS= directive (MAIN_ENTRY case 0Bh)
-CFG_FCBS_KEEP                    equ     001C0h    ; CONFIG byte set by the MENU= directive (MAIN_ENTRY case 0Ch)
-CFG_FILES_MAX                    equ     001C2h    ; CONFIG word set by the BREAK= directive (MAIN_ENTRY case 0)
+CFG_OPTIONS_ON                   equ     001BFh    ; OPTIONS=ON/OFF (case 0Bh): live cursor here, confirm prompts in COMMAND.COM
+CFG_MENU_ON                      equ     001C0h    ; MENU=ON/OFF (case 0Ch); read once at 223 against probe_default_device
+CFG_BREAK_ON                     equ     001C2h    ; BREAK=ON/OFF (case 0), handed to set_ctrl_break at the end of MAIN_ENTRY
 CFG_DEVICE_COUNT                 equ     001C4h    ; Number of DEVICE/PATH entries appended by the DEVICE= directive
 CFG_DEVICE_BUF_OFF               equ     001C6h    ; Next-free byte offset into the path string buffer at [0C24h]
 CFG_DEVICE_RESERVED              equ     001C8h    ; CONFIG word set by the COUNTRY= directive (MAIN_ENTRY case 2)
-CFG_BREAK_OPTION                 equ     001CAh    ; Word — integer set by the FILES= directive (MAIN_ENTRY case 9)
+CFG_FILES_COUNT                  equ     001CAh    ; FILES=n (case 9), handed to setup_drive_table at the end of MAIN_ENTRY
 SYS_LAST_DRIVE                   equ     001CCh    ; Effective LASTDRIVE — copy of CFG_LASTDRIVE used by drive validation
 CFG_LASTDRIVE                    equ     001CEh    ; CONFIG word set by the LASTDRIVE= directive (1=A..26=Z)
 CFG_SHELL_PRESENT                equ     001D0h    ; Flag set to 1 by the SHELL= directive when a path was given
@@ -706,7 +706,7 @@ LINE_POS                         equ     01576h    ; uint  (compiled_headers)
         extern long __lshl() __addr__(0xECED);
         /* ---- data (address order; multiple names at one address are the
          * documented views of the same cell) ---- */
-        extern unsigned char CFG_FCBS_PER_FILE __addr__(0x01BF);
+        extern unsigned char CFG_OPTIONS_ON __addr__(0x01BF);
         extern unsigned char *KEYWORD_PTR_TABLE[18] __addr__(0x0226);
         extern char MSG_SHELL_MISSING[] __addr__(0x24A);
         extern char MSG_ERROR_IN_COMMAND[] __addr__(0x27A);
@@ -730,17 +730,17 @@ LINE_POS                         equ     01576h    ; uint  (compiled_headers)
         extern unsigned char LINE_BUF[] __addr__(0x0E28);
         extern unsigned int MAIN_PATH_TABLE[] __addr__(0x0EAC);
         extern unsigned char DEVICE_PATH_BUF[] __addr__(0x0C24);
-        extern unsigned int CFG_FILES_MAX __addr__(0x01C2);
+        extern unsigned int CFG_BREAK_ON __addr__(0x01C2);
         extern int CFG_DEVICE_COUNT __addr__(0x01C4);
         extern unsigned int CFG_DEVICE_BUF_OFF __addr__(0x01C6);
         extern unsigned int CFG_DEVICE_RESERVED __addr__(0x01C8);
-        extern unsigned int CFG_BREAK_OPTION __addr__(0x01CA);
+        extern unsigned int CFG_FILES_COUNT __addr__(0x01CA);
         extern int CFG_LASTDRIVE __addr__(0x01CE);
         extern unsigned int CFG_SHELL_PRESENT __addr__(0x01D0);
         extern unsigned char CFG_SHELL_BUF[] __addr__(0x01D2);
         extern unsigned int CFG_COUNTRY_VARIANT __addr__(0x0222);
         extern unsigned int CFG_SWITCH_CHAR __addr__(0x0224);
-        extern unsigned char CFG_FCBS_KEEP __addr__(0x01C0);
+        extern unsigned char CFG_MENU_ON __addr__(0x01C0);
         extern unsigned char SYS_LAST_DRIVE_BYTE __addr__(0x041F);
         extern unsigned int SYS_LAST_DRIVE __addr__(0x01CC);
         extern char STR_CON_DEV[] __addr__(0x0164);
@@ -1374,7 +1374,7 @@ GET_SET_SWITCH_CHAR:
         ret                                                    ;#01DB: C3
 
 LOAD_DOS_PARAM_TABLE:
-        ; Fetch 8-word info table via SUB_CF0D (AH=06) and fan it out into DS scratch
+        ; 8-word info table via CALL_BRASCII_DRIVER (AH=06), fanned out into DS scratch
         push    bp                                             ;#01DC: 55
         mov     bp, sp                                         ;#01DD: 8B EC
         push    di                                             ;#01DF: 57
@@ -1400,7 +1400,7 @@ LOAD_DOS_PARAM_TABLE:
         mov     ax, [es:di+0Eh]                                ;#021D: 26 8B 45 0E
         mov     [919h], ax                                     ;#0221: A3 19 09
 LOAD_DOS_TABLE_ERR_RET:
-        ; Error tail of LOAD_DOS_PARAM_TABLE (CF set after SUB_CF0D) — restore + ret
+        ; Error tail of LOAD_DOS_PARAM_TABLE: CF from CALL_BRASCII_DRIVER — restore + ret
         pop     di                                             ;#0224: 5F
         pop     bp                                             ;#0225: 5D
         ret                                                    ;#0226: C3
@@ -1482,7 +1482,7 @@ MAIN_ENTRY:
                         skip_alnum();
                         MAIN_LOOP_INDEX = lookup_token();
                         if (MAIN_LOOP_INDEX > 0x0D && MAIN_LOOP_INDEX < 0x10) {
-                            CFG_FILES_MAX = 0x0F - MAIN_LOOP_INDEX;
+                            CFG_BREAK_ON = 0x0F - MAIN_LOOP_INDEX;
                             break;
                         }
                         print_error(0);
@@ -1589,7 +1589,7 @@ MAIN_ENTRY:
                             continue;
                         }
                         skip_alnum();
-                        CFG_BREAK_OPTION = atoi_decimal();
+                        CFG_FILES_COUNT = atoi_decimal();
                         break;
                     case 0x0A:
                         skip_alnum();
@@ -1610,7 +1610,7 @@ MAIN_ENTRY:
                         skip_alnum();
                         MAIN_LOOP_INDEX = lookup_token();
                         if (MAIN_LOOP_INDEX > 0x0D && MAIN_LOOP_INDEX < 0x10) {
-                            CFG_FCBS_PER_FILE = 0x0F - MAIN_LOOP_INDEX;
+                            CFG_OPTIONS_ON = 0x0F - MAIN_LOOP_INDEX;
                             break;
                         }
                         print_error(0x0B);
@@ -1619,7 +1619,7 @@ MAIN_ENTRY:
                         skip_alnum();
                         MAIN_LOOP_INDEX = lookup_token();
                         if (MAIN_LOOP_INDEX > 0x0D && MAIN_LOOP_INDEX < 0x10) {
-                            CFG_FCBS_KEEP = 0x0F - MAIN_LOOP_INDEX;
+                            CFG_MENU_ON = 0x0F - MAIN_LOOP_INDEX;
                             break;
                         }
                         print_error(0x0C);
@@ -1646,7 +1646,7 @@ MAIN_ENTRY:
                     MAIN_LOOP_INDEX++;
                 }
             }
-            if (CFG_FCBS_KEEP == 1 && probe_default_device() == 0) {
+            if (CFG_MENU_ON == 1 && probe_default_device() == 0) {
                 MAIN_FILE_HANDLE = open_file(STR_ICCMENU_PROBE, 0);
                 if (MAIN_FILE_HANDLE > 0) {
                     close_handle(MAIN_FILE_HANDLE);
@@ -1661,7 +1661,7 @@ MAIN_ENTRY:
             }
             SYS_LAST_DRIVE = CFG_LASTDRIVE;
             SYS_LAST_DRIVE_BYTE = SYS_LAST_DRIVE;
-            setup_drive_table(CFG_BREAK_OPTION, &NEXT_FREE_PARAGRAPH);
+            setup_drive_table(CFG_FILES_COUNT, &NEXT_FREE_PARAGRAPH);
             grow_mcb_pool(BUFFER_SIZE_CLASS, &NEXT_FREE_PARAGRAPH);
             MAIN_LOOP_INDEX = 0;
             do {
@@ -1679,7 +1679,7 @@ MAIN_ENTRY:
             get_set_switch_char(3, CFG_COUNTRY_VARIANT);
             dos_install_stage3();
             shrink_and_link_new_mcb(NEXT_FREE_PARAGRAPH);
-            set_ctrl_break(CFG_FILES_MAX);
+            set_ctrl_break(CFG_BREAK_ON);
             load_dos_param_table();
             get_country_code(CFG_DEVICE_RESERVED);
             exec_relaunch(CFG_SHELL_BUF);
@@ -2017,7 +2017,7 @@ DOS_FN_07_DIRECT_CONSOLE_INPUT:
         ;@endcompiled
 
 DOS_FN_08_CONSOLE_INPUT_NO_ECHO:
-        ; Call SUB_A145 to fetch the FCB-status byte; write it to FCB[0] at [bp+4]
+        ; Call CON_GETC_BRK to fetch the FCB-status byte; write it to FCB[0] at [bp+4]
         ;@compiled dos_fn_08_console_input_no_echo 09C4 22
         /*
          * DOS_FN_08_CONSOLE_INPUT_NO_ECHO @ 0x09C4 in SISNE.SIS (22 bytes).
@@ -2182,7 +2182,7 @@ DOS_FN_0C_FLUSH_AND_INPUT:
         ;@endcompiled
 
 RESET_DPB_PROBE_DRIVE:
-        ; Load DPB for drive [bp+4], early-out on media!=F8h, then SUB_BF81 setup
+        ; DPB for drive [bp+4], early-out on media!=F8h, then GET_DPB_CLUSTER_COUNT
         ;@compiled reset_dpb_probe_drive 0B14 242
         /*
          * RESET_DPB_PROBE_DRIVE @ 0x0B14 in SISNE.SIS (242 bytes).
@@ -3263,7 +3263,7 @@ FIND_SFT_FOR_HANDLE:
         ;@endcompiled
 
 OPEN_FCB_BY_DRIVE:
-        ; FIND_SFT_FOR_HANDLE wrapper around DOS open via SUB_1C5A staging
+        ; FIND_SFT_FOR_HANDLE wrapper around DOS open via the staging at 1C5Ah
         ;@compiled open_fcb_by_drive 1C36 165
         /*
          * OPEN_FCB_BY_DRIVE @ 0x1C36 in SISNE.SIS (165 bytes).
@@ -5757,7 +5757,7 @@ DOS_ABS_DISK_READ_HANDLER:
         mov     ah, 8                                          ;#43A6: B4 08
 
 DOS_DISK_IO_COMMON:
-        ; Shared body for INT 25h/26h — save state, swap to private stack, call SUB_C23E
+        ; INT 25h/26h body — save state, swap stacks, call DOS_ABS_READ_WRITE_HANDLER
         push    es                                             ;#43A8: 06
         push    ds                                             ;#43A9: 1E
         mov     si, ss                                         ;#43AA: 8C D6
@@ -6416,8 +6416,8 @@ DOS_FN_5E_GET_FAR_PTR:
         mov     [es:bp+10h], ax                                ;#4807: 26 89 46 10
         jmp     short DOS_FN_5E_RET                            ;#480B: EB DD
 
-GET_SET_FCBS_PER_FILE:
-        ; subfn 23 — get or set CFG_FCBS_PER_FILE, DL selects which
+GET_SET_OPTIONS_FLAG:
+        ; subfn 23 — get or set CFG_OPTIONS_ON, DL selects which
         mov     bx, 1BFh                                       ;#480D: BB BF 01
         or      dl, dl                                         ;#4810: 0A D2
         jnz     short DOS_FN_5E_SET_FLAG_BIT                   ;#4812: 75 0F
@@ -6503,7 +6503,7 @@ DRIVE_INFO_SUBFN_TABLE:
         dw      SET_AUX_HOOK_FLAG                              ;#489C: 3A B6
         dw      SET_AUX_HOOK_MODE                              ;#489E: 47 B6
         dw      SET_PRN_HOOK_FLAG                              ;#48A0: 54 B6
-        dw      SUBFN_08_RETURN_6                              ;#48A2: 2B CE
+        dw      SUBFN_08_GET_RELEASE                           ;#48A2: 2B CE
         dw      JOIN_DRIVE_TO_DIR                              ;#48A4: 8C 71
         dw      UNJOIN_DRIVE                                   ;#48A6: 55 75
         dw      GET_ASSIGN_PATH_FOR_DRIVE                      ;#48A8: 7E 76
@@ -6518,7 +6518,7 @@ DRIVE_INFO_SUBFN_TABLE:
         dw      SET_DOS_STATE_BLOCK                            ;#48BA: 9F 47
         dw      GET_BRASCII_MODE                               ;#48BC: C2 47
         dw      GET_SET_LINE_END_MODE                          ;#48BE: D2 47
-        dw      GET_SET_FCBS_PER_FILE                          ;#48C0: 0D 48
+        dw      GET_SET_OPTIONS_FLAG                           ;#48C0: 0D 48
         dw      GET_SET_DOS_FLAGS                              ;#48C2: 2C 48
 
 DOS_FN_18_RESERVED_18:
@@ -8869,7 +8869,7 @@ SUBST_DRIVE_TO_PATH:
         ;@endcompiled
 
 UNJOIN_DRIVE:
-        ; AH=18h subfn 13 — unlink the drive from the SUBST chain and reset its CDS
+        ; AH=18h subfn 10 — unlink the drive from the SUBST chain and reset its CDS
         ;@compiled unjoin_drive 7555 297
         /*
          * UNJOIN_DRIVE @ 0x7555 in SISNE.SIS (297 bytes).
@@ -11546,7 +11546,7 @@ CON_PUTC_OR_FCB1:
 
         int get_terminal_column_count(void) __addr__(0xA36F)
         {
-            if (EDIT_MODE == 3 && CFG_FCBS_PER_FILE != 0) {
+            if (EDIT_MODE == 3 && CFG_OPTIONS_ON != 0) {
                 return get_cursor_max_col();
             }
             return 0x50;
@@ -11564,7 +11564,7 @@ CON_PUTC_OR_FCB1:
 
         int get_cursor_row_or_1(void) __addr__(0xA38C)
         {
-            if (EDIT_MODE == 3 && CFG_FCBS_PER_FILE != 0) {
+            if (EDIT_MODE == 3 && CFG_OPTIONS_ON != 0) {
                 return get_cursor_row();
             }
             return 1;
@@ -11582,7 +11582,7 @@ CON_PUTC_OR_FCB1:
 
         int get_cursor_col_or_cached(void) __addr__(0xA3A9)
         {
-            if (EDIT_MODE == 3 && CFG_FCBS_PER_FILE != 0) {
+            if (EDIT_MODE == 3 && CFG_OPTIONS_ON != 0) {
                 return get_cursor_column();
             }
             return CURSOR_COL_CACHE;
@@ -11610,7 +11610,7 @@ CON_PUTC_OR_FCB1:
          * KEY_TYPED_DISPATCH @ 0xA3E9 in SISNE.SIS (74 bytes).
          *
          * Reposition the cursor to (row, col) after echoing.  In full-screen edit mode
-         * (EDIT_MODE == 3) with a live cursor (CFG_FCBS_PER_FILE) move the hardware
+         * (EDIT_MODE == 3) with a live cursor (CFG_OPTIONS_ON) move the hardware
          * cursor directly (SET_CURSOR_POSITION).  In line-edit mode (any other non-zero
          * EDIT_MODE) there is no addressable cursor, so walk the echo column back to the
          * target by emitting backspaces (08h) through the console driver until
@@ -11620,7 +11620,7 @@ CON_PUTC_OR_FCB1:
         void key_typed_dispatch(int row, int col) __addr__(0xA3E9)
         {
             if (EDIT_MODE == 3) {
-                if (CFG_FCBS_PER_FILE != 0) {
+                if (CFG_OPTIONS_ON != 0) {
                     set_cursor_position(row, col);
                 }
             } else if (EDIT_MODE != 0) {
@@ -11732,7 +11732,7 @@ CON_PUTC_OR_FCB1:
                 if (ECHO_CUR_CHAR == 0) {
                     key = read_line_buffered();
                     ECHO_CUR_CHAR = key;
-                    if (CFG_FCBS_PER_FILE != 0) {
+                    if (CFG_OPTIONS_ON != 0) {
                         extended_key_action(key, tmpl);
                     } else if (key == 0x4B) {
                         backspace_delete();
@@ -11791,7 +11791,7 @@ CON_PUTC_OR_FCB1:
                 continue;
             key_esc:
                 edit_template_process(0);
-                if (CFG_FCBS_PER_FILE != 0) {
+                if (CFG_OPTIONS_ON != 0) {
                     continue;
                 }
                 echo_or_buffer_char(0x5C);
@@ -11838,7 +11838,7 @@ CON_PUTC_OR_FCB1:
          * BACKSPACE_LAST_CHAR @ 0xA720 in SISNE.SIS (73 bytes).
          *
          * Move the edit cursor back one character.  In full-screen edit mode (a live
-         * cursor, CFG_FCBS_PER_FILE set) step the logical column back, wrapping to the
+         * cursor, CFG_OPTIONS_ON set) step the logical column back, wrapping to the
          * end of the previous row (TERM_WIDTH - 1) when it underflows, and reposition
          * the hardware cursor (KEY_TYPED_DISPATCH).  In line mode just step the column
          * back (unless already at 0) and emit a literal backspace (08h) through
@@ -11847,7 +11847,7 @@ CON_PUTC_OR_FCB1:
 
         void backspace_last_char(void) __addr__(0xA720)
         {
-            if (CFG_FCBS_PER_FILE != 0) {
+            if (CFG_OPTIONS_ON != 0) {
                 CURSOR_COL--;
                 if (CURSOR_COL < 0) {
                     CURSOR_COL = TERM_WIDTH - 1;
@@ -11871,7 +11871,7 @@ CON_PUTC_OR_FCB1:
          * full-screen mode (EDIT_MODE == 3) the character is not re-echoed here — only
          * the logical cursor advances (an extra column for a printable control escape),
          * wrapping to the next row at TERM_WIDTH, and the hardware cursor is moved
-         * (SET_CURSOR_POSITION) when a live cursor is present (CFG_FCBS_PER_FILE).  In
+         * (SET_CURSOR_POSITION) when a live cursor is present (CFG_OPTIONS_ON).  In
          * line mode the character is echoed via ECHO_OR_BUFFER_CHAR — a control byte as
          * a two-column '^X' escape (0x5E then CUR_CHAR + 0x40), a normal byte directly
          * — and the column advances with the same TERM_WIDTH wrap.
@@ -11890,7 +11890,7 @@ CON_PUTC_OR_FCB1:
                         CURSOR_COL -= TERM_WIDTH;
                         CURSOR_ROW++;
                     }
-                    if (CFG_FCBS_PER_FILE != 0) {
+                    if (CFG_OPTIONS_ON != 0) {
                         set_cursor_position(CURSOR_ROW, CURSOR_COL);
                     }
                 } else {
@@ -11956,7 +11956,7 @@ CON_PUTC_OR_FCB1:
             for (; ECHO_SPAN > 0; ECHO_SPAN--) {
                 echo_or_buffer_char(0x20);
             }
-            if (EDIT_MODE == 3 && CFG_FCBS_PER_FILE == 0) {
+            if (EDIT_MODE == 3 && CFG_OPTIONS_ON == 0) {
                 for (; pad > 0; pad--) {
                     echo_or_buffer_char(0x08);
                 }
@@ -12218,7 +12218,7 @@ CON_PUTC_OR_FCB1:
 
         void edit_template_process(int template) __addr__(0xAB87)
         {
-            if (CFG_FCBS_PER_FILE != 0) {
+            if (CFG_OPTIONS_ON != 0) {
                 flush_input_typed();
                 ECHO_SPAN = 0;
                 HIST_SCAN_IDX = template;
@@ -12590,7 +12590,7 @@ INIT_STAGE2_CLEAR_FLAGS:
         ret                                                    ;#AF69: C3
 
 CHECK_CTRL_BREAK_FLAGS:
-        ; Read [cs:F29Eh]; if bit 7 set, call SUB_B529 first; then fall to BIT0 test
+        ; Read [cs:F29Eh]; bit 7 calls POLL_STDIN_VIA_FCB, then falls to the bit 0 test
         mov     al, [cs:CTRL_BREAK_PENDING]                    ;#AF6A: 2E A0 9E F2
         test    al, 80h                                        ;#AF6E: A8 80
         jnz     short CHECK_CTRL_BREAK_BIT0                    ;#AF70: 75 07
@@ -12604,7 +12604,7 @@ CHECK_CTRL_BREAK_BIT0:
         ret                                                    ;#AF83: C3
 
 HANDLE_CTRL_BREAK:
-        ; Clear flags, INT 2Fh AX=4900h multiplex, optionally SUB_B600, jmp INT 23h
+        ; Clear flags, INT 2Fh AX=4900h, maybe PRINT_STRING_VIA_DRIVER, then jmp INT 23h
         mov     byte [cs:CTRL_BREAK_PENDING], 0                ;#AF84: 2E C6 06 9E F2 00
         mov     byte [cs:CON_RAW_MODE_FLAG], 0                 ;#AF8A: 2E C6 06 A0 F2 00
         mov     ax, 4900h                                      ;#AF90: B8 00 49
@@ -13039,7 +13039,7 @@ CON_WRITE_PREPARE:
         xor     byte [cs:0F2E4h], 1                            ;#B2B5: 2E 80 36 E4 F2 01
         jz      short CON_WRITE_RESOLVE_ECHO                   ;#B2BB: 74 0E
 CON_WRITE_WAIT_LOOP:
-        ; Wait/IDLE top — poll SUB_B549, call INT 28h, re-check break state
+        ; Wait/IDLE top — poll POLL_STDIN_BREAK, call INT 28h, re-check break state
         call    near POLL_STDIN_BREAK                          ;#B2BD: E8 89 02
         call    near INVOKE_INT28_IDLE                         ;#B2C0: E8 E7 FC
         test    byte [cs:CON_RAW_MODE_FLAG], 1                 ;#B2C3: 2E F6 06 A0 F2 01
@@ -13071,7 +13071,7 @@ CON_WRITE_DO_OUTPUT:
         jmp     short CON_WRITE_LOOP_BACK                      ;#B2F7: EB 14
 
 CON_WRITE_VIA_DRIVER:
-        ; Build the [cs:F2B5h] request and call SUB_D582 (driver dispatcher)
+        ; Build the [cs:F2B5h] request and call CALL_DRIVER_STRATEGY_INT
         mov     byte [cs:0F2B7h], 8                            ;#B2F9: 2E C6 06 B7 F2 08
         mov     byte [cs:0F2C7h], 1                            ;#B2FF: 2E C6 06 C7 F2 01
         push    cs                                             ;#B305: 0E
@@ -13346,7 +13346,7 @@ SHIFT_WRITE_COUNTERS_RET:
         ret                                                    ;#B528: C3
 
 POLL_STDIN_VIA_FCB:
-        ; Lookup stdin handle via LOOKUP_FCB_BY_INDEX, then poll via SUB_B550
+        ; Lookup stdin handle via LOOKUP_FCB_BY_INDEX, then poll via POLL_STDIN_PROBE
         push    bp                                             ;#B529: 55
         push    di                                             ;#B52A: 57
         mov     ax, 3B0h                                       ;#B52B: B8 B0 03
@@ -13367,14 +13367,14 @@ POLL_STDIN_FALLBACK:
         jmp     short POLL_STDIN_PROBE                         ;#B547: EB 07
 
 POLL_STDIN_BREAK:
-        ; Poll input device — build cmd 5 packet, call SUB_D582 then test flags
+        ; Poll input — cmd 5 packet, CALL_DRIVER_STRATEGY_INT, then test the flags
         push    bp                                             ;#B549: 55
         push    di                                             ;#B54A: 57
         push    ds                                             ;#B54B: 1E
         mov     ax, es                                         ;#B54C: 8C C0
         mov     ds, ax                                         ;#B54E: 8E D8
 POLL_STDIN_PROBE:
-        ; Direct entry — set up packet cmd 5, dispatch via SUB_D582, classify result
+        ; Direct entry — cmd 5 packet, CALL_DRIVER_STRATEGY_INT, classify the result
         mov     ax, cs                                         ;#B550: 8C C8
         mov     es, ax                                         ;#B552: 8E C0
         mov     bx, CON_HOOK_TABLES                            ;#B554: BB B5 F2
@@ -13406,7 +13406,7 @@ POLL_STDIN_TOGGLE_ECHO:
         ; Ctrl-P (10h) — toggle [cs:F29Fh] bit 0 echo flag
         xor     byte [cs:0F29Fh], 1                            ;#B599: 2E 80 36 9F F2 01
 POLL_STDIN_CONSUME_KEY:
-        ; After classify — issue cmd 4 (destructive read) via SUB_D582 to consume the char
+        ; After classify — cmd 4, a destructive read via CALL_DRIVER_STRATEGY_INT
         mov     byte [cs:0F2B7h], 4                            ;#B59F: 2E C6 06 B7 F2 04
         push    word [cs:0F2D1h]                               ;#B5A5: 2E FF 36 D1 F2
         push    word [cs:0F2CFh]                               ;#B5AA: 2E FF 36 CF F2
@@ -13458,7 +13458,7 @@ GET_CURSOR_COLUMN:
         ret                                                    ;#B5F5: C3
 
 GET_CURSOR_MAX_COL:
-        ; Read screen geometry via SUB_B739 — return current max column in AX
+        ; Read screen geometry via GET_VIDEO_STATE — return current max column in AX
         push    bp                                             ;#B5F6: 55
         call    near GET_VIDEO_STATE                           ;#B5F7: E8 3F 01
         mov     al, ah                                         ;#B5FA: 8A C4
@@ -13870,7 +13870,7 @@ COMPUTE_FAT_SECTOR_ADDR_NOSHIFT:
         jmp     short FAT_SECTOR_ADDR_RANGE_LO                 ;#B897: EB 04
 
 COMPUTE_FAT_SECTOR_ADDR:
-        ; Map a logical sector address to a real disk sector via SUB_B895 + shift
+        ; Logical to real sector: COMPUTE_FAT_SECTOR_ADDR_NOSHIFT, then the shift
         mov     si, ax                                         ;#B899: 8B F0
         shr     ax, 1                                          ;#B89B: D1 E8
 FAT_SECTOR_ADDR_RANGE_LO:
@@ -14404,7 +14404,7 @@ ADD_DPB_FILL_DRIVE:
         ret                                                    ;#BBCE: C3
 
 DISPATCH_REQUEST_PACKET:
-        ; Populate packet at [bp+4] with sector/count/mode and call SUB_BFC8 + SUB_BF41
+        ; Packet at [bp+4] (sector/count/mode), DISK_READ_REQUEST, TRANSLATE_BPB_TO_DPB
         push    bp                                             ;#BBCF: 55
         mov     bp, sp                                         ;#BBD0: 8B EC
         call    near ALLOC_NEW_MCB                             ;#BBD2: E8 90 02
@@ -14418,7 +14418,7 @@ DISPATCH_REQUEST_PACKET:
         jnz     short DISPATCH_REQUEST_DRIVER_CALL             ;#BBEC: 75 04
         mov     byte [bx+0Dh], 3                               ;#BBEE: C6 47 0D 03
 DISPATCH_REQUEST_DRIVER_CALL:
-        ; Push packet, SUB_BFC8 driver dispatch, then SUB_BF41 result translator
+        ; Push packet, DISK_READ_REQUEST, then TRANSLATE_BPB_TO_DPB on the result
         push    bx                                             ;#BBF2: 53
         call    near DISK_READ_REQUEST                         ;#BBF3: E8 D2 03
         add     sp, 2                                          ;#BBF6: 83 C4 02
@@ -14952,7 +14952,7 @@ DOS_FN_2E_SET_VERIFY:
         ret                                                    ;#BF80: C3
 
 GET_DPB_CLUSTER_COUNT:
-        ; Driver packet cmd 0Fh (Build BPB) — read DPB cluster count via SUB_CALL_DRIVER
+        ; Driver packet cmd 0Fh (Build BPB) — cluster count via CALL_DRIVER_STRATEGY_INT
         push    bp                                             ;#BF81: 55
         mov     bp, sp                                         ;#BF82: 8B EC
         mov     byte [DISK_REQ_LEN], 0Fh                       ;#BF84: C6 06 3E 04 0F
@@ -14988,7 +14988,7 @@ DISK_VERIFY_REQUEST:
         ret                                                    ;#BFC7: C3
 
 DISK_READ_REQUEST:
-        ; Build a cmd=4 (read) request packet and dispatch via SUB_BFE5
+        ; Build a cmd=4 (read) request packet and dispatch via DISK_DISPATCH_INNER
         push    bp                                             ;#BFC8: 55
         mov     bp, sp                                         ;#BFC9: 8B EC
         mov     al, 4                                          ;#BFCB: B0 04
@@ -15005,13 +15005,13 @@ DISK_WRITE_REQUEST:
         jnz     short DISK_WRITE_DISPATCH                      ;#BFDC: 75 02
         mov     al, 8                                          ;#BFDE: B0 08
 DISK_WRITE_DISPATCH:
-        ; Common tail of WRITE — set AL=cmd and fall into SUB_BFE5
+        ; Common tail of WRITE — set AL=cmd and fall into DISK_DISPATCH_INNER
         call    near DISK_DISPATCH_INNER                       ;#BFE0: E8 02 00
         pop     bp                                             ;#BFE3: 5D
         ret                                                    ;#BFE4: C3
 
 DISK_DISPATCH_INNER:
-        ; Build request packet at DISK_REQ_LEN from caller's MCB and call SUB_D582 in loop
+        ; Packet at DISK_REQ_LEN from the caller's MCB, CALL_DRIVER_STRATEGY_INT in a loop
         push    si                                             ;#BFE5: 56
         push    di                                             ;#BFE6: 57
         mov     [DISK_REQ_CMD], al                             ;#BFE7: A2 40 04
@@ -15033,7 +15033,7 @@ DISK_DISPATCH_INNER:
         mov     al, [es:bx+16h]                                ;#C01E: 26 8A 47 16
         mov     [DISK_REQ_MEDIA], al                           ;#C022: A2 4B 04
 DISK_DISPATCH_DRIVER_CALL:
-        ; Build the packet, invoke SUB_D582, branch on DISK_LAST_ERROR=6 retry path
+        ; Build the packet, CALL_DRIVER_STRATEGY_INT, retry when DISK_LAST_ERROR=6
         push    ds                                             ;#C025: 1E
         mov     ax, ds                                         ;#C026: 8C D8
         mov     es, ax                                         ;#C028: 8E C0
@@ -15052,7 +15052,7 @@ DISK_DISPATCH_DRIVER_CALL:
         call    near DISK_PROBE_FOR_RETRY                      ;#C04F: E8 11 00
         jnb     short DISK_DISPATCH_DRIVER_CALL                ;#C052: 73 D1
 DISK_DISPATCH_ERROR_CHECK:
-        ; Result has bit 15 set — call SUB_C0B9 (handler); AL=1 triggers a retry
+        ; Result bit 15 set — CRITICAL_ERROR_HANDLER; AL=1 triggers a retry
         test    ax, 8000h                                      ;#C054: A9 00 80
         jz      short DISK_DISPATCH_RET                        ;#C057: 74 07
         call    near CRITICAL_ERROR_HANDLER                    ;#C059: E8 5D 00
@@ -15077,7 +15077,7 @@ DISK_PROBE_FOR_RETRY:
         jmp     short DISK_PROBE_ADVANCE_SECTOR                ;#C07A: EB 0E
 
 DISK_PROBE_GENERIC_ERROR_TEST:
-        ; Non-verify-non-write path — if bit 15 set, hand off to SUB_C0B9
+        ; Non-verify-non-write path — if bit 15 set, hand off to CRITICAL_ERROR_HANDLER
         test    ax, 8000h                                      ;#C07C: A9 00 80
         jz      short DISK_PROBE_ADVANCE_SECTOR                ;#C07F: 74 09
         call    near CRITICAL_ERROR_HANDLER                    ;#C081: E8 35 00
@@ -15180,7 +15180,7 @@ INT24_RESPONSE_FLUSH_MCB:
         call    near REMOVE_MCB_ENTRIES_BY_KEY                 ;#C13B: E8 55 FB
         pop     bx                                             ;#C13E: 5B
 INT24_RESPONSE_ABORT:
-        ; Jump to SUB_C8E0 — terminate the I/O caller via abort path
+        ; Jump to ABORT_PROGRAM — terminate the I/O caller via abort path
         jmp     near ABORT_PROGRAM                             ;#C13F: E9 9E 07
 
 INT24_RESPONSE_IGNORE:
@@ -15212,7 +15212,7 @@ FAIL_SCAN_STACK_LOOP:
         inc     si                                             ;#C165: 46
         loop    FAIL_SCAN_STACK_LOOP                           ;#C166: E2 F3
 FAIL_RESTORE_AND_RAISE:
-        ; Found frame — restore SP, push error 53h and call PRINT helper SUB_D300
+        ; Found frame — restore SP, push error 53h and call PRINT helper LOOKUP_ERROR_MSG
         mov     sp, bx                                         ;#C168: 8B E3
         mov     ax, 53h                                        ;#C16A: B8 53 00
         push    ax                                             ;#C16D: 50
@@ -15339,7 +15339,7 @@ DOS_ABS_PACKET_FROM_REGS:
         jnz     short DOS_ABS_DISPATCH                         ;#C289: 75 02
         xor     bp, bp                                         ;#C28B: 33 ED
 DOS_ABS_DISPATCH:
-        ; Fill packet head, GET_DPB_BY_DRIVE_INDEX, then call SUB_D582
+        ; Fill packet head, GET_DPB_BY_DRIVE_INDEX, then call CALL_DRIVER_STRATEGY_INT
         mov     [DISK_REQ_SAVE_OFF], dx                        ;#C28D: 89 16 47 04
         mov     [DISK_REQ_SAVE_SEG], bp                        ;#C291: 89 2E 49 04
         and     al, 7Fh                                        ;#C295: 24 7F
@@ -16134,7 +16134,7 @@ GET_TOP_OF_MEMORY:
         ret                                                    ;#C8DF: C3
 
 ABORT_PROGRAM:
-        ; Flush BPBs, invalidate MCBs, then jump to INT 22h dispatch via SUB_C902
+        ; Flush BPBs, invalidate MCBs, then INT22_EXIT_DISPATCH for the INT 22h exit
         call    near COPY_ALL_DETECTED_BPBS                    ;#C8E0: E8 3B F4
         call    near INVALIDATE_ALL_MCBS                       ;#C8E3: E8 1F F4
         mov     bx, [DOS_SDA_SEG]                              ;#C8E6: 8B 1E DE 02
@@ -16436,7 +16436,7 @@ PROBE_PSP_MCB_OK:
         ret                                                    ;#CACF: C3
 
 PROBE_PSP_MCB_RESIZE:
-        ; PROBE_PSP_MCB then call SUB_CAE3 (split or grow); AL=7 (5C error) on fail
+        ; PROBE_PSP_MCB then SPLIT_MCB_IF_LARGER (split or grow); AL=7 on failure
         push    ds                                             ;#CAD0: 1E
         mov     ax, es                                         ;#CAD1: 8C C0
         dec     ax                                             ;#CAD3: 48
@@ -16940,8 +16940,8 @@ DOS_FN_30_GET_DOS_VERSION:
         pop     ds                                             ;#CE29: 1F
         ret                                                    ;#CE2A: C3
 
-SUBFN_08_RETURN_6:
-        ; subfn 8 — write the constant 6 into the caller AX; what 6 denotes is unclear
+SUBFN_08_GET_RELEASE:
+        ; subfn 8 — the release, 1-based; COMMAND.COM prints AL-1, so 6 is R05
         mov     bp, sp                                         ;#CE2B: 8B EC
         les     di, [bp+2]                                     ;#CE2D: C4 7E 02
         mov     word [es:di], 6                                ;#CE30: 26 C7 05 06 00
@@ -17138,7 +17138,7 @@ BRASCII_DRIVER_RET_FAIL:
         ret                                                    ;#CF8B: C3
 
 BRASCII_DRIVER_DISPATCH:
-        ; Dispatch via SUB_D582 — status word ends up at [532h]
+        ; Dispatch via CALL_DRIVER_STRATEGY_INT — status word ends up at [532h]
         call    near CALL_DRIVER_STRATEGY_INT                  ;#CF8C: E8 F3 05
         pop     ax                                             ;#CF8F: 58
         pop     ds                                             ;#CF90: 1F
@@ -17452,7 +17452,7 @@ GET_LE_TYPE_DEFAULT:
         ret                                                    ;#D16E: C3
 
 BUILD_CLOCK_DRV_REQ:
-        ; Build a 1Ah-byte OPEN request at 0515h and dispatch via SUB_D582
+        ; Build a 1Ah-byte OPEN request at 0515h and dispatch via CALL_DRIVER_STRATEGY_INT
         push    es                                             ;#D16F: 06
         push    bx                                             ;#D170: 53
         push    ds                                             ;#D171: 1E
@@ -18082,7 +18082,7 @@ BUILD_DEV_CMD_FAIL:
         push    ds                                             ;#D4EF: 1E
         lds     di, [420h]                                     ;#D4F0: C5 3E 20 04
 INIT_FILE_TABLE_LOOP:
-        ; Per-device-driver init body — call SUB_D582 then chain to next driver
+        ; Per-driver init body — CALL_DRIVER_STRATEGY_INT, then chain to the next
         pop     es                                             ;#D4F4: 07
         mov     [es:0A78h], di                                 ;#D4F5: 26 89 3E 78 0A
         mov     [es:0A7Ah], ds                                 ;#D4FA: 26 8C 1E 7A 0A
@@ -21122,6 +21122,28 @@ INT13_REDIR_DEFAULT_RET:
 
 INT13H_DRIVER_SAVE_REGS:
         ; Pop ret addr, push regs — entry stub of custom INT 13h handler
+        ; The stub normalises the caller's ES:BX so the offset cannot wrap, and the one
+        ; line that copes with a wrap never runs:
+        ;
+        ; E99B    mov     ax, es
+        ; mov     dx, ax
+        ; mov     cl, 4
+        ; shl     ax, cl
+        ; add     bx, ax              ; CF here means the address crossed 64K
+        ; and     dx, 0F000h
+        ; jnb     short INT13_SET_ES_AND_ZERO_CNT
+        ; add     dx, 1000h
+        ;
+        ; `and` clears CF whatever its operands, so the carry `add bx, ax` produced is
+        ; gone by the time `jnb` looks at it.  The branch is taken every time, and E9ABh
+        ; is referenced from nowhere else, so the segment is never bumped: a buffer whose
+        ; low 12 bits of segment plus offset exceed 0FFFFh is handed to the BIOS 64K
+        ; below where the caller meant.
+        ;
+        ; Moving the `and` above the `add` would have been enough, which is what makes
+        ; this look like an edit rather than a misunderstanding.  COMMAND.COM has one of
+        ; the same family at 5416h, where `cmp cx, 0` before a `jb` makes the branch dead
+        ; in the other direction.
         pop     ax                                             ;#E984: 58
         mov     ax, [cs:0F063h]                                ;#E985: 2E A1 63 F0
         push    es                                             ;#E989: 06
@@ -22404,7 +22426,7 @@ MSG_ERROR_IN_COMMAND:
         db      "Erro no comando ", 0                          ;#F58A: 45 72 72 6F 20 6E 6F 20 63 6F 6D 61 6E 64 6F 20 00
 
 MSG_INVALID_COMMAND:
-        ; "Comando invalido\0" — bad-directive error fragment
+        ; "Comando inválido\0" — bad-directive error fragment
         ; Format: FORMAT_STRING
         db      "Comando inválido", 0                          ;#F59B: 43 6F 6D 61 6E 64 6F 20 69 6E 76 A0 6C 69 64 6F 00
 
