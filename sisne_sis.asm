@@ -1,6 +1,6 @@
 ; SISNE (PC/8086, SCOPUS, 1983) — disk 1 main program (SISNE.SIS, loaded by init)
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-07-30
+; Last update at 2026-07-31
 ;
         .8086
         .model tiny

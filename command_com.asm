@@ -1,6 +1,6 @@
 ; SISNE COMMAND.COM V3.30 R05 (03.Dez.90) — disk 1 command interpreter
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-07-30
+; Last update at 2026-07-31
 ;
         .8086
         .model tiny
@@ -292,6 +292,42 @@ MSGREF_DADOS                     equ     000E4h    ; #52 in the ERROR_MSG_INDEX 
 MSGREF_COLOQUE_O_DISCO_CORRETO   equ     000E5h    ; #53 in the ERROR_MSG_INDEX run, ERRMSG_COLOQUE_O_DISCO_CORRETO
 MSGREF_NA_CARGA_DO               equ     000E6h    ; #54 in the ERROR_MSG_INDEX run, ERRMSG_NA_CARGA_DO
 MSGREF_COMANDO_55                equ     000E7h    ; #55 in the ERROR_MSG_INDEX run, ERRMSG_COMANDO_55
+
+; The sign-on logo script.  One macro per record and per op kind, so
+; SIGNON_LOGO_SCRIPT reads as the screen it paints rather than as bytes.
+; LOGO_RUN and LOGO_CELLS count their own payload: the count byte
+; RUN_SCREEN_SCRIPT reads back is how many arguments follow it, and cannot
+; drift from them.
+
+LOGO_SIZE MACRO n
+        dw      n
+        ENDM
+
+LOGO_POS MACRO row, col, n
+        db      row, col
+        dw      n
+        ENDM
+
+LOGO_RUN MACRO attr, chars:VARARG
+        LOCAL s, e
+        db      000h, e - s, attr
+s:
+        db      chars
+e:
+        ENDM
+
+LOGO_CELLS MACRO cells:VARARG
+        LOCAL s, e
+        db      001h, (e - s) / 2
+s:
+        db      cells
+e:
+        ENDM
+
+LOGO_REPEAT MACRO n, char, attr
+        db      0FFh, n, char, attr
+        ENDM
+
 
 COMMAND_ENTRY:
         ; .COM entry — jmp over the banner and the fixup table
@@ -4217,7 +4253,7 @@ MSG_STUB_CRLF:
         db      "DEZ"                                          ;#18B1: 44 45 5A
         db      "DOMINGO"                                      ;#18B4: 44 4F 4D 49 4E 47 4F
         db      "SEGUNDA"                                      ;#18BB: 53 45 47 55 4E 44 41
-        db      " TER", 80h, "A "                              ;#18C2: 20 54 45 52 80 41 20
+        db      " TERÇA "                                      ;#18C2: 20 54 45 52 80 41 20
         db      "QUARTA "                                      ;#18C9: 51 55 41 52 54 41 20
         db      "QUINTA "                                      ;#18D0: 51 55 49 4E 54 41 20
         db      " SEXTA "                                      ;#18D7: 20 53 45 58 54 41 20
@@ -4424,19 +4460,26 @@ SHOW_SIGNON_LOGO:
 SIGNON_LOGO_SCRIPT:
         ; The sign-on screen: 89 (row, col, n, ops) records painting "SISNE Plus"
         ; The sign-on logo screen, painted straight into video RAM.  The leading
-        ; word is the length of what follows -- 04D1h = 1233 bytes, 19CFh..1E9Fh,
-        ; which is how the end of the script is known rather than guessed.  Then 89
-        ; records, each `row, col, count(word), <count> op bytes`, rows 0..14h,
-        ; cols 0..4Fh.
+        ; word is the length of what follows -- 1233 bytes, 19CFh..1E9Fh, which is
+        ; how the end of the script is known rather than guessed.  Then 89 records,
+        ; each a row, a column, a byte count and the ops that fill it; rows 0..20,
+        ; columns 0..79.
         ; Writing past column 79 wraps to column 0 of the next row, which is how the
         ; box sides are drawn: row 0 lays down a corner, 78 dashes and a corner, and
         ; the 81st cell spills over to start row 1's left border.
         ;
-        ; Three op kinds, all `kind, count` followed by their payload:
+        ; The LOGO_ macros at the top of the listing are the encoding, and there are
+        ; three op kinds:
         ;
-        ; 00 n attr  c1..cn   n characters sharing one attribute
-        ; 01 n       (c,a)*n  n cells, each with its own attribute
-        ; FF n c attr         one cell repeated n times
+        ; LOGO_RUN     00 n attr  c1..cn   n characters sharing one attribute
+        ; LOGO_CELLS   01 n       (c,a)*n  n cells, each with its own attribute
+        ; LOGO_REPEAT  FF n c attr         one cell repeated n times
+        ;
+        ; Each emits its own kind byte, and LOGO_RUN and LOGO_CELLS count the payload
+        ; they are given, so both of the numbers the reader takes off the stream are
+        ; the macro name and its arguments here rather than bytes to be matched up.
+        ; The characters are written as themselves -- the frame really is drawn in
+        ; the source -- which is CP437 read the way the screen reads it.
         ;
         ; RUN_SCREEN_SCRIPT at 1F0Dh is the reader, and it confirms every part of
         ; this from the other side: it loads the leading length word into [615h],
@@ -4445,342 +4488,268 @@ SIGNON_LOGO_SCRIPT:
         ; SCRIPT_NEXT_BYTE, SCRIPT_OP_REPEAT, SCRIPT_OP_RUN and SCRIPT_OP_CELLS are
         ; its pieces, and SCREEN_WRITE_RUN is what finally reaches INT 10h.
         ;
-        ; Attributes are 03h, 07h and 0Bh -- cyan, light grey and bright cyan.
+        ; Attributes are 03h, 07h and 0Bh -- cyan, light grey and bright cyan --
+        ; plus 70h, black on grey, which is the status bar built into row 21.
         ;
         ; Rendering all 89 records gives an 80x22 framed screen.  Rows 4..6 carry a
-        ; line of small box-drawing capitals, rows 9..13 spell SISNE in 0DBh blocks,
-        ; "Plus" sits beside it on rows 14..16, and row 13h is the copyright:
+        ; line of small box-drawing capitals, rows 9..13 spell SISNE in full blocks,
+        ; "Plus" sits beside it on rows 14..16, and row 19 is the copyright:
         ;
         ; +--------------------------------------------------------------+
         ; | 9        ,-----.  ,-.  ,-----.  ,-----.  ,-----.              |
-        ; |13        S        I    S        N        E     (0DBh blocks)  |
+        ; |13        S        I    S        N        E     (full blocks)  |
         ; |16                                        Plus                 |
         ; |19    Os direitos de propriedade estao reservados a Scopus     |
         ; |          e Itautec.                                           |
         ; |21  `-  :  :  --  SISNE PLUS  --  /   /  -----------------'    |
         ; +--------------------------------------------------------------+
         ;
-        ; Row 15h is the bottom border with a status bar built into it, and the
+        ; Row 21 is the bottom border with a status bar built into it, and the
         ; blanks in `:  :` and `/   /` are placeholders the clock and date are
         ; written into later -- which is what MONTH_NAME_TABLE and DAY_NAME_TABLE
         ; next door are for.
         ;
-        ; The row 13h record is col 8, 64 characters at attribute 07h, using 00 as
+        ; The row 19 record is col 8, 64 characters at attribute 07h, using 00 as
         ; the word separator (character 0 is a blank cell).  Those 64 bytes used to
         ; fall outside the declared block: the walk decoded 1E00h as code (`4Fh` as
         ; `dec di`, `73 00` as a `jnb`) and the bulk string pass cut the rest into
         ; six "messages" at the 00 separators.  See #952.
-        ; Format: FORMAT_HEX
-        ; raw
-        db      0D1h, 4, 0, 0                                  ;#19CD
-        db      0Eh, 0, 1, 1                                   ;#19D1
-        db      0DAh, 3, 0FFh, 4Eh                             ;#19D5
-        db      0C4h, 3, 1, 2                                  ;#19D9
-        db      0BFh, 3, 0B3h, 3                               ;#19DD
-        db      1, 4Fh, 6, 0                                   ;#19E1
-        db      1, 2, 0B3h, 3                                  ;#19E5
-        db      0B3h, 3, 2, 4Fh                                ;#19E9
-        db      6, 0, 1, 2                                     ;#19ED
-        db      0B3h, 3, 0B3h, 3                               ;#19F1
-        db      3, 0Ah, 4, 0                                   ;#19F5
-        db      1, 1, 2Eh, 7                                   ;#19F9
-        db      3, 0Fh, 4, 0                                   ;#19FD
-        db      1, 1, 0BFh, 7                                  ;#1A01
-        db      3, 3Bh, 4, 0                                   ;#1A05
-        db      1, 1, 2Eh, 7                                   ;#1A09
-        db      3, 48h, 4, 0                                   ;#1A0D
-        db      1, 1, 0BFh, 7                                  ;#1A11
-        db      3, 4Fh, 6, 0                                   ;#1A15
-        db      1, 2, 0B3h, 3                                  ;#1A19
-        db      0B3h, 3, 4, 6                                  ;#1A1D
-        db      0Dh, 0, 0, 0Ah                                 ;#1A21
-        db      7, 0DAh, 0C4h, 0C4h                            ;#1A25
-        db      0BFh, 0BFh, 0DAh, 0C4h                         ;#1A29
-        db      0C4h, 0BFh, 0C5h, 4                            ;#1A2D
-        db      12h, 10h, 0, 0                                 ;#1A31
-        db      0Dh, 7, 0DAh, 0C4h                             ;#1A35
-        db      0C4h, 0BFh, 0C2h, 0C4h                         ;#1A39
-        db      0C2h, 0C4h, 0BFh, 0DAh                         ;#1A3D
-        db      0C4h, 0C4h, 0BFh, 4                            ;#1A41
-        db      23h, 29h, 0, 0                                 ;#1A45
-        db      26h, 7, 0DAh, 0C4h                             ;#1A49
-        db      0C4h, 0BFh, 0DAh, 0C4h                         ;#1A4D
-        db      0C4h, 0BFh, 0DAh, 0C4h                         ;#1A51
-        db      0C4h, 0BFh, 0C2h, 0C4h                         ;#1A55
-        db      0C4h, 0BFh, 0DAh, 0C4h                         ;#1A59
-        db      0C4h, 0BFh, 0DAh, 0C4h                         ;#1A5D
-        db      0C4h, 0BFh, 0BFh, 0DAh                         ;#1A61
-        db      0C4h, 0C4h, 0BFh, 0C2h                         ;#1A65
-        db      0C4h, 0C4h, 0BFh, 0DAh                         ;#1A69
-        db      0C4h, 0C4h, 0BFh, 0B3h                         ;#1A6D
-        db      4, 4Fh, 6, 0                                   ;#1A71
-        db      1, 2, 0B3h, 3                                  ;#1A75
-        db      0B3h, 3, 5, 6                                  ;#1A79
-        db      0Dh, 0, 0, 0Ah                                 ;#1A7D
-        db      7, 0C0h, 0C4h, 0C4h                            ;#1A81
-        db      0BFh, 0B3h, 0C0h, 0C4h                         ;#1A85
-        db      0C4h, 0BFh, 0B3h, 5                            ;#1A89
-        db      12h, 8, 0, 0                                   ;#1A8D
-        db      5, 7, 0C3h, 0C4h                               ;#1A91
-        db      0C4h, 0D9h, 0B3h, 5                            ;#1A95
-        db      18h, 4, 0, 1                                   ;#1A99
-        db      1, 0B3h, 7, 5                                  ;#1A9D
-        db      1Ah, 8, 0, 0                                   ;#1AA1
-        db      5, 7, 0B3h, 0DAh                               ;#1AA5
-        db      0C4h, 0C4h, 0B4h, 5                            ;#1AA9
-        db      23h, 4, 0, 1                                   ;#1AAD
-        db      1, 0B3h, 7, 5                                  ;#1AB1
-        db      26h, 6, 0, 1                                   ;#1AB5
-        db      2, 0B3h, 7, 0B3h                               ;#1AB9
-        db      7, 5, 2Ah, 9                                   ;#1ABD
-        db      0, 0, 6, 7                                     ;#1AC1
-        db      0B3h, 0C3h, 0C4h, 0C4h                         ;#1AC5
-        db      0D9h, 0B3h, 5, 33h                             ;#1AC9
-        db      8, 0, 0, 5                                     ;#1ACD
-        db      7, 0DAh, 0C4h, 0C4h                            ;#1AD1
-        db      0B4h, 0B3h, 5, 3Bh                             ;#1AD5
-        db      6, 0, 1, 2                                     ;#1AD9
-        db      0B3h, 7, 0B3h, 7                               ;#1ADD
-        db      5, 3Fh, 6, 0                                   ;#1AE1
-        db      1, 2, 0B3h, 7                                  ;#1AE5
-        db      0B3h, 7, 5, 43h                                ;#1AE9
-        db      9, 0, 0, 6                                     ;#1AED
-        db      7, 0B3h, 0DAh, 0C4h                            ;#1AF1
-        db      0C4h, 0B4h, 0B3h, 5                            ;#1AF5
-        db      4Fh, 6, 0, 1                                   ;#1AF9
-        db      2, 0B3h, 3, 0B3h                               ;#1AFD
-        db      3, 6, 6, 14h                                   ;#1B01
-        db      0, 0, 11h, 7                                   ;#1B05
-        db      0C0h, 0C4h, 0C4h, 0D9h                         ;#1B09
-        db      0C1h, 0C0h, 0C4h, 0C4h                         ;#1B0D
-        db      0D9h, 0C0h, 0C4h, 0D9h                         ;#1B11
-        db      0C0h, 0C4h, 0C4h, 0D9h                         ;#1B15
-        db      0C1h, 6, 18h, 0Ah                              ;#1B19
-        db      0, 0, 7, 7                                     ;#1B1D
-        db      0C1h, 0, 0C0h, 0C0h                            ;#1B21
-        db      0C4h, 0C4h, 0C1h, 6                            ;#1B25
-        db      23h, 10h, 0, 0                                 ;#1B29
-        db      0Dh, 7, 0C0h, 0C4h                             ;#1B2D
-        db      0C4h, 0D9h, 0C3h, 0C4h                         ;#1B31
-        db      0C4h, 0D9h, 0C0h, 0C4h                         ;#1B35
-        db      0C4h, 0D9h, 0C1h, 6                            ;#1B39
-        db      33h, 11h, 0, 0                                 ;#1B3D
-        db      0Eh, 7, 0C0h, 0C4h                             ;#1B41
-        db      0C4h, 0C1h, 0C0h, 0C4h                         ;#1B45
-        db      0C4h, 0D9h, 0C1h, 0C0h                         ;#1B49
-        db      0C4h, 0C4h, 0D9h, 0C1h                         ;#1B4D
-        db      6, 43h, 9, 0                                   ;#1B51
-        db      0, 6, 7, 0C0h                                  ;#1B55
-        db      0C0h, 0C4h, 0C4h, 0D9h                         ;#1B59
-        db      0C0h, 6, 4Fh, 6                                ;#1B5D
-        db      0, 1, 2, 0B3h                                  ;#1B61
-        db      3, 0B3h, 3, 7                                  ;#1B65
-        db      27h, 4, 0, 1                                   ;#1B69
-        db      1, 0C1h, 7, 7                                  ;#1B6D
-        db      4Fh, 6, 0, 1                                   ;#1B71
-        db      2, 0B3h, 3, 0B3h                               ;#1B75
-        db      3, 8, 4Fh, 6                                   ;#1B79
-        db      0, 1, 2, 0B3h                                  ;#1B7D
-        db      3, 0B3h, 3, 9                                  ;#1B81
-        db      0Fh, 0Ch, 0, 1                                 ;#1B85
-        db      1, 0DAh, 0Bh, 0FFh                             ;#1B89
-        db      5, 0C4h, 0Bh, 1                                ;#1B8D
-        db      1, 0BFh, 0Bh, 9                                ;#1B91
-        db      17h, 6, 0, 0                                   ;#1B95
-        db      3, 0Bh, 0DAh, 0C4h                             ;#1B99
-        db      0BFh, 9, 1Bh, 0Ch                              ;#1B9D
-        db      0, 1, 1, 0DAh                                  ;#1BA1
-        db      0Bh, 0FFh, 5, 0C4h                             ;#1BA5
-        db      0Bh, 1, 1, 0BFh                                ;#1BA9
-        db      0Bh, 9, 23h, 0Ch                               ;#1BAD
-        db      0, 1, 1, 0DAh                                  ;#1BB1
-        db      0Bh, 0FFh, 5, 0C4h                             ;#1BB5
-        db      0Bh, 1, 1, 0BFh                                ;#1BB9
-        db      0Bh, 9, 2Bh, 0Ch                               ;#1BBD
-        db      0, 1, 1, 0DAh                                  ;#1BC1
-        db      0Bh, 0FFh, 5, 0C4h                             ;#1BC5
-        db      0Bh, 1, 1, 0BFh                                ;#1BC9
-        db      0Bh, 9, 4Fh, 6                                 ;#1BCD
-        db      0, 1, 2, 0B3h                                  ;#1BD1
-        db      3, 0B3h, 3, 0Ah                                ;#1BD5
-        db      0Fh, 4, 0, 1                                   ;#1BD9
-        db      1, 0B3h, 0Bh, 0Ah                              ;#1BDD
-        db      11h, 8, 0, 0FFh                                ;#1BE1
-        db      6, 0DBh, 0Bh, 1                                ;#1BE5
-        db      1, 0B3h, 0Bh, 0Ah                              ;#1BE9
-        db      19h, 6, 0, 0                                   ;#1BED
-        db      3, 0Bh, 0DBh, 0DBh                             ;#1BF1
-        db      0B3h, 0Ah, 1Dh, 8                              ;#1BF5
-        db      0, 0FFh, 6, 0DBh                               ;#1BF9
-        db      0Bh, 1, 1, 0B3h                                ;#1BFD
-        db      0Bh, 0Ah, 25h, 8                               ;#1C01
-        db      0, 0FFh, 6, 0DBh                               ;#1C05
-        db      0Bh, 1, 1, 0B3h                                ;#1C09
-        db      0Bh, 0Ah, 2Dh, 4                               ;#1C0D
-        db      0, 0FFh, 6, 0DBh                               ;#1C11
-        db      0Bh, 0Ah, 4Fh, 6                               ;#1C15
-        db      0, 1, 2, 0B3h                                  ;#1C19
-        db      3, 0B3h, 3, 0Bh                                ;#1C1D
-        db      0Fh, 4, 0, 1                                   ;#1C21
-        db      1, 0B3h, 0Bh, 0Bh                              ;#1C25
-        db      11h, 8, 0, 0                                   ;#1C29
-        db      5, 0Bh, 0DBh, 0DBh                             ;#1C2D
-        db      0C4h, 0C4h, 0BFh, 0Bh                          ;#1C31
-        db      17h, 4, 0, 1                                   ;#1C35
-        db      1, 0B3h, 0Bh, 0Bh                              ;#1C39
-        db      19h, 6, 0, 0                                   ;#1C3D
-        db      3, 0Bh, 0DBh, 0DBh                             ;#1C41
-        db      0B3h, 0Bh, 1Dh, 8                              ;#1C45
-        db      0, 0, 5, 0Bh                                   ;#1C49
-        db      0DBh, 0DBh, 0C4h, 0C4h                         ;#1C4D
-        db      0BFh, 0Bh, 23h, 4                              ;#1C51
-        db      0, 1, 1, 0B3h                                  ;#1C55
-        db      0Bh, 0Bh, 25h, 6                               ;#1C59
-        db      0, 0, 3, 0Bh                                   ;#1C5D
-        db      0DBh, 0DBh, 0B3h, 0Bh                          ;#1C61
-        db      29h, 6, 0, 0                                   ;#1C65
-        db      3, 0Bh, 0DBh, 0DBh                             ;#1C69
-        db      0B3h, 0Bh, 2Dh, 6                              ;#1C6D
-        db      0, 0, 3, 0Bh                                   ;#1C71
-        db      0DBh, 0DBh, 0D9h, 0Bh                          ;#1C75
-        db      31h, 6, 0, 1                                   ;#1C79
-        db      2, 0DBh, 0Bh, 0DBh                             ;#1C7D
-        db      0Bh, 0Bh, 4Fh, 6                               ;#1C81
-        db      0, 1, 2, 0B3h                                  ;#1C85
-        db      3, 0B3h, 3, 0Ch                                ;#1C89
-        db      0Fh, 0Eh, 0, 1                                 ;#1C8D
-        db      2, 0C0h, 0Bh, 0C4h                             ;#1C91
-        db      0Bh, 0FFh, 6, 0DBh                             ;#1C95
-        db      0Bh, 1, 1, 0B3h                                ;#1C99
-        db      0Bh, 0Ch, 19h, 0Fh                             ;#1C9D
-        db      0, 0, 4, 0Bh                                   ;#1CA1
-        db      0DBh, 0DBh, 0C0h, 0C4h                         ;#1CA5
-        db      0FFh, 6, 0DBh, 0Bh                             ;#1CA9
-        db      1, 1, 0B3h, 0Bh                                ;#1CAD
-        db      0Ch, 25h, 6, 0                                 ;#1CB1
-        db      0, 3, 0Bh, 0DBh                                ;#1CB5
-        db      0DBh, 0B3h, 0Ch, 29h                           ;#1CB9
-        db      6, 0, 0, 3                                     ;#1CBD
-        db      0Bh, 0DBh, 0DBh, 0B3h                          ;#1CC1
-        db      0Ch, 2Dh, 4, 0                                 ;#1CC5
-        db      0FFh, 6, 0DBh, 0Bh                             ;#1CC9
-        db      0Ch, 4Fh, 6, 0                                 ;#1CCD
-        db      1, 2, 0B3h, 3                                  ;#1CD1
-        db      0B3h, 3, 0Dh, 0Fh                              ;#1CD5
-        db      0Ch, 0, 1, 1                                   ;#1CD9
-        db      0DAh, 0Bh, 0FFh, 3                             ;#1CDD
-        db      0C4h, 0Bh, 1, 1                                ;#1CE1
-        db      0D9h, 0Bh, 0Dh, 15h                            ;#1CE5
-        db      6, 0, 0, 3                                     ;#1CE9
-        db      0Bh, 0DBh, 0DBh, 0B3h                          ;#1CED
-        db      0Dh, 19h, 0Eh, 0                               ;#1CF1
-        db      0, 3, 0Bh, 0DBh                                ;#1CF5
-        db      0DBh, 0DAh, 0FFh, 3                            ;#1CF9
-        db      0C4h, 0Bh, 1, 1                                ;#1CFD
-        db      0D9h, 0Bh, 0Dh, 21h                            ;#1D01
-        db      6, 0, 0, 3                                     ;#1D05
-        db      0Bh, 0DBh, 0DBh, 0B3h                          ;#1D09
-        db      0Dh, 25h, 6, 0                                 ;#1D0D
-        db      0, 3, 0Bh, 0DBh                                ;#1D11
-        db      0DBh, 0B3h, 0Dh, 29h                           ;#1D15
-        db      6, 0, 0, 3                                     ;#1D19
-        db      0Bh, 0DBh, 0DBh, 0B3h                          ;#1D1D
-        db      0Dh, 2Dh, 8, 0                                 ;#1D21
-        db      0, 5, 0Bh, 0DBh                                ;#1D25
-        db      0DBh, 0C4h, 0C4h, 0BFh                         ;#1D29
-        db      0Dh, 4Fh, 6, 0                                 ;#1D2D
-        db      1, 2, 0B3h, 3                                  ;#1D31
-        db      0B3h, 3, 0Eh, 0Fh                              ;#1D35
-        db      28h, 0, 1, 2                                   ;#1D39
-        db      0C0h, 0Bh, 0C4h, 0Bh                           ;#1D3D
-        db      0FFh, 6, 0DBh, 0Bh                             ;#1D41
-        db      0, 6, 0Bh, 0C0h                                ;#1D45
-        db      0C4h, 0DBh, 0DBh, 0C0h                         ;#1D49
-        db      0C4h, 0FFh, 6, 0DBh                            ;#1D4D
-        db      0Bh, 0, 0Ah, 0Bh                               ;#1D51
-        db      0C0h, 0C4h, 0DBh, 0DBh                         ;#1D55
-        db      0C0h, 0C4h, 0DBh, 0DBh                         ;#1D59
-        db      0C0h, 0C4h, 0FFh, 6                            ;#1D5D
-        db      0DBh, 0Bh, 0Eh, 35h                            ;#1D61
-        db      8, 0, 0, 5                                     ;#1D65
-        db      0Bh, 0DAh, 0C4h, 0C4h                          ;#1D69
-        db      0BFh, 0C2h, 0Eh, 3Dh                           ;#1D6D
-        db      4, 0, 1, 1                                     ;#1D71
-        db      0C2h, 0Bh, 0Eh, 40h                            ;#1D75
-        db      8, 0, 0, 5                                     ;#1D79
-        db      0Bh, 0C2h, 0DAh, 0C4h                          ;#1D7D
-        db      0C4h, 0BFh, 0Eh, 4Fh                           ;#1D81
-        db      6, 0, 1, 2                                     ;#1D85
-        db      0B3h, 3, 0B3h, 3                               ;#1D89
-        db      0Fh, 35h, 8, 0                                 ;#1D8D
-        db      0, 5, 0Bh, 0C3h                                ;#1D91
-        db      0C4h, 0C4h, 0D9h, 0B3h                         ;#1D95
-        db      0Fh, 3Dh, 4, 0                                 ;#1D99
-        db      1, 1, 0B3h, 0Bh                                ;#1D9D
-        db      0Fh, 40h, 7, 0                                 ;#1DA1
-        db      0, 4, 0Bh, 0B3h                                ;#1DA5
-        db      0C0h, 0C4h, 0C4h, 0Fh                          ;#1DA9
-        db      44h, 4, 0, 1                                   ;#1DAD
-        db      1, 0BFh, 0Bh, 0Fh                              ;#1DB1
-        db      4Fh, 6, 0, 1                                   ;#1DB5
-        db      2, 0B3h, 3, 0B3h                               ;#1DB9
-        db      3, 10h, 35h, 6                                 ;#1DBD
-        db      0, 0, 3, 0Bh                                   ;#1DC1
-        db      0C1h, 0, 0, 10h                                ;#1DC5
-        db      39h, 0Fh, 0, 0                                 ;#1DC9
-        db      0Ch, 0Bh, 0C0h, 0C4h                           ;#1DCD
-        db      0C4h, 0D9h, 0C0h, 0C4h                         ;#1DD1
-        db      0C4h, 0D9h, 0C0h, 0C4h                         ;#1DD5
-        db      0C4h, 0D9h, 10h, 4Fh                           ;#1DD9
-        db      6, 0, 1, 2                                     ;#1DDD
-        db      0B3h, 3, 0B3h, 3                               ;#1DE1
-        db      11h, 4Fh, 6, 0                                 ;#1DE5
-        db      1, 2, 0B3h, 3                                  ;#1DE9
-        db      0B3h, 3, 12h, 4Fh                              ;#1DED
-        db      6, 0, 1, 2                                     ;#1DF1
-        db      0B3h, 3, 0B3h, 3                               ;#1DF5
-        db      13h, 8, 43h, 0                                 ;#1DF9
-        db      0, 40h, 7, 4Fh                                 ;#1DFD
-        db      73h, 0, 64h, 69h                               ;#1E01
-        db      72h, 65h, 69h, 74h                             ;#1E05
-        db      6Fh, 73h, 0, 64h                               ;#1E09
-        db      65h, 0, 70h, 72h                               ;#1E0D
-        db      6Fh, 70h, 72h, 69h                             ;#1E11
-        db      65h, 64h, 61h, 64h                             ;#1E15
-        db      65h, 0, 65h, 73h                               ;#1E19
-        db      74h, 84h, 6Fh, 0                               ;#1E1D
-        db      72h, 65h, 73h, 65h                             ;#1E21
-        db      72h, 76h, 61h, 64h                             ;#1E25
-        db      6Fh, 73h, 0, 61h                               ;#1E29
-        db      0, 53h, 63h, 6Fh                               ;#1E2D
-        db      70h, 75h, 73h, 0                               ;#1E31
-        db      65h, 0, 49h, 74h                               ;#1E35
-        db      61h, 75h, 74h, 65h                             ;#1E39
-        db      63h, 2Eh, 0, 13h                               ;#1E3D
-        db      4Fh, 6, 0, 1                                   ;#1E41
-        db      2, 0B3h, 3, 0B3h                               ;#1E45
-        db      3, 14h, 4Fh, 52h                               ;#1E49
-        db      0, 1, 2, 0B3h                                  ;#1E4D
-        db      3, 0C0h, 3, 0FFh                               ;#1E51
-        db      6, 0, 70h, 0                                   ;#1E55
-        db      4, 70h, 3Ah, 0                                 ;#1E59
-        db      0, 3Ah, 0FFh, 5                                ;#1E5D
-        db      0, 70h, 1, 1                                   ;#1E61
-        db      0B3h, 70h, 0FFh, 3                             ;#1E65
-        db      0, 70h, 0, 0Ah                                 ;#1E69
-        db      70h, 53h, 49h, 53h                             ;#1E6D
-        db      4Eh, 45h, 0, 50h                               ;#1E71
-        db      4Ch, 55h, 53h, 0FFh                            ;#1E75
-        db      0Eh, 0, 70h, 1                                 ;#1E79
-        db      1, 0B3h, 70h, 0FFh                             ;#1E7D
-        db      6, 0, 70h, 1                                   ;#1E81
-        db      1, 2Fh, 70h, 0FFh                              ;#1E85
-        db      3, 0, 70h, 1                                   ;#1E89
-        db      1, 2Fh, 70h, 0FFh                              ;#1E8D
-        db      7, 0, 70h, 1                                   ;#1E91
-        db      1, 0B3h, 70h, 0FFh                             ;#1E95
-        db      0Fh, 0, 70h, 1                                 ;#1E99
-        db      1, 0D9h, 3                                     ;#1E9D
+        ; Format: FORMAT_LOGO_SCRIPT
+        ; - A record header and an op are told apart by their first two bytes, which
+        ; - the table itself keeps distinct: an op begins 00, 01 or 0FFh, and a header
+        ; - begins with its row, so every row from 2 up is a header by its first byte
+        ; - alone.  Rows 0 and 1 are the two that collide, and their columns settle it
+        ; - -- no op counts 0 cells or 79 of them.  Any of that being wrong moves a
+        ; - byte, and the rebuild is what says so.
+        ; - Cells come in ones and twos only, so there is a clause for each: rendering
+        ; - a pair as one run would let a character and its attribute merge into one
+        ; - string wherever the attribute is itself printable (70h is 'p', on row 20).
+        ; - The copyright on row 19 is the one run too wide for a 90-column line: 64
+        ; - characters, continued over three with the assembler's own backslash and cut
+        ; - at the 00 word separators so each line ends on a word.
+        LOGO_SIZE 1233                                         ;#19CD: D1 04
+        LOGO_POS 0, 0, 14                                      ;#19CF: 00 00 0E 00
+        LOGO_CELLS "┌", 3                                      ;#19D3: 01 01 DA 03
+        LOGO_REPEAT 78, "─", 3                                 ;#19D7: FF 4E C4 03
+        LOGO_CELLS "┐", 3, "│", 3                              ;#19DB: 01 02 BF 03 B3 03
+        LOGO_POS 1, 79, 6                                      ;#19E1: 01 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#19E5: 01 02 B3 03 B3 03
+        LOGO_POS 2, 79, 6                                      ;#19EB: 02 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#19EF: 01 02 B3 03 B3 03
+        LOGO_POS 3, 10, 4                                      ;#19F5: 03 0A 04 00
+        LOGO_CELLS ".", 7                                      ;#19F9: 01 01 2E 07
+        LOGO_POS 3, 15, 4                                      ;#19FD: 03 0F 04 00
+        LOGO_CELLS "┐", 7                                      ;#1A01: 01 01 BF 07
+        LOGO_POS 3, 59, 4                                      ;#1A05: 03 3B 04 00
+        LOGO_CELLS ".", 7                                      ;#1A09: 01 01 2E 07
+        LOGO_POS 3, 72, 4                                      ;#1A0D: 03 48 04 00
+        LOGO_CELLS "┐", 7                                      ;#1A11: 01 01 BF 07
+        LOGO_POS 3, 79, 6                                      ;#1A15: 03 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1A19: 01 02 B3 03 B3 03
+        LOGO_POS 4, 6, 13                                      ;#1A1F: 04 06 0D 00
+        LOGO_RUN 7, "┌──┐┐┌──┐┼"                               ;#1A23: 00 0A 07 DA C4 C4 BF BF DA C4 C4 BF C5
+        LOGO_POS 4, 18, 16                                     ;#1A30: 04 12 10 00
+        LOGO_RUN 7, "┌──┐┬─┬─┐┌──┐"                            ;#1A34: 00 0D 07 DA C4 C4 BF C2 C4 C2 C4 BF DA C4 C4 BF
+        LOGO_POS 4, 35, 41                                     ;#1A44: 04 23 29 00
+        LOGO_RUN 7, "┌──┐┌──┐┌──┐┬──┐┌──┐┌──┐┐┌──┐┬──┐┌──┐│"   ;#1A48: 00 26 07 DA C4 C4 BF DA C4 C4 BF DA C4 C4 BF C2 C4 C4 BF DA C4 C4 BF DA C4 C4 BF BF DA C4 C4 BF C2 C4 C4 BF DA C4 C4 BF B3
+        LOGO_POS 4, 79, 6                                      ;#1A71: 04 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1A75: 01 02 B3 03 B3 03
+        LOGO_POS 5, 6, 13                                      ;#1A7B: 05 06 0D 00
+        LOGO_RUN 7, "└──┐│└──┐│"                               ;#1A7F: 00 0A 07 C0 C4 C4 BF B3 C0 C4 C4 BF B3
+        LOGO_POS 5, 18, 8                                      ;#1A8C: 05 12 08 00
+        LOGO_RUN 7, "├──┘│"                                    ;#1A90: 00 05 07 C3 C4 C4 D9 B3
+        LOGO_POS 5, 24, 4                                      ;#1A98: 05 18 04 00
+        LOGO_CELLS "│", 7                                      ;#1A9C: 01 01 B3 07
+        LOGO_POS 5, 26, 8                                      ;#1AA0: 05 1A 08 00
+        LOGO_RUN 7, "│┌──┤"                                    ;#1AA4: 00 05 07 B3 DA C4 C4 B4
+        LOGO_POS 5, 35, 4                                      ;#1AAC: 05 23 04 00
+        LOGO_CELLS "│", 7                                      ;#1AB0: 01 01 B3 07
+        LOGO_POS 5, 38, 6                                      ;#1AB4: 05 26 06 00
+        LOGO_CELLS "│", 7, "│", 7                              ;#1AB8: 01 02 B3 07 B3 07
+        LOGO_POS 5, 42, 9                                      ;#1ABE: 05 2A 09 00
+        LOGO_RUN 7, "│├──┘│"                                   ;#1AC2: 00 06 07 B3 C3 C4 C4 D9 B3
+        LOGO_POS 5, 51, 8                                      ;#1ACB: 05 33 08 00
+        LOGO_RUN 7, "┌──┤│"                                    ;#1ACF: 00 05 07 DA C4 C4 B4 B3
+        LOGO_POS 5, 59, 6                                      ;#1AD7: 05 3B 06 00
+        LOGO_CELLS "│", 7, "│", 7                              ;#1ADB: 01 02 B3 07 B3 07
+        LOGO_POS 5, 63, 6                                      ;#1AE1: 05 3F 06 00
+        LOGO_CELLS "│", 7, "│", 7                              ;#1AE5: 01 02 B3 07 B3 07
+        LOGO_POS 5, 67, 9                                      ;#1AEB: 05 43 09 00
+        LOGO_RUN 7, "│┌──┤│"                                   ;#1AEF: 00 06 07 B3 DA C4 C4 B4 B3
+        LOGO_POS 5, 79, 6                                      ;#1AF8: 05 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1AFC: 01 02 B3 03 B3 03
+        LOGO_POS 6, 6, 20                                      ;#1B02: 06 06 14 00
+        LOGO_RUN 7, "└──┘┴└──┘└─┘└──┘┴"                        ;#1B06: 00 11 07 C0 C4 C4 D9 C1 C0 C4 C4 D9 C0 C4 D9 C0 C4 C4 D9 C1
+        LOGO_POS 6, 24, 10                                     ;#1B1A: 06 18 0A 00
+        LOGO_RUN 7, "┴", 0, "└└──┴"                            ;#1B1E: 00 07 07 C1 00 C0 C0 C4 C4 C1
+        LOGO_POS 6, 35, 16                                     ;#1B28: 06 23 10 00
+        LOGO_RUN 7, "└──┘├──┘└──┘┴"                            ;#1B2C: 00 0D 07 C0 C4 C4 D9 C3 C4 C4 D9 C0 C4 C4 D9 C1
+        LOGO_POS 6, 51, 17                                     ;#1B3C: 06 33 11 00
+        LOGO_RUN 7, "└──┴└──┘┴└──┘┴"                           ;#1B40: 00 0E 07 C0 C4 C4 C1 C0 C4 C4 D9 C1 C0 C4 C4 D9 C1
+        LOGO_POS 6, 67, 9                                      ;#1B51: 06 43 09 00
+        LOGO_RUN 7, "└└──┘└"                                   ;#1B55: 00 06 07 C0 C0 C4 C4 D9 C0
+        LOGO_POS 6, 79, 6                                      ;#1B5E: 06 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1B62: 01 02 B3 03 B3 03
+        LOGO_POS 7, 39, 4                                      ;#1B68: 07 27 04 00
+        LOGO_CELLS "┴", 7                                      ;#1B6C: 01 01 C1 07
+        LOGO_POS 7, 79, 6                                      ;#1B70: 07 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1B74: 01 02 B3 03 B3 03
+        LOGO_POS 8, 79, 6                                      ;#1B7A: 08 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1B7E: 01 02 B3 03 B3 03
+        LOGO_POS 9, 15, 12                                     ;#1B84: 09 0F 0C 00
+        LOGO_CELLS "┌", 0Bh                                    ;#1B88: 01 01 DA 0B
+        LOGO_REPEAT 5, "─", 0Bh                                ;#1B8C: FF 05 C4 0B
+        LOGO_CELLS "┐", 0Bh                                    ;#1B90: 01 01 BF 0B
+        LOGO_POS 9, 23, 6                                      ;#1B94: 09 17 06 00
+        LOGO_RUN 0Bh, "┌─┐"                                    ;#1B98: 00 03 0B DA C4 BF
+        LOGO_POS 9, 27, 12                                     ;#1B9E: 09 1B 0C 00
+        LOGO_CELLS "┌", 0Bh                                    ;#1BA2: 01 01 DA 0B
+        LOGO_REPEAT 5, "─", 0Bh                                ;#1BA6: FF 05 C4 0B
+        LOGO_CELLS "┐", 0Bh                                    ;#1BAA: 01 01 BF 0B
+        LOGO_POS 9, 35, 12                                     ;#1BAE: 09 23 0C 00
+        LOGO_CELLS "┌", 0Bh                                    ;#1BB2: 01 01 DA 0B
+        LOGO_REPEAT 5, "─", 0Bh                                ;#1BB6: FF 05 C4 0B
+        LOGO_CELLS "┐", 0Bh                                    ;#1BBA: 01 01 BF 0B
+        LOGO_POS 9, 43, 12                                     ;#1BBE: 09 2B 0C 00
+        LOGO_CELLS "┌", 0Bh                                    ;#1BC2: 01 01 DA 0B
+        LOGO_REPEAT 5, "─", 0Bh                                ;#1BC6: FF 05 C4 0B
+        LOGO_CELLS "┐", 0Bh                                    ;#1BCA: 01 01 BF 0B
+        LOGO_POS 9, 79, 6                                      ;#1BCE: 09 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1BD2: 01 02 B3 03 B3 03
+        LOGO_POS 10, 15, 4                                     ;#1BD8: 0A 0F 04 00
+        LOGO_CELLS "│", 0Bh                                    ;#1BDC: 01 01 B3 0B
+        LOGO_POS 10, 17, 8                                     ;#1BE0: 0A 11 08 00
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1BE4: FF 06 DB 0B
+        LOGO_CELLS "│", 0Bh                                    ;#1BE8: 01 01 B3 0B
+        LOGO_POS 10, 25, 6                                     ;#1BEC: 0A 19 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1BF0: 00 03 0B DB DB B3
+        LOGO_POS 10, 29, 8                                     ;#1BF6: 0A 1D 08 00
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1BFA: FF 06 DB 0B
+        LOGO_CELLS "│", 0Bh                                    ;#1BFE: 01 01 B3 0B
+        LOGO_POS 10, 37, 8                                     ;#1C02: 0A 25 08 00
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1C06: FF 06 DB 0B
+        LOGO_CELLS "│", 0Bh                                    ;#1C0A: 01 01 B3 0B
+        LOGO_POS 10, 45, 4                                     ;#1C0E: 0A 2D 04 00
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1C12: FF 06 DB 0B
+        LOGO_POS 10, 79, 6                                     ;#1C16: 0A 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1C1A: 01 02 B3 03 B3 03
+        LOGO_POS 11, 15, 4                                     ;#1C20: 0B 0F 04 00
+        LOGO_CELLS "│", 0Bh                                    ;#1C24: 01 01 B3 0B
+        LOGO_POS 11, 17, 8                                     ;#1C28: 0B 11 08 00
+        LOGO_RUN 0Bh, "██──┐"                                  ;#1C2C: 00 05 0B DB DB C4 C4 BF
+        LOGO_POS 11, 23, 4                                     ;#1C34: 0B 17 04 00
+        LOGO_CELLS "│", 0Bh                                    ;#1C38: 01 01 B3 0B
+        LOGO_POS 11, 25, 6                                     ;#1C3C: 0B 19 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1C40: 00 03 0B DB DB B3
+        LOGO_POS 11, 29, 8                                     ;#1C46: 0B 1D 08 00
+        LOGO_RUN 0Bh, "██──┐"                                  ;#1C4A: 00 05 0B DB DB C4 C4 BF
+        LOGO_POS 11, 35, 4                                     ;#1C52: 0B 23 04 00
+        LOGO_CELLS "│", 0Bh                                    ;#1C56: 01 01 B3 0B
+        LOGO_POS 11, 37, 6                                     ;#1C5A: 0B 25 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1C5E: 00 03 0B DB DB B3
+        LOGO_POS 11, 41, 6                                     ;#1C64: 0B 29 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1C68: 00 03 0B DB DB B3
+        LOGO_POS 11, 45, 6                                     ;#1C6E: 0B 2D 06 00
+        LOGO_RUN 0Bh, "██┘"                                    ;#1C72: 00 03 0B DB DB D9
+        LOGO_POS 11, 49, 6                                     ;#1C78: 0B 31 06 00
+        LOGO_CELLS "█", 0Bh, "█", 0Bh                          ;#1C7C: 01 02 DB 0B DB 0B
+        LOGO_POS 11, 79, 6                                     ;#1C82: 0B 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1C86: 01 02 B3 03 B3 03
+        LOGO_POS 12, 15, 14                                    ;#1C8C: 0C 0F 0E 00
+        LOGO_CELLS "└", 0Bh, "─", 0Bh                          ;#1C90: 01 02 C0 0B C4 0B
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1C96: FF 06 DB 0B
+        LOGO_CELLS "│", 0Bh                                    ;#1C9A: 01 01 B3 0B
+        LOGO_POS 12, 25, 15                                    ;#1C9E: 0C 19 0F 00
+        LOGO_RUN 0Bh, "██└─"                                   ;#1CA2: 00 04 0B DB DB C0 C4
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1CA9: FF 06 DB 0B
+        LOGO_CELLS "│", 0Bh                                    ;#1CAD: 01 01 B3 0B
+        LOGO_POS 12, 37, 6                                     ;#1CB1: 0C 25 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1CB5: 00 03 0B DB DB B3
+        LOGO_POS 12, 41, 6                                     ;#1CBB: 0C 29 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1CBF: 00 03 0B DB DB B3
+        LOGO_POS 12, 45, 4                                     ;#1CC5: 0C 2D 04 00
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1CC9: FF 06 DB 0B
+        LOGO_POS 12, 79, 6                                     ;#1CCD: 0C 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1CD1: 01 02 B3 03 B3 03
+        LOGO_POS 13, 15, 12                                    ;#1CD7: 0D 0F 0C 00
+        LOGO_CELLS "┌", 0Bh                                    ;#1CDB: 01 01 DA 0B
+        LOGO_REPEAT 3, "─", 0Bh                                ;#1CDF: FF 03 C4 0B
+        LOGO_CELLS "┘", 0Bh                                    ;#1CE3: 01 01 D9 0B
+        LOGO_POS 13, 21, 6                                     ;#1CE7: 0D 15 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1CEB: 00 03 0B DB DB B3
+        LOGO_POS 13, 25, 14                                    ;#1CF1: 0D 19 0E 00
+        LOGO_RUN 0Bh, "██┌"                                    ;#1CF5: 00 03 0B DB DB DA
+        LOGO_REPEAT 3, "─", 0Bh                                ;#1CFB: FF 03 C4 0B
+        LOGO_CELLS "┘", 0Bh                                    ;#1CFF: 01 01 D9 0B
+        LOGO_POS 13, 33, 6                                     ;#1D03: 0D 21 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1D07: 00 03 0B DB DB B3
+        LOGO_POS 13, 37, 6                                     ;#1D0D: 0D 25 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1D11: 00 03 0B DB DB B3
+        LOGO_POS 13, 41, 6                                     ;#1D17: 0D 29 06 00
+        LOGO_RUN 0Bh, "██│"                                    ;#1D1B: 00 03 0B DB DB B3
+        LOGO_POS 13, 45, 8                                     ;#1D21: 0D 2D 08 00
+        LOGO_RUN 0Bh, "██──┐"                                  ;#1D25: 00 05 0B DB DB C4 C4 BF
+        LOGO_POS 13, 79, 6                                     ;#1D2D: 0D 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1D31: 01 02 B3 03 B3 03
+        LOGO_POS 14, 15, 40                                    ;#1D37: 0E 0F 28 00
+        LOGO_CELLS "└", 0Bh, "─", 0Bh                          ;#1D3B: 01 02 C0 0B C4 0B
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1D41: FF 06 DB 0B
+        LOGO_RUN 0Bh, "└─██└─"                                 ;#1D45: 00 06 0B C0 C4 DB DB C0 C4
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1D4E: FF 06 DB 0B
+        LOGO_RUN 0Bh, "└─██└─██└─"                             ;#1D52: 00 0A 0B C0 C4 DB DB C0 C4 DB DB C0 C4
+        LOGO_REPEAT 6, "█", 0Bh                                ;#1D5F: FF 06 DB 0B
+        LOGO_POS 14, 53, 8                                     ;#1D63: 0E 35 08 00
+        LOGO_RUN 0Bh, "┌──┐┬"                                  ;#1D67: 00 05 0B DA C4 C4 BF C2
+        LOGO_POS 14, 61, 4                                     ;#1D6F: 0E 3D 04 00
+        LOGO_CELLS "┬", 0Bh                                    ;#1D73: 01 01 C2 0B
+        LOGO_POS 14, 64, 8                                     ;#1D77: 0E 40 08 00
+        LOGO_RUN 0Bh, "┬┌──┐"                                  ;#1D7B: 00 05 0B C2 DA C4 C4 BF
+        LOGO_POS 14, 79, 6                                     ;#1D83: 0E 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1D87: 01 02 B3 03 B3 03
+        LOGO_POS 15, 53, 8                                     ;#1D8D: 0F 35 08 00
+        LOGO_RUN 0Bh, "├──┘│"                                  ;#1D91: 00 05 0B C3 C4 C4 D9 B3
+        LOGO_POS 15, 61, 4                                     ;#1D99: 0F 3D 04 00
+        LOGO_CELLS "│", 0Bh                                    ;#1D9D: 01 01 B3 0B
+        LOGO_POS 15, 64, 7                                     ;#1DA1: 0F 40 07 00
+        LOGO_RUN 0Bh, "│└──"                                   ;#1DA5: 00 04 0B B3 C0 C4 C4
+        LOGO_POS 15, 68, 4                                     ;#1DAC: 0F 44 04 00
+        LOGO_CELLS "┐", 0Bh                                    ;#1DB0: 01 01 BF 0B
+        LOGO_POS 15, 79, 6                                     ;#1DB4: 0F 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1DB8: 01 02 B3 03 B3 03
+        LOGO_POS 16, 53, 6                                     ;#1DBE: 10 35 06 00
+        LOGO_RUN 0Bh, "┴", 0, 0                                ;#1DC2: 00 03 0B C1 00 00
+        LOGO_POS 16, 57, 15                                    ;#1DC8: 10 39 0F 00
+        LOGO_RUN 0Bh, "└──┘└──┘└──┘"                           ;#1DCC: 00 0C 0B C0 C4 C4 D9 C0 C4 C4 D9 C0 C4 C4 D9
+        LOGO_POS 16, 79, 6                                     ;#1DDB: 10 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1DDF: 01 02 B3 03 B3 03
+        LOGO_POS 17, 79, 6                                     ;#1DE5: 11 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1DE9: 01 02 B3 03 B3 03
+        LOGO_POS 18, 79, 6                                     ;#1DEF: 12 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1DF3: 01 02 B3 03 B3 03
+        LOGO_POS 19, 8, 67                                     ;#1DF9: 13 08 43 00
+        LOGO_RUN 7, "Os", 0, "direitos", 0, "de", 0, "propriedade", 0, \  ;#1DFD: 00 40 07 4F 73 00 64 69 72 65 69 74 6F 73 00 64 65 00 70 72 6F 70 72 69 65 64 61 64 65 00 65 73 74 84 6F 00 72 65 73 65 72 76 61 64 6F 73 00 61 00 53 63 6F 70 75 73 00 65 00 49 74 61 75 74 65 63 2E 00
+        "estão", 0, "reservados", 0, "a", 0, \                 ;#1E1B
+        "Scopus", 0, "e", 0, "Itautec.", 0                     ;#1E2E
+        LOGO_POS 19, 79, 6                                     ;#1E40: 13 4F 06 00
+        LOGO_CELLS "│", 3, "│", 3                              ;#1E44: 01 02 B3 03 B3 03
+        LOGO_POS 20, 79, 82                                    ;#1E4A: 14 4F 52 00
+        LOGO_CELLS "│", 3, "└", 3                              ;#1E4E: 01 02 B3 03 C0 03
+        LOGO_REPEAT 6, 0, 70h                                  ;#1E54: FF 06 00 70
+        LOGO_RUN 70h, ":", 0, 0, ":"                           ;#1E58: 00 04 70 3A 00 00 3A
+        LOGO_REPEAT 5, 0, 70h                                  ;#1E5F: FF 05 00 70
+        LOGO_CELLS "│", 70h                                    ;#1E63: 01 01 B3 70
+        LOGO_REPEAT 3, 0, 70h                                  ;#1E67: FF 03 00 70
+        LOGO_RUN 70h, "SISNE", 0, "PLUS"                       ;#1E6B: 00 0A 70 53 49 53 4E 45 00 50 4C 55 53
+        LOGO_REPEAT 14, 0, 70h                                 ;#1E78: FF 0E 00 70
+        LOGO_CELLS "│", 70h                                    ;#1E7C: 01 01 B3 70
+        LOGO_REPEAT 6, 0, 70h                                  ;#1E80: FF 06 00 70
+        LOGO_CELLS "/", 70h                                    ;#1E84: 01 01 2F 70
+        LOGO_REPEAT 3, 0, 70h                                  ;#1E88: FF 03 00 70
+        LOGO_CELLS "/", 70h                                    ;#1E8C: 01 01 2F 70
+        LOGO_REPEAT 7, 0, 70h                                  ;#1E90: FF 07 00 70
+        LOGO_CELLS "│", 70h                                    ;#1E94: 01 01 B3 70
+        LOGO_REPEAT 15, 0, 70h                                 ;#1E98: FF 0F 00 70
+        LOGO_CELLS "┘", 3                                      ;#1E9C: 01 01 D9 03
         db      11 dup (0)
 
 SCRIPT_NEXT_BYTE:

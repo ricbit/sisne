@@ -640,6 +640,10 @@ CODEPAGE_BYTES = {
     "\u00e7": 0x87, "\u00c3": 0x8E, "\u00c9": 0x90, "\u00e1": 0xA0,
     "\u00ed": 0xA1, "\u00f3": 0xA2, "\u00fa": 0xA3,
     "\u00ab": 0xAE, "\u00bb": 0xAF,
+    # The sign-on screen's line-drawing and block cells.
+    "\u2502": 0xB3, "\u2524": 0xB4, "\u2510": 0xBF, "\u2514": 0xC0,
+    "\u2534": 0xC1, "\u252c": 0xC2, "\u251c": 0xC3, "\u2500": 0xC4,
+    "\u253c": 0xC5, "\u2518": 0xD9, "\u250c": 0xDA, "\u2588": 0xDB,
 }
 
 

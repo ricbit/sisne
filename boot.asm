@@ -1,6 +1,6 @@
 ; SISNE (PC/8086, SCOPUS, 1983) — disk 1 boot sector
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-07-29
+; Last update at 2026-07-31
 ;
         .8086
         .model tiny
@@ -71,7 +71,7 @@ SISNE_DRIVE_NUMBER:
         db      0                                              ;#0022: 00
 
 SISNE_HEAD_NUMBER:
-        ; Head byte — written by LBA_TO_CHS so a word-read of DRIVE_NUMBER packs DL/DH
+        ; Head byte — LBA_TO_CHS writes it so word-reading SISNE_DRIVE_NUMBER packs DL/DH
         db      0                                              ;#0023: 00
 
 INITIAL_LBA_SECTOR:
