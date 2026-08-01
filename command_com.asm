@@ -1,6 +1,6 @@
 ; SISNE COMMAND.COM V3.30 R05 (03.Dez.90) — disk 1 command interpreter
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-07-31
+; Last update at 2026-08-01
 ;
         .8086
         .model tiny

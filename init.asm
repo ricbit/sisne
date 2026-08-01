@@ -1,6 +1,6 @@
 ; SISNE (PC/8086, SCOPUS, 1983) — disk 1 init (LBA 12, first data sector loaded by the boot)
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-07-31
+; Last update at 2026-08-01
 ;
         .8086
         .model tiny

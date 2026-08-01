@@ -1,6 +1,6 @@
 ; SISNE (PC/8086, SCOPUS, 1983) — disk 1 main program (SISNE.SIS, loaded by init)
 ; Disassembled by Ricardo Bittencourt (bluepenguin@gmail.com)
-; Last update at 2026-07-31
+; Last update at 2026-08-01
 ;
         .8086
         .model tiny
@@ -57,7 +57,7 @@ NET_APPEND_ACTIVE                equ     002E2h    ; uchar  (compiled_headers)
 NET_REDIR_PRESENT                equ     002E3h    ; uchar  (compiled_headers)
 CURRENT_DRIVE                    equ     002E4h    ; uchar  (compiled_headers)
 CTRL_BREAK_FLAG                  equ     002E5h    ; AH=33h Ctrl-Break checking on/off
-FN5C_LOCK_FLAG                   equ     00333h    ; AH=5Ch record-locking state bit, set by DOS_FN_5C_SET_LOCK_FLAG
+MACHINE_NAME_VALID               equ     00333h    ; Set by AH=5Eh AL=1; AL=0 hands it back to the caller in CH
 BRASCII_MODE                     equ     00334h    ; BRASCII/line-ending mode — picks the GET_LINE_ENDING_TYPE table
 LINE_END_MODE                    equ     00336h    ; AH=37h AL=4/5 line-end mode byte; subfn 22 also gets and sets it
 DOT_TEMPLATE                     equ     00338h    ; uchar[0x0B]  (compiled_headers)
@@ -94,7 +94,7 @@ DRIVER_TABLE                     equ     00418h    ; struct file_block far *  (c
 CFG_FCBS_PROTECTED               equ     0041Ch    ; SECOND half of the FCBS= "m,n" pair — n, the protected count
 DRIVE_COUNT                      equ     0041Eh    ; Number of drives ADD_DPB_TO_CHAIN has installed; GET_DRIVE_COUNT reads it
 SYS_LAST_DRIVE_BYTE              equ     0041Fh    ; Byte mirror of SYS_LAST_DRIVE (low byte only)
-DRIVER_COUNT                     equ     00424h    ; FIRST half of the FCBS= "m,n" pair — m, the FCB record count
+FCBS_RECORD_COUNT                equ     00424h    ; FIRST half of the FCBS= "m,n" pair — m, the FCB record count
 MCB_POOL_COUNT                   equ     00426h    ; Paragraphs GROW_MCB_POOL has added to the pool
 DISK_REQ_LEN                     equ     0043Eh    ; Disk request header +00 — packet length (0Fh or 16h)
 DISK_REQ_UNIT                    equ     0043Fh    ; Disk request header +01 — unit within the driver
@@ -767,7 +767,7 @@ LINE_POS                         equ     01576h    ; uint  (compiled_headers)
         extern unsigned char SUBST_TABLE[] __addr__(0x1548);
         extern unsigned int DRIVER_SLOT_CACHE __addr__(0x1568);
         extern unsigned int CFG_FCBS_PROTECTED __addr__(0x041C);
-        extern unsigned int DRIVER_COUNT __addr__(0x0424);
+        extern unsigned int FCBS_RECORD_COUNT __addr__(0x0424);
         extern unsigned char VERIFY_FLAG __addr__(0x0456);
         extern int PARSE_TOKEN_START __addr__(0x0C22);
         extern int MAIN_LOOP_INDEX __addr__(0x0E24);
@@ -970,7 +970,7 @@ LINE_POS                         equ     01576h    ; uint  (compiled_headers)
         extern void dos_fn_46_dup2_handle(struct int21_regs far *regs) __addr__(0x384A);
         extern void dos_fn_45_dup_handle(struct int21_regs far *regs) __addr__(0x38BF);
         extern void dos_fn_44_ioctl(struct int21_regs far *regs) __addr__(0x3951);
-        extern void dos_fn_68_reserved_68(struct int21_regs far *regs) __addr__(0x3E76);
+        extern void dos_fn_68_commit_file(struct int21_regs far *regs) __addr__(0x3E76);
         extern void save_dos_return_frame(unsigned char far *v) __addr__(0x3ED3);
         extern void set_fcb_file_position(int drive, long value) __addr__(0x3EE5);
         extern void install_first_driver(void) __addr__(0x3F11);
@@ -1525,7 +1525,7 @@ MAIN_ENTRY:
                             continue;
                         }
                         skip_alnum();
-                        DRIVER_COUNT = atoi_decimal();
+                        FCBS_RECORD_COUNT = atoi_decimal();
                         if (skip_whitespace() != 0x2C) {
                             print_error(MAIN_LOOP_INDEX);
                             continue;
@@ -3323,7 +3323,7 @@ OPEN_FCB_BY_DRIVE:
             unsigned int i; /* bp-2 */
 
             if (SHIFT_STICKY == 0xFFFF) {
-                for (i = 0; i < DRIVER_COUNT; i++) {
+                for (i = 0; i < FCBS_RECORD_COUNT; i++) {
                     /* the `>>=` opassign form only reaches the raw-cast spelling;
                      * this is DRIVER_TABLE->b_rec[i].s_offlo (block base + 6 + 15h) */
                     *((unsigned char far *)DRIVER_TABLE + 0x35 * i + 0x1B) >>= 1;
@@ -5261,11 +5261,11 @@ DOS_FN_44_IOCTL:
         }
         ;@endcompiled
 
-DOS_FN_68_RESERVED_68:
-        ; INT 21h AH=68h handler (reserved 68)
-        ;@compiled dos_fn_68_reserved_68 3E76 93
+DOS_FN_68_COMMIT_FILE:
+        ; INT 21h AH=68h handler (commit file)
+        ;@compiled dos_fn_68_commit_file 3E76 93
         /*
-         * DOS_FN_68_RESERVED_68 @ 0x3E76 in SISNE.SIS (93 bytes).
+         * DOS_FN_68_COMMIT_FILE @ 0x3E76 in SISNE.SIS (93 bytes).
          *
          * INT 21h AH=68h "Commit File" (fflush): resolve the FCB from its handle
          * (FCB+2); on failure report error 6.  Otherwise stamp the current DOS
@@ -5274,7 +5274,7 @@ DOS_FN_68_RESERVED_68:
          * SET_INT21_RESULT (the two calls share their tail).
          */
 
-        void dos_fn_68_reserved_68(struct int21_regs far *regs) __addr__(0x3E76)
+        void dos_fn_68_commit_file(struct int21_regs far *regs) __addr__(0x3E76)
         {
             struct system_file_table far *sft; /* bp-4  */
             unsigned int fdate;                /* bp-6  */
@@ -5410,7 +5410,7 @@ CLOSE_PSP_FILES:
             FP_OFF(SDA_PTR) = 0;
             if (NETWORK_ACTIVE != 0) {
                 si = 0;
-                while (si < DRIVER_COUNT) {
+                while (si < FCBS_RECORD_COUNT) {
                     sft = &DRIVER_TABLE->b_rec[si];
                     if (sft->s_refcnt != 0 && sft->s_ownpsp == psp) {
                         if ((sft->s_res & 0x80) != 0) {
@@ -5887,10 +5887,10 @@ DOS_INT21_FN_TABLE:
         dw      DOS_FN_51_GET_PSP                              ;#4499: F9 C2
         dw      DOS_FN_RESERVED_STUB                           ;#449B: C7 45
         dw      DOS_FN_RESERVED_STUB                           ;#449D: C7 45
-        dw      DOS_FN_65_RESERVED_65                          ;#449F: 2A D0
-        dw      DOS_FN_66_RESERVED_66                          ;#44A1: 07 D0
-        dw      DOS_FN_67_RESERVED_67                          ;#44A3: BD C9
-        dw      DOS_FN_68_RESERVED_68                          ;#44A5: 76 3E
+        dw      DOS_FN_65_GET_EXT_COUNTRY_INFO                 ;#449F: 2A D0
+        dw      DOS_FN_66_GET_SET_CODE_PAGE                    ;#44A1: 07 D0
+        dw      DOS_FN_67_SET_HANDLE_COUNT                     ;#44A3: BD C9
+        dw      DOS_FN_68_COMMIT_FILE                          ;#44A5: 76 3E
         xor     cx, cx                                         ;#44A7: 31 C9
         mov     ah, 69h                                        ;#44A9: B4 69
         jmp     short DOS_INT21_PUSH_REGS                      ;#44AB: EB 24
@@ -6158,15 +6158,15 @@ DOS_FN_5E_NETWORK_FN:
         ; INT 21h AH=5Eh handler (network fn)
         cmp     al, 1                                          ;#4624: 3C 01
         jnbe    short 4653h                                    ;#4626: 77 2B
-DOS_FN_5C_ENTRY:
-        ; mov bp,sp; les bp,[bp+2]; mov bx,es; check al — sub-fn 0/1 dispatch
+DOS_FN_5E_MACHINE_NAME:
+        ; AH=5Eh AL<=1 — caller frame into ES:BP, then get (AL=0) or set (AL=1) the name
         mov     bp, sp                                         ;#4628: 8B EC
         les     bp, [bp+2]                                     ;#462A: C4 6E 02
         mov     bx, es                                         ;#462D: 8C C3
         push    bx                                             ;#462F: 53
         cmp     al, 1                                          ;#4630: 3C 01
-        jz      short DOS_FN_5C_SET_LOCK_FLAG                  ;#4632: 74 22
-        mov     ah, [FN5C_LOCK_FLAG]                           ;#4634: 8A 26 33 03
+        jz      short DOS_FN_5E_SET_MACHINE_NAME               ;#4632: 74 22
+        mov     ah, [MACHINE_NAME_VALID]                       ;#4634: 8A 26 33 03
         mov     [es:bp+4], ax                                  ;#4638: 26 89 46 04
         mov     di, [es:bp+6]                                  ;#463C: 26 8B 7E 06
         mov     ax, [es:bp+0Eh]                                ;#4640: 26 8B 46 0E
@@ -6175,12 +6175,12 @@ DOS_FN_5C_ENTRY:
         mov     ds, ax                                         ;#4649: 8E D8
         mov     si, 323h                                       ;#464B: BE 23 03
         mov     cx, 10h                                        ;#464E: B9 10 00
-        jmp     short DOS_FN_5C_REP_MOVSB                      ;#4651: EB 1D
+        jmp     short DOS_FN_5E_NAME_COPY                      ;#4651: EB 1D
         jmp     near DOS_FN_5F_NETWORK_REDIR                   ;#4653: E9 92 00
 
-DOS_FN_5C_SET_LOCK_FLAG:
-        ; Sub-fn 1 — or byte FN5C_LOCK_FLAG,1 (set Ctrl-S/lock flag); copy 0Fh bytes
-        or      byte [FN5C_LOCK_FLAG], 1                       ;#4656: 80 0E 33 03 01
+DOS_FN_5E_SET_MACHINE_NAME:
+        ; Sub-fn 1 — mark MACHINE_NAME_VALID and take 0Fh bytes from the caller's DS:DX
+        or      byte [MACHINE_NAME_VALID], 1                   ;#4656: 80 0E 33 03 01
         mov     di, 323h                                       ;#465B: BF 23 03
         mov     ax, [es:bp+0Eh]                                ;#465E: 26 8B 46 0E
         mov     ds, ax                                         ;#4662: 8E D8
@@ -6188,15 +6188,15 @@ DOS_FN_5C_SET_LOCK_FLAG:
         mov     ax, 0FA1h                                      ;#4668: B8 A1 0F
         mov     es, ax                                         ;#466B: 8E C0
         mov     cx, 0Fh                                        ;#466D: B9 0F 00
-DOS_FN_5C_REP_MOVSB:
-        ; Common cld; rep movsb — copy 0Fh bytes to/from caller buffer
+DOS_FN_5E_NAME_COPY:
+        ; Common cld; rep movsb — the name copy, 10h bytes out to the caller or 0Fh in
         cld                                                    ;#4670: FC
         rep     movsb                                          ;#4671: F3 A4
         pop     bx                                             ;#4673: 5B
         mov     es, bx                                         ;#4674: 8E C3
         xor     ax, ax                                         ;#4676: 33 C0
-DOS_FN_5C_CLEAR_RESULT:
-        ; mov [es:bp]=0 (clear caller AX); and FCB+16h bit 0 clear
+DOS_FN_CLEAR_RESULT:
+        ; Clear the caller's AX and carry bit — shared by AH=5Eh and the 5Ch redirector
         mov     [es:bp], ax                                    ;#4678: 26 89 46 00
         and     word [es:bp+16h], 0FFFEh                       ;#467C: 26 81 66 16 FE FF
         ret                                                    ;#4682: C3
@@ -6288,7 +6288,7 @@ DOS_FN_5C_INT2F_REDIR:
         jb      short DOS_FN_5F_RAISE_ERR_1                    ;#4726: 72 C3
         mov     bp, sp                                         ;#4728: 8B EC
         les     bp, [bp+2]                                     ;#472A: C4 6E 02
-        jmp     near DOS_FN_5C_CLEAR_RESULT                    ;#472D: E9 48 FF
+        jmp     near DOS_FN_CLEAR_RESULT                       ;#472D: E9 48 FF
 
 REDIR_FLAG_GET_SET:
         ; subfn 16 — DL picks one of the four 2E0h flags, DH the operation
@@ -6321,24 +6321,24 @@ GET_FCBS_PROTECTED:
         ; subfn 17 — return CFG_FCBS_PROTECTED, 0FFh when its high byte is set
         mov     ax, [CFG_FCBS_PROTECTED]                       ;#4761: A1 1C 04
         or      ah, ah                                         ;#4764: 0A E4
-        jz      short DOS_FN_5E_GET_DRIVER_COUNT               ;#4766: 74 02
+        jz      short GET_FCBS_TOTAL                           ;#4766: 74 02
         mov     al, 0FFh                                       ;#4768: B0 FF
-DOS_FN_5E_GET_DRIVER_COUNT:
-        ; mov bx,DRIVER_COUNT driver-count word; set AH=FFh if BH non-zero
-        mov     bx, [DRIVER_COUNT]                             ;#476A: 8B 1E 24 04
+GET_FCBS_TOTAL:
+        ; subfn 17 tail — AH = the FCBS total from FCBS_RECORD_COUNT, 0FFh if it overflows
+        mov     bx, [FCBS_RECORD_COUNT]                        ;#476A: 8B 1E 24 04
         mov     ah, bl                                         ;#476E: 8A E3
         or      bh, bh                                         ;#4770: 0A FF
-        jz      short DOS_FN_5E_AH_FF_BRANCH                   ;#4772: 74 02
+        jz      short GET_FCBS_STORE_JMP                       ;#4772: 74 02
         mov     ah, 0FFh                                       ;#4774: B4 FF
-DOS_FN_5E_AH_FF_BRANCH:
-        ; AH=FFh path — fall through to common machine-name lookup return
-        jmp     short DOS_FN_5E_STORE_RESULT                   ;#4776: EB 03
+GET_FCBS_STORE_JMP:
+        ; Both FCBS paths meet — jmp to the shared subfn store
+        jmp     short SUBFN_STORE_AX_RET                       ;#4776: EB 03
 
 GET_MCB_CHAIN_HEAD:
         ; subfn 18 — return the MCB chain head segment
         mov     ax, [MCB_CHAIN_HEAD]                           ;#4778: A1 FC 03
-DOS_FN_5E_STORE_RESULT:
-        ; mov bp,sp / les bp,[bp+2] / write AX into caller [es:bp]; common ret
+SUBFN_STORE_AX_RET:
+        ; Write AX into the caller's frame at [es:bp] and ret — shared by subfns 17 and 18
         mov     bp, sp                                         ;#477B: 8B EC
         les     bp, [bp+2]                                     ;#477D: C4 6E 02
         mov     [es:bp], ax                                    ;#4780: 26 89 46 00
@@ -6386,41 +6386,41 @@ GET_SET_LINE_END_MODE:
         ; subfn 22 — get or set LINE_END_MODE, DL selects which
         mov     bx, 336h                                       ;#47D2: BB 36 03
         or      dl, dl                                         ;#47D5: 0A D2
-        jz      short DOS_FN_5E_GET_BYTE                       ;#47D7: 74 15
+        jz      short LINE_END_GET_BYTE                        ;#47D7: 74 15
         cmp     dl, 5                                          ;#47D9: 80 FA 05
-        jz      short DOS_FN_5E_GET_FAR_PTR                    ;#47DC: 74 1D
-        jnbe    short DOS_FN_5E_RET                            ;#47DE: 77 0A
+        jz      short LINE_END_GET_FAR_PTR                     ;#47DC: 74 1D
+        jnbe    short SUBFN_IRET_TAIL                          ;#47DE: 77 0A
         cmp     dl, 2                                          ;#47E0: 80 FA 02
-        jbe     short DOS_FN_5E_RET                            ;#47E3: 76 05
+        jbe     short SUBFN_IRET_TAIL                          ;#47E3: 76 05
         and     dl, 1                                          ;#47E5: 80 E2 01
         mov     [bx], dl                                       ;#47E8: 88 17
-DOS_FN_5E_RET:
-        ; pop ax / jmp DOS_INT21_IRET_FROM_STACK — common ret of DOS_FN_5E subcalls
+SUBFN_IRET_TAIL:
+        ; pop ax / jmp DOS_INT21_IRET_FROM_STACK — the line-end subfn's common exit
         pop     ax                                             ;#47EA: 58
         jmp     near DOS_INT21_IRET_FROM_STACK                 ;#47EB: E9 A5 FD
 
-DOS_FN_5E_GET_BYTE:
-        ; Sub-fn 0 — mov bp,sp; les bp,[bp+2]; copy byte at [bx] to caller, ret
+LINE_END_GET_BYTE:
+        ; DL=0 — copy the LINE_END_MODE byte at [bx] out to the caller
         mov     bp, sp                                         ;#47EE: 8B EC
         les     bp, [bp+2]                                     ;#47F0: C4 6E 02
         mov     al, [bx]                                       ;#47F3: 8A 07
         mov     [es:bp], al                                    ;#47F5: 26 88 46 00
-        jmp     short DOS_FN_5E_RET                            ;#47F9: EB EF
+        jmp     short SUBFN_IRET_TAIL                          ;#47F9: EB EF
 
-DOS_FN_5E_GET_FAR_PTR:
-        ; Sub-fn 5 — store BX (offset) and 0FA1h (segment) to caller far ptr
+LINE_END_GET_FAR_PTR:
+        ; DL=5 — hand back 0FA1h:[bx], the flag's own address, in the caller's frame
         mov     bp, sp                                         ;#47FB: 8B EC
         les     bp, [bp+2]                                     ;#47FD: C4 6E 02
         mov     [es:bp+2], bx                                  ;#4800: 26 89 5E 02
         mov     ax, 0FA1h                                      ;#4804: B8 A1 0F
         mov     [es:bp+10h], ax                                ;#4807: 26 89 46 10
-        jmp     short DOS_FN_5E_RET                            ;#480B: EB DD
+        jmp     short SUBFN_IRET_TAIL                          ;#480B: EB DD
 
 GET_SET_OPTIONS_FLAG:
         ; subfn 23 — get or set CFG_OPTIONS_ON, DL selects which
         mov     bx, 1BFh                                       ;#480D: BB BF 01
         or      dl, dl                                         ;#4810: 0A D2
-        jnz     short DOS_FN_5E_SET_FLAG_BIT                   ;#4812: 75 0F
+        jnz     short OPTIONS_SET_FLAG_BIT                     ;#4812: 75 0F
         mov     bp, sp                                         ;#4814: 8B EC
         les     bp, [bp+2]                                     ;#4816: C4 6E 02
         mov     al, [bx]                                       ;#4819: 8A 07
@@ -6428,8 +6428,8 @@ GET_SET_OPTIONS_FLAG:
         pop     ax                                             ;#481F: 58
         jmp     near DOS_INT21_IRET_FROM_STACK                 ;#4820: E9 70 FD
 
-DOS_FN_5E_SET_FLAG_BIT:
-        ; Non-zero DL — and dl,1 / store at [bx] (set boolean flag byte)
+OPTIONS_SET_FLAG_BIT:
+        ; Non-zero DL — and dl,1 and store it at CFG_OPTIONS_ON
         and     dl, 1                                          ;#4823: 80 E2 01
         mov     [bx], dl                                       ;#4826: 88 17
         pop     ax                                             ;#4828: 58
@@ -6445,48 +6445,48 @@ GET_SET_DOS_FLAGS:
         mov     ax, 0FA1h                                      ;#483B: B8 A1 0F
         mov     ds, ax                                         ;#483E: 8E D8
         cmp     dl, 0                                          ;#4840: 80 FA 00
-        jnz     short DOS_FN_5E_FN1_CHECK                      ;#4843: 75 10
+        jnz     short DOS_FLAGS_DL1_CHECK                      ;#4843: 75 10
         mov     al, [INT28_GATE_FLAG]                          ;#4845: A0 E1 03
         mov     [es:bp+1], al                                  ;#4848: 26 88 46 01
         mov     byte [es:bp+6], 4Dh                            ;#484C: 26 C6 46 06 4D
         mov     al, 1                                          ;#4851: B0 01
-        jmp     short DOS_FN_5E_RET_STORE_AL                   ;#4853: EB 30
+        jmp     short DOS_FLAGS_STORE_AL                       ;#4853: EB 30
 
-DOS_FN_5E_FN1_CHECK:
-        ; cmp dl,1 — match sub-fn 1 (load the 2FFh 12-word region into [si])
+DOS_FLAGS_DL1_CHECK:
+        ; DL=1 — copy the 0Ch words at 2FFh out to the caller
         cmp     dl, 1                                          ;#4855: 80 FA 01
-        jnz     short DOS_FN_5E_FN2_CHECK                      ;#4858: 75 08
+        jnz     short DOS_FLAGS_DL2_CHECK                      ;#4858: 75 08
         mov     si, 2FFh                                       ;#485A: BE FF 02
         mov     cx, 0Ch                                        ;#485D: B9 0C 00
-        jmp     short DOS_FN_5E_REP_MOVSW                      ;#4860: EB 0B
+        jmp     short DOS_FLAGS_COPY_BLOCK                     ;#4860: EB 0B
 
-DOS_FN_5E_FN2_CHECK:
-        ; cmp dl,2 — match sub-fn 2 (load [3E4h] 12-word block)
+DOS_FLAGS_DL2_CHECK:
+        ; DL=2 — copy the 0Ch words at 3E4h out to the caller
         cmp     dl, 2                                          ;#4862: 80 FA 02
-        jnz     short DOS_FN_5E_FN3_CHECK                      ;#4865: 75 0F
+        jnz     short DOS_FLAGS_DL3_CHECK                      ;#4865: 75 0F
         mov     si, 3E4h                                       ;#4867: BE E4 03
         mov     cx, 0Ch                                        ;#486A: B9 0C 00
-DOS_FN_5E_REP_MOVSW:
-        ; Common rep movsw + mov al,1 success after sub-fn 2/3 setup
+DOS_FLAGS_COPY_BLOCK:
+        ; Common rep movsw for DL=1/2/3, then AL=1 success
         mov     al, 0                                          ;#486D: B0 00
         cld                                                    ;#486F: FC
         rep     movsw                                          ;#4870: F3 A5
         mov     al, 1                                          ;#4872: B0 01
-        jmp     short DOS_FN_5E_RET_STORE_AL                   ;#4874: EB 0F
+        jmp     short DOS_FLAGS_STORE_AL                       ;#4874: EB 0F
 
-DOS_FN_5E_FN3_CHECK:
-        ; cmp dl,3 — match sub-fn 3 (load [317h] 6-word block)
+DOS_FLAGS_DL3_CHECK:
+        ; DL=3 — copy the 6 words at 317h out to the caller
         cmp     dl, 3                                          ;#4876: 80 FA 03
-        jnz     short DOS_FN_5E_FAIL_RET                       ;#4879: 75 08
+        jnz     short DOS_FLAGS_UNKNOWN_DL                     ;#4879: 75 08
         mov     si, 317h                                       ;#487B: BE 17 03
         mov     cx, 6                                          ;#487E: B9 06 00
-        jmp     short DOS_FN_5E_REP_MOVSW                      ;#4881: EB EA
+        jmp     short DOS_FLAGS_COPY_BLOCK                     ;#4881: EB EA
 
-DOS_FN_5E_FAIL_RET:
-        ; mov al,0 (unknown sub-fn) — fall to common DOS_FN_5E_RET
+DOS_FLAGS_UNKNOWN_DL:
+        ; Unknown DL — AL=0, and fall into the store
         mov     al, 0                                          ;#4883: B0 00
-DOS_FN_5E_RET_STORE_AL:
-        ; Common store AL into caller's saved AX byte at [es:bp]; pop ax; ret
+DOS_FLAGS_STORE_AL:
+        ; Store AL into the caller's saved AX byte at [es:bp]; pop ax; iret tail
         mov     bp, sp                                         ;#4885: 8B EC
         les     bp, [bp+2]                                     ;#4887: C4 6E 02
         mov     [es:bp], al                                    ;#488A: 26 88 46 00
@@ -9739,7 +9739,7 @@ DOS_FN_60_TRUENAME:
                 /* ->b_rec[0].s_offhi: a constant subscript the address fold
                  * cannot collapse through the intervening cast.          */
                 min = DRIVER_TABLE->b_rec[0].s_offhi;
-                for (si = 1; DRIVER_COUNT > si; si++) {
+                for (si = 1; FCBS_RECORD_COUNT > si; si++) {
                     cur = DRIVER_TABLE->b_rec[si].s_offhi;
                     if (cur < min) {
                         min = cur;
@@ -9750,7 +9750,7 @@ DOS_FN_60_TRUENAME:
                 do {
                     DRIVER_TABLE->b_rec[best_idx].s_offhi = cap;
                     found = 0;
-                    for (si = 0; DRIVER_COUNT > si; si++) {
+                    for (si = 0; FCBS_RECORD_COUNT > si; si++) {
                         cur = DRIVER_TABLE->b_rec[si].s_offhi;
                         if (min < cur) {
                             if (found != 0 && cur >= best) {
@@ -9874,7 +9874,7 @@ DOS_FN_60_TRUENAME:
          *
          * Allocate an SFT record from the DRIVER_TABLE block.  First pass: any record
          * with a zero reference count is handed back as-is (its index is the result).
-         * With none free and every record protected (DRIVER_COUNT equal to the
+         * With none free and every record protected (FCBS_RECORD_COUNT equal to the
          * CONFIG.SYS "FCBS=m,n" second field at CFG_FCBS_PROTECTED) the answer is
          * 0xFF.  Otherwise LRU-evict: a record is a candidate when at least
          * CFG_FCBS_PROTECTED OTHER records have an s_offhi age at or below its own;
@@ -9897,21 +9897,21 @@ DOS_FN_60_TRUENAME:
             unsigned char j;        /* bp-0xC */
             unsigned int age;       /* bp-0xE: current record's s_offhi        */
 
-            for (idx = 0; idx < DRIVER_COUNT; idx++) {
+            for (idx = 0; idx < FCBS_RECORD_COUNT; idx++) {
                 if (DRIVER_TABLE->b_rec[idx].s_refcnt == 0) {
                     *out = &DRIVER_TABLE->b_rec[idx];
                     return idx;
                 }
             }
-            if (DRIVER_COUNT == CFG_FCBS_PROTECTED) {
+            if (FCBS_RECORD_COUNT == CFG_FCBS_PROTECTED) {
                 return 0xFF;
             }
             best = 0xFF;
-            for (idx = 0; idx < DRIVER_COUNT; idx++) {
+            for (idx = 0; idx < FCBS_RECORD_COUNT; idx++) {
                 count = 0;
                 age = DRIVER_TABLE->b_rec[idx].s_offhi;
                 stamp = DRIVER_TABLE->b_rec[idx].s_offlo;
-                for (j = 0; j < DRIVER_COUNT; j++) {
+                for (j = 0; j < FCBS_RECORD_COUNT; j++) {
                     if (count >= CFG_FCBS_PROTECTED) {
                         break;
                     }
@@ -10030,7 +10030,7 @@ DOS_FN_60_TRUENAME:
             if (int2f_network_1081(&SDA_CDS_SCRATCH, &rec) != 0 && rec->s_ownpsp == SDA_SRC_SEG) {
                 drv = &DRIVER_TABLE->b_rec[0];
                 idx = 0;
-                for (; idx < DRIVER_COUNT; idx++) {
+                for (; idx < FCBS_RECORD_COUNT; idx++) {
                     if (drv == rec) {
                         break;
                     }
@@ -12562,13 +12562,13 @@ INIT_STAGE2_CLEAR_FLAGS:
         mov     [cs:0F2A3h], ax                                ;#AF0E: 2E A3 A3 F2
         mov     ax, [52h]                                      ;#AF12: A1 52 00
         mov     [cs:0F2A5h], ax                                ;#AF15: 2E A3 A5 F2
-        mov     word [50h], INT17_PRINTER_HOOK_ENTRY           ;#AF19: C7 06 50 00 7A B6
+        mov     word [50h], INT14_AUX_HOOK_ENTRY               ;#AF19: C7 06 50 00 7A B6
         mov     word [52h], 70h                                ;#AF1F: C7 06 52 00 70 00
         mov     ax, [5Ch]                                      ;#AF25: A1 5C 00
         mov     [cs:0F2A7h], ax                                ;#AF28: 2E A3 A7 F2
         mov     ax, [5Eh]                                      ;#AF2C: A1 5E 00
         mov     [cs:0F2A9h], ax                                ;#AF2F: 2E A3 A9 F2
-        mov     word [5Ch], INT14_AUX_HOOK_ENTRY               ;#AF33: C7 06 5C 00 B4 B6
+        mov     word [5Ch], INT17_PRINTER_HOOK_ENTRY           ;#AF33: C7 06 5C 00 B4 B6
         mov     word [5Eh], 70h                                ;#AF39: C7 06 5E 00 70 00
         mov     word [6Ch], 0AFA3h                             ;#AF3F: C7 06 6C 00 A3 AF
         mov     word [6Eh], 70h                                ;#AF45: C7 06 6E 00 70 00
@@ -13528,7 +13528,7 @@ AUX_HOOK_FN1_STORE_RET:
 SET_PRN_HOOK_FLAG:
         ; subfn 7 — store AL into the 4-byte table at cs:0F2DCh indexed by DL
         cmp     dl, 3                                          ;#B654: 80 FA 03
-        jnbe    short SET_INT17_PORT_FLAG_RET                  ;#B657: 77 20
+        jnbe    short SET_PRN_HOOK_FLAG_RET                    ;#B657: 77 20
         mov     si, dx                                         ;#B659: 8B F2
         mov     [cs:si+0F2DCh], al                             ;#B65B: 2E 88 84 DC F2
         xor     dx, dx                                         ;#B660: 33 D2
@@ -13540,132 +13540,132 @@ INT17_FLAG_EVEN_PAD:
         ; AL bit-7 clear branch — DX stays 0 and walks the per-port flag pair
         shl     si, 1                                          ;#B669: D1 E6
         cmp     [es:si+408h], dx                               ;#B66B: 26 39 94 08 04
-        jnz     short SET_INT17_PORT_FLAG_RET                  ;#B670: 75 07
+        jnz     short SET_PRN_HOOK_FLAG_RET                    ;#B670: 75 07
         xor     word [es:si+408h], 1                           ;#B672: 26 81 B4 08 04 01 00
-SET_INT17_PORT_FLAG_RET:
-        ; Shared ret for the small INT17 port-flag setters at B654/B647/B63A
+SET_PRN_HOOK_FLAG_RET:
+        ; Ret for SET_PRN_HOOK_FLAG's two early exits, B657h and B670h, and nothing else
         ret                                                    ;#B679: C3
 
-INT17_PRINTER_HOOK_ENTRY:
-        ; Pre-filter: if DX=09FFh and AX=00FFh just IRET (init probe); else fall to body
+INT14_AUX_HOOK_ENTRY:
+        ; At vector 14h — pre-filter: DX=0FF09h with AX=0FFh is the init probe, just IRET
         cmp     dx, 0FF09h                                     ;#B67A: 81 FA 09 FF
-        jnz     short INT17_PRINTER_HOOK_BODY                  ;#B67E: 75 06
+        jnz     short INT14_AUX_HOOK_BODY                      ;#B67E: 75 06
         cmp     ax, 0FFh                                       ;#B680: 3D FF 00
-        jnz     short INT17_PRINTER_HOOK_BODY                  ;#B683: 75 01
+        jnz     short INT14_AUX_HOOK_BODY                      ;#B683: 75 01
         iret                                                   ;#B685: CF
 
-INT17_PRINTER_HOOK_BODY:
-        ; INT 17h hook body — check busy + per-port flag, chain to original ISR
+INT14_AUX_HOOK_BODY:
+        ; Per-port flag at F2D3h; call the old ISR, retry while AH bit 7 (timeout) is set
         push    bx                                             ;#B686: 53
         test    byte [cs:CTRL_BREAK_PENDING], 1                ;#B687: 2E F6 06 9E F2 01
-        jnz     short INT17_HOOK_DISABLED                      ;#B68D: 75 1A
+        jnz     short INT14_HOOK_DISABLED                      ;#B68D: 75 1A
         mov     bx, dx                                         ;#B68F: 8B DA
         cmp     byte [cs:bx+0F2D3h], 1                         ;#B691: 2E 80 BF D3 F2 01
         pop     bx                                             ;#B697: 5B
-        jnz     short INT17_HOOK_CHAIN                         ;#B698: 75 15
+        jnz     short INT14_HOOK_CHAIN                         ;#B698: 75 15
         push    ax                                             ;#B69A: 50
         pushf                                                  ;#B69B: 9C
         call    far word [cs:0F2A3h]                           ;#B69C: 2E FF 1E A3 F2
         test    ah, 80h                                        ;#B6A1: F6 C4 80
-        jz      short INT17_HOOK_IRET                          ;#B6A4: 74 05
+        jz      short INT14_HOOK_IRET                          ;#B6A4: 74 05
         pop     ax                                             ;#B6A6: 58
-        jmp     short INT17_PRINTER_HOOK_ENTRY                 ;#B6A7: EB D1
+        jmp     short INT14_AUX_HOOK_ENTRY                     ;#B6A7: EB D1
 
-INT17_HOOK_DISABLED:
-        ; Hook globally disabled — AH=0F0h, fall to IRET tail
+INT14_HOOK_DISABLED:
+        ; Hook globally disabled — AH=0F0h, fall to the IRET tail
         mov     ah, 0F0h                                       ;#B6A9: B4 F0
-INT17_HOOK_IRET:
-        ; Pop saved AX (sp+=2) and IRET from INT 17h hook
+INT14_HOOK_IRET:
+        ; Pop the saved AX (sp+=2) and IRET from the INT 14h hook
         add     sp, 2                                          ;#B6AB: 83 C4 02
         iret                                                   ;#B6AE: CF
 
-INT17_HOOK_CHAIN:
-        ; Chain to original INT 17h ISR via cs:[0F2A3h] long pointer
+INT14_HOOK_CHAIN:
+        ; Chain to the original INT 14h ISR via cs:[0F2A3h], saved from vector 14h
         jmp     far word [cs:0F2A3h]                           ;#B6AF: 2E FF 2E A3 F2
 
-INT14_AUX_HOOK_ENTRY:
-        ; INT 14h hook entry — guard on bit-7 of per-port flag and dispatch
+INT17_PRINTER_HOOK_ENTRY:
+        ; At vector 17h — a printer on a serial port; the PRN flag at F2DCh gates it
         push    bx                                             ;#B6B4: 53
         test    byte [cs:CTRL_BREAK_PENDING], 1                ;#B6B5: 2E F6 06 9E F2 01
-        jnz     short INT14_HOOK_DISABLED_TAIL                 ;#B6BB: 75 22
+        jnz     short INT17_HOOK_DISABLED_TAIL                 ;#B6BB: 75 22
         mov     bx, dx                                         ;#B6BD: 8B DA
         test    byte [cs:bx+0F2DCh], 80h                       ;#B6BF: 2E F6 87 DC F2 80
-        jz      short INT14_AUX_FN_DISPATCH                    ;#B6C5: 74 2D
+        jz      short INT17_PRINTER_FN_DISPATCH                ;#B6C5: 74 2D
         cmp     byte [cs:bx+0F2D8h], 1                         ;#B6C7: 2E 80 BF D8 F2 01
         pop     bx                                             ;#B6CD: 5B
-        jnz     short INT14_AUX_CHAIN                          ;#B6CE: 75 1F
+        jnz     short INT17_PRINTER_CHAIN                      ;#B6CE: 75 1F
         push    ax                                             ;#B6D0: 50
         pushf                                                  ;#B6D1: 9C
         call    far word [cs:0F2A7h]                           ;#B6D2: 2E FF 1E A7 F2
         test    ah, 1                                          ;#B6D7: F6 C4 01
-        jz      short INT14_AUX_HOOK_IRET                      ;#B6DA: 74 0F
+        jz      short INT17_PRINTER_HOOK_IRET                  ;#B6DA: 74 0F
         pop     ax                                             ;#B6DC: 58
-        jmp     short INT14_AUX_HOOK_ENTRY                     ;#B6DD: EB D5
+        jmp     short INT17_PRINTER_HOOK_ENTRY                 ;#B6DD: EB D5
 
-INT14_HOOK_DISABLED_TAIL:
-        ; Hook disabled / busy — clear cs:[0F29Eh] bit 0 if AH non-zero
+INT17_HOOK_DISABLED_TAIL:
+        ; Hook disabled / busy — clear cs:[0F29Eh] bit 0 if AH is non-zero
         or      ah, ah                                         ;#B6DF: 0A E4
-        jz      short INT14_AUX_IRET_AH99                      ;#B6E1: 74 06
+        jz      short INT17_PRINTER_IRET_AH99                  ;#B6E1: 74 06
         and     byte [cs:CTRL_BREAK_PENDING], 0FEh             ;#B6E3: 2E 80 26 9E F2 FE
-INT14_AUX_IRET_AH99:
-        ; Set AH=99h before the add-sp/iret tail of INT14_AUX hook
+INT17_PRINTER_IRET_AH99:
+        ; Set AH=99h before the add-sp/iret tail of the INT 17h hook
         mov     ah, 99h                                        ;#B6E9: B4 99
-INT14_AUX_HOOK_IRET:
-        ; INT14_AUX common tail — pop saved AX (sp+=2) and IRET
+INT17_PRINTER_HOOK_IRET:
+        ; Common tail — pop the saved AX (sp+=2) and IRET
         add     sp, 2                                          ;#B6EB: 83 C4 02
         iret                                                   ;#B6EE: CF
 
-INT14_AUX_CHAIN:
-        ; Chain to original INT 14h ISR via cs:[0F2A7h] long pointer
+INT17_PRINTER_CHAIN:
+        ; Chain to the original INT 17h ISR via cs:[0F2A7h], saved from vector 17h
         jmp     far word [cs:0F2A7h]                           ;#B6EF: 2E FF 2E A7 F2
 
-INT14_AUX_FN_DISPATCH:
-        ; Dispatch on AH — 0=send char, 1=AH=80h busy stub, else INT 14h chain
+INT17_PRINTER_FN_DISPATCH:
+        ; Dispatch on AH — 0 prints, 1 answers AH=80h, else status; all through INT 14h
         cmp     ah, 1                                          ;#B6F4: 80 FC 01
-        jz      short INT14_AUX_FN1_BUSY                       ;#B6F7: 74 3C
+        jz      short INT17_PRINTER_FN1_BUSY                   ;#B6F7: 74 3C
         mov     dl, [cs:bx+0F2DCh]                             ;#B6F9: 2E 8A 97 DC F2
         or      ah, ah                                         ;#B6FE: 0A E4
-        jz      short INT14_AUX_FN0_WAIT_TX                    ;#B700: 74 1B
+        jz      short INT17_PRINTER_FN0_WAIT_TX                ;#B700: 74 1B
         push    ax                                             ;#B702: 50
         mov     ah, 3                                          ;#B703: B4 03
         int     14h                                            ;#B705: CD 14
         mov     dl, 10h                                        ;#B707: B2 10
         test    ah, 40h                                        ;#B709: F6 C4 40
-        jz      short INT14_AUX_STATUS_IRET                    ;#B70C: 74 08
+        jz      short INT17_PRINTER_STATUS_IRET                ;#B70C: 74 08
         and     al, 30h                                        ;#B70E: 24 30
         cmp     al, 30h                                        ;#B710: 3C 30
-        jnz     short INT14_AUX_STATUS_IRET                    ;#B712: 75 02
+        jnz     short INT17_PRINTER_STATUS_IRET                ;#B712: 75 02
         mov     dl, 90h                                        ;#B714: B2 90
-INT14_AUX_STATUS_IRET:
-        ; Pack INT 14h AH=3 modem-status into AH=DL, DL=BL, IRET (AUX hook)
+INT17_PRINTER_STATUS_IRET:
+        ; Pack the INT 14h AH=3 modem status into a printer status in AH, DL=BL, IRET
         pop     ax                                             ;#B716: 58
         mov     ah, dl                                         ;#B717: 8A E2
         mov     dl, bl                                         ;#B719: 8A D3
         pop     bx                                             ;#B71B: 5B
         iret                                                   ;#B71C: CF
 
-INT14_AUX_FN0_WAIT_TX:
-        ; Poll INT 14h fn 1 (status) up to 0x32 times waiting for TX-ready bit
+INT17_PRINTER_FN0_WAIT_TX:
+        ; Printing: poll INT 14h fn 1 up to 32h times for the transmitter-ready bit
         push    cx                                             ;#B71D: 51
         mov     cx, 32h                                        ;#B71E: B9 32 00
-INT14_AUX_FN0_POLL_LOOP:
-        ; Poll INT 14h status fn until TX-ready bit set (up to 32h tries)
+INT17_PRINTER_FN0_POLL_LOOP:
+        ; Poll INT 14h status until TX-ready — AH=90h when it comes, AH=19h on time-out
         mov     ah, 1                                          ;#B721: B4 01
         int     14h                                            ;#B723: CD 14
         test    ah, 80h                                        ;#B725: F6 C4 80
         mov     ah, 90h                                        ;#B728: B4 90
-        jz      short INT14_AUX_FN0_RET                        ;#B72A: 74 04
-        loop    INT14_AUX_FN0_POLL_LOOP                        ;#B72C: E2 F3
+        jz      short INT17_PRINTER_FN0_RET                    ;#B72A: 74 04
+        loop    INT17_PRINTER_FN0_POLL_LOOP                    ;#B72C: E2 F3
         mov     ah, 19h                                        ;#B72E: B4 19
-INT14_AUX_FN0_RET:
-        ; Pop cx/dx/bx and IRET from AUX send-char hook
+INT17_PRINTER_FN0_RET:
+        ; Pop cx/dx/bx and IRET from the print-character path
         pop     cx                                             ;#B730: 59
         mov     dl, bl                                         ;#B731: 8A D3
         pop     bx                                             ;#B733: 5B
         iret                                                   ;#B734: CF
 
-INT14_AUX_FN1_BUSY:
-        ; Fn 1 stub — return AH=80h (busy/no-character) via IRET
+INT17_PRINTER_FN1_BUSY:
+        ; Fn 1 (initialise) — answer AH=80h, printer not busy, via IRET
         pop     bx                                             ;#B735: 5B
         mov     ah, 80h                                        ;#B736: B4 80
         iret                                                   ;#B738: CF
@@ -15481,7 +15481,7 @@ EXEC_INJECT_FCB_DRIVE_BITS:
         mov     cx, 4                                          ;#C3AB: B9 04 00
         rep     movsw                                          ;#C3AE: F3 A5
 EXEC_LAUNCH_OVERLAY_TAIL:
-        ; Mode-3 (overlay) tail — fall through to EXEC_LAUNCH_CLEAR_CF
+        ; Mode-3 (overlay) tail — reload ES:DI, then jmp to EXEC_LAUNCH_CLEAR_CF
         les     di, [bp+2]                                     ;#C3B0: C4 7E 02
         jmp     near EXEC_LAUNCH_CLEAR_CF                      ;#C3B3: E9 61 FF
 
@@ -16260,19 +16260,19 @@ BRASCII_FLAG_OP_CLEAR_CF:
         and     byte [es:di+16h], 0FEh                         ;#C9B7: 26 80 65 16 FE
         ret                                                    ;#C9BC: C3
 
-DOS_FN_67_RESERVED_67:
-        ; INT 21h AH=67h handler (reserved 67)
+DOS_FN_67_SET_HANDLE_COUNT:
+        ; AH=67h — BX handles, floored at 14h, then resize the PSP handle table
         mov     bp, sp                                         ;#C9BD: 8B EC
         cmp     bx, 14h                                        ;#C9BF: 83 FB 14
-        jnb     short RESIZE_PSP_ENV_BLOCK                     ;#C9C2: 73 03
+        jnb     short RESIZE_PSP_HANDLE_TABLE                  ;#C9C2: 73 03
         mov     bx, 14h                                        ;#C9C4: BB 14 00
-RESIZE_PSP_ENV_BLOCK:
-        ; Resize PSP env block to BX paragraphs (cap 14h), update ds:[32h]
+RESIZE_PSP_HANDLE_TABLE:
+        ; Resize the PSP handle table to BX entries — [32h] its count, [34h] its pointer
         mov     es, [DOS_SDA_SEG]                              ;#C9C7: 8E 06 DE 02
         mov     dx, [es:32h]                                   ;#C9CB: 26 8B 16 32 00
         cmp     dx, bx                                         ;#C9D0: 3B D3
-        jb      short ENV_BLOCK_REALLOC_GROW                   ;#C9D2: 72 51
-        jz      short MCB_RESIZE_EPILOGUE_JMP                  ;#C9D4: 74 38
+        jb      short HANDLE_TABLE_REALLOC_GROW                ;#C9D2: 72 51
+        jz      short HANDLE_TABLE_EPILOGUE_JMP                ;#C9D4: 74 38
         push    ds                                             ;#C9D6: 1E
         mov     ds, ax                                         ;#C9D7: 8E D8
         les     di, [34h]                                      ;#C9D9: C4 3E 34 00
@@ -16283,10 +16283,10 @@ RESIZE_PSP_ENV_BLOCK:
         mov     al, 0FFh                                       ;#C9E5: B0 FF
         cld                                                    ;#C9E7: FC
         rep     scasb                                          ;#C9E8: F3 AE
-        jnz     short MCB_RESIZE_RAISE_AX4                     ;#C9EA: 75 30
+        jnz     short HANDLE_TABLE_SHRINK_BUSY                 ;#C9EA: 75 30
         mov     [32h], bx                                      ;#C9EC: 89 1E 32 00
         cmp     bx, 14h                                        ;#C9F0: 83 FB 14
-        jnz     short MCB_RESIZE_GROW_PATH                     ;#C9F3: 75 1B
+        jnz     short HANDLE_TABLE_GROW_PATH                   ;#C9F3: 75 1B
         mov     cx, bx                                         ;#C9F5: 8B CB
         mov     di, 18h                                        ;#C9F7: BF 18 00
         mov     [34h], di                                      ;#C9FA: 89 3E 34 00
@@ -16300,31 +16300,31 @@ RESIZE_PSP_ENV_BLOCK:
         pop     es                                             ;#CA09: 07
         pop     ds                                             ;#CA0A: 1F
         call    near PROBE_PSP_MCB                             ;#CA0B: E8 AA 00
-MCB_RESIZE_EPILOGUE_JMP:
-        ; Tail jmp to MCB_RESIZE_RELOAD_DI after env-block size change
-        jmp     short MCB_RESIZE_RELOAD_DI                     ;#CA0E: EB 7E
+HANDLE_TABLE_EPILOGUE_JMP:
+        ; Tail jmp to HANDLE_TABLE_RELOAD_DI when the table is already the right size
+        jmp     short HANDLE_TABLE_RELOAD_DI                   ;#CA0E: EB 7E
 
-MCB_RESIZE_GROW_PATH:
-        ; Grow path — convert bytes to paragraphs (round up), call PROBE_PSP_MCB_RESIZE
+HANDLE_TABLE_GROW_PATH:
+        ; Grow path — bytes to paragraphs (round up), then PROBE_PSP_MCB_RESIZE
         pop     ds                                             ;#CA10: 1F
         dec     bx                                             ;#CA11: 4B
         mov     cl, 4                                          ;#CA12: B1 04
         shr     bx, cl                                         ;#CA14: D3 EB
         inc     bx                                             ;#CA16: 43
         call    near PROBE_PSP_MCB_RESIZE                      ;#CA17: E8 B6 00
-        jmp     short MCB_RESIZE_RELOAD_DI                     ;#CA1A: EB 72
+        jmp     short HANDLE_TABLE_RELOAD_DI                   ;#CA1A: EB 72
 
-MCB_RESIZE_RAISE_AX4:
-        ; Resize failed — AX=4 (no-mem) and fall to RAISE_ERROR_VIA_AH
+HANDLE_TABLE_SHRINK_BUSY:
+        ; Shrink found no free FFh slots to drop — AX=4, too many open files
         mov     ax, 4                                          ;#CA1C: B8 04 00
-MCB_RESIZE_FAIL_RESTORE_DS:
-        ; Common MCB-resize failure tail — pop ds, lds di [bp+2], jmp RAISE_ERROR_VIA_AH
+HANDLE_TABLE_FAIL_RESTORE_DS:
+        ; Common handle-table failure tail — pop ds, lds di [bp+2], jmp RAISE_ERROR_VIA_AL
         pop     ds                                             ;#CA1F: 1F
         lds     di, [bp+2]                                     ;#CA20: C5 7E 02
-        jmp     short RAISE_ERROR_VIA_AH                       ;#CA23: EB 71
+        jmp     short RAISE_ERROR_VIA_AL                       ;#CA23: EB 71
 
-ENV_BLOCK_REALLOC_GROW:
-        ; Realloc grow path — convert BX bytes to paras and FIND_BEST_FREE_MCB
+HANDLE_TABLE_REALLOC_GROW:
+        ; Grow path — BX bytes to paragraphs, FIND_BEST_FREE_MCB for the bigger table
         push    ds                                             ;#CA25: 1E
         push    bx                                             ;#CA26: 53
         push    es                                             ;#CA27: 06
@@ -16333,7 +16333,7 @@ ENV_BLOCK_REALLOC_GROW:
         shr     bx, cl                                         ;#CA2B: D3 EB
         inc     bx                                             ;#CA2D: 43
         call    near FIND_BEST_FREE_MCB                        ;#CA2E: E8 EA 00
-        jb      short ENV_BLOCK_REALLOC_FAIL                   ;#CA31: 72 37
+        jb      short HANDLE_TABLE_REALLOC_FAIL                ;#CA31: 72 37
         mov     es, ax                                         ;#CA33: 8E C0
         pop     bx                                             ;#CA35: 5B
         mov     ds, bx                                         ;#CA36: 8E DB
@@ -16357,23 +16357,23 @@ ENV_BLOCK_REALLOC_GROW:
         mov     es, ax                                         ;#CA62: 8E C0
         call    near PROBE_PSP_MCB                             ;#CA64: E8 51 00
 ENV_BLOCK_REALLOC_DONE:
-        ; Realloc tail — pop ds and jmp MCB_RESIZE_RELOAD_DI to finalize
+        ; Realloc tail — pop ds and jmp HANDLE_TABLE_RELOAD_DI to finalize
         pop     ds                                             ;#CA67: 1F
-        jmp     short MCB_RESIZE_RELOAD_DI                     ;#CA68: EB 24
+        jmp     short HANDLE_TABLE_RELOAD_DI                   ;#CA68: EB 24
 
-ENV_BLOCK_REALLOC_FAIL:
-        ; Realloc OOM — pop saved ax×2, AX=8 (no-mem), jmp to error path
+HANDLE_TABLE_REALLOC_FAIL:
+        ; Grow found no block — pop the two saved ax, AX=8, insufficient memory
         pop     ax                                             ;#CA6A: 58
         pop     ax                                             ;#CA6B: 58
         mov     ax, 8                                          ;#CA6C: B8 08 00
-        jmp     short MCB_RESIZE_FAIL_RESTORE_DS               ;#CA6F: EB AE
+        jmp     short HANDLE_TABLE_FAIL_RESTORE_DS             ;#CA6F: EB AE
 
 DOS_FN_49_FREE_MEM:
         ; INT 21h AH=49h handler (free mem)
         mov     bp, sp                                         ;#CA71: 8B EC
         call    near PROBE_PSP_MCB                             ;#CA73: E8 42 00
         lds     di, [bp+2]                                     ;#CA76: C5 7E 02
-        jb      short RAISE_ERROR_VIA_AH                       ;#CA79: 72 1B
+        jb      short RAISE_ERROR_VIA_AL                       ;#CA79: 72 1B
         jmp     short MCB_CLEAR_FLAG_BIT_0                     ;#CA7B: EB 14
 
 DOS_FN_4A_REALLOC_MEM:
@@ -16382,20 +16382,20 @@ DOS_FN_4A_REALLOC_MEM:
         call    near PROBE_PSP_MCB_RESIZE                      ;#CA7F: E8 4E 00
         lds     di, [bp+2]                                     ;#CA82: C5 7E 02
         mov     [di+2], bx                                     ;#CA85: 89 5D 02
-        jb      short RAISE_ERROR_VIA_AH                       ;#CA88: 72 0C
+        jb      short RAISE_ERROR_VIA_AL                       ;#CA88: 72 0C
         mov     [di], ax                                       ;#CA8A: 89 05
         jmp     short MCB_CLEAR_FLAG_BIT_0                     ;#CA8C: EB 03
 
-MCB_RESIZE_RELOAD_DI:
-        ; Reload DI from caller-arg DWORD at [bp+2] after MCB resize ops
+HANDLE_TABLE_RELOAD_DI:
+        ; Reload DI from the caller-arg DWORD at [bp+2] after a handle-table resize
         lds     di, [bp+2]                                     ;#CA8E: C5 7E 02
 MCB_CLEAR_FLAG_BIT_0:
         ; Clear bit 0 of caller-record byte [di+16h] — common MCB-op exit
         and     byte [di+16h], 0FEh                            ;#CA91: 80 65 16 FE
         ret                                                    ;#CA95: C3
 
-RAISE_ERROR_VIA_AH:
-        ; Push AH error code into LOOKUP_ERROR_MSG; set CF in caller flags
+RAISE_ERROR_VIA_AL:
+        ; Zero AH, push the AL error code into LOOKUP_ERROR_MSG, set the caller's CF
         sub     ah, ah                                         ;#CA96: 2A E4
         push    ax                                             ;#CA98: 50
         call    near LOOKUP_ERROR_MSG                          ;#CA99: E8 64 08
@@ -16410,7 +16410,7 @@ DOS_FN_48_ALLOC_MEM:
         call    near FIND_BEST_FREE_MCB                        ;#CAA9: E8 6F 00
         lds     di, [bp+2]                                     ;#CAAC: C5 7E 02
         mov     [di+2], bx                                     ;#CAAF: 89 5D 02
-        jb      short RAISE_ERROR_VIA_AH                       ;#CAB2: 72 E2
+        jb      short RAISE_ERROR_VIA_AL                       ;#CAB2: 72 E2
         mov     [di], ax                                       ;#CAB4: 89 05
         jmp     short MCB_CLEAR_FLAG_BIT_0                     ;#CAB6: EB D9
 
@@ -17149,7 +17149,7 @@ BRASCII_DRIVER_DISPATCH:
         jz      short BRASCII_DRIVER_RET_PACKET                ;#CF9E: 74 2C
         xor     al, al                                         ;#CFA0: 32 C0
         test    bx, 200h                                       ;#CFA2: F7 C3 00 02
-        jz      short BRASCII_DRIVER_TEST_BIT400               ;#CFA6: 74 06
+        jz      short BRASCII_DRIVER_TEST_MASK_400             ;#CFA6: 74 06
         inc     al                                             ;#CFA8: FE C0
 BRASCII_DRIVER_RET_OK:
         ; CLC + pop ES/DI + ret with classified result in AL
@@ -17158,22 +17158,22 @@ BRASCII_DRIVER_RET_OK:
         pop     di                                             ;#CFAC: 5F
         ret                                                    ;#CFAD: C3
 
-BRASCII_DRIVER_TEST_BIT400:
-        ; Status bit 200h clear — test bit 400h to classify the next result code
+BRASCII_DRIVER_TEST_MASK_400:
+        ; Status mask 200h clear — test mask 400h to classify the next result code
         test    bx, 400h                                       ;#CFAE: F7 C3 00 04
-        jz      short BRASCII_DRIVER_TEST_BIT1                 ;#CFB2: 74 04
+        jz      short BRASCII_DRIVER_TEST_MASK_1               ;#CFB2: 74 04
         mov     al, 2                                          ;#CFB4: B0 02
         jmp     short BRASCII_DRIVER_RET_OK                    ;#CFB6: EB F2
 
-BRASCII_DRIVER_TEST_BIT1:
-        ; Bit 1 set → AL=80h (DOS error code), else fall to bit 2 test
+BRASCII_DRIVER_TEST_MASK_1:
+        ; Status mask 1, bit 0, set -> AL=80h (DOS error code); else the mask-2 test
         test    bx, 1                                          ;#CFB8: F7 C3 01 00
-        jz      short BRASCII_DRIVER_TEST_BIT2                 ;#CFBC: 74 04
+        jz      short BRASCII_DRIVER_TEST_MASK_2               ;#CFBC: 74 04
         mov     al, 80h                                        ;#CFBE: B0 80
         jmp     short BRASCII_DRIVER_RET_OK                    ;#CFC0: EB E8
 
-BRASCII_DRIVER_TEST_BIT2:
-        ; Bit 2 set → AL=81h (alt error), else AL=0 success and ret
+BRASCII_DRIVER_TEST_MASK_2:
+        ; Status mask 2, bit 1, set -> AL=81h (alt error); else AL=0 success and ret
         test    bx, 2                                          ;#CFC2: F7 C3 02 00
         jz      short BRASCII_DRIVER_RET_OK                    ;#CFC6: 74 E2
         mov     al, 81h                                        ;#CFC8: B0 81
@@ -17224,8 +17224,8 @@ BRASCII_XLAT_RETF:
         pop     ds                                             ;#D005: 1F
         retf                                                   ;#D006: CB
 
-DOS_FN_66_RESERVED_66:
-        ; INT 21h AH=66h handler (reserved 66)
+DOS_FN_66_GET_SET_CODE_PAGE:
+        ; AH=66h — AL=1 (get) answers the default; anything else sets the caller's CF
         mov     bp, sp                                         ;#D007: 8B EC
         les     bp, [bp+2]                                     ;#D009: C4 6E 02
         cmp     al, 1                                          ;#D00C: 3C 01
@@ -17240,8 +17240,8 @@ DRV_SET_RESULT_DEFAULT:
         and     word [es:bp+16h], 0FFFEh                       ;#D023: 26 81 66 16 FE FF
         ret                                                    ;#D029: C3
 
-DOS_FN_65_RESERVED_65:
-        ; INT 21h AH=65h handler (reserved 65)
+DOS_FN_65_GET_EXT_COUNTRY_INFO:
+        ; AH=65h — BX code page (FFFFh = active), CX buffer >= 5, DX country, ES:DI buffer
         mov     bp, sp                                         ;#D02A: 8B EC
         les     si, [bp+2]                                     ;#D02C: C4 76 02
         mov     es, [es:si+10h]                                ;#D02F: 26 8E 44 10
@@ -19184,7 +19184,7 @@ CON_INIT:
         ret                                                    ;#DC01: C3
 
 KBD_DRV_READ_BUFFER:
-        ; KBD driver cmd-0 — fill caller's es:di+0Eh buffer with [+12h] translated keys
+        ; CON cmd 4 (read) — fill the es:di+0Eh buffer with [+12h] translated keys
         cld                                                    ;#DC02: FC
         push    es                                             ;#DC03: 06
         push    di                                             ;#DC04: 57
@@ -19219,7 +19219,7 @@ KBD_DRIVER_DONE_EPILOGUE:
         ret                                                    ;#DC33: C3
 
 KBD_DRV_READ_INTO_FCB:
-        ; KBD driver cmd-1 — single READ_KEYBOARD_KEY, store BL into FCB+0Dh slot
+        ; CON cmd 5 (non-destructive input) — one key, BL into the packet+0Dh slot
         call    near READ_KEYBOARD_KEY                         ;#DC34: E8 07 00
         jz      short KBD_READ_AND_STORE_RET                   ;#DC37: 74 04
         mov     [es:di+0Dh], bl                                ;#DC39: 26 88 5D 0D
@@ -19271,7 +19271,7 @@ KBD_FLUSH_DONE:
         ret                                                    ;#DC77: C3
 
 KBD_DRV_WRITE_VIA_INT29:
-        ; KBD driver cmd-4/5 — lodsb caller's buffer and emit each byte via INT 29h
+        ; CON cmds 8 and 9 (write) — lodsb the caller's buffer, each byte out via INT 29h
         push    ds                                             ;#DC78: 1E
         mov     cx, [es:di+12h]                                ;#DC79: 26 8B 4D 12
         lds     si, [es:di+0Eh]                                ;#DC7D: 26 C5 75 0E
@@ -19347,12 +19347,12 @@ DRIVER2_CMD_TABLE:
         dw      DRV_CMD_INIT_MEDIA_BYTE                        ;#DCE5: 2D E2
         dw      DRV_CMD_PROBE_FORMAT                           ;#DCE7: 4D E3
         dw      DEV_RET_ERROR                                  ;#DCE9: 8B D6
-        dw      DRV_CMD2_DRIVE_READ                            ;#DCEB: FC E5
+        dw      DRV_CMD4_DRIVE_READ                            ;#DCEB: FC E5
         dw      DEV_RET_BUSY                                   ;#DCED: 93 D6
         dw      DEV_RET_OK                                     ;#DCEF: 8F D6
         dw      DEV_RET_OK                                     ;#DCF1: 8F D6
-        dw      DRV_CMD3_DRIVE_READ                            ;#DCF3: 01 E6
-        dw      DRV_CMD_FF03_DRIVE_READ                        ;#DCF5: 06 E6
+        dw      DRV_CMD8_DRIVE_WRITE                           ;#DCF3: 01 E6
+        dw      DRV_CMD9_DRIVE_WRITE_VERIFY                    ;#DCF5: 06 E6
         dw      DEV_RET_ERROR                                  ;#DCF7: 8B D6
         dw      DEV_RET_OK                                     ;#DCF9: 8F D6
         dw      DEV_RET_ERROR                                  ;#DCFB: 8B D6
@@ -19362,7 +19362,7 @@ DRIVER2_CMD_TABLE:
         dw      DEV_RET_OK                                     ;#DD03: 8F D6
         dw      DEV_RET_OK                                     ;#DD05: 8F D6
         dw      DEV_RET_OK                                     ;#DD07: 8F D6
-        dw      DRV_CMD_BUILD_BPB                              ;#DD09: B4 E3
+        dw      DRV_CMD_GENERIC_IOCTL                          ;#DD09: B4 E3
         dw      0D6A3h                                         ;#DD0B: A3 D6
         dw      DEV_RET_OK                                     ;#DD0D: 8F D6
         dw      DEV_RET_OK                                     ;#DD0F: 8F D6
@@ -19569,21 +19569,21 @@ INT13_ERR_DOS_CODES:
         db      8, 0                                           ;#DEA6
         db      0Ch                                            ;#DEA8: 0C
 
-BPB_MEDIA_SCAN_BYTES:
-        ; 6-byte media-code list (40h 60h 41h 61h 42h 62h) scanned by DRV_CMD_BUILD_BPB
+IOCTL_MINOR_CODE_LIST:
+        ; The six generic-IOCTL minor codes cmd 19h scans: 40h 60h 41h 61h 42h 62h
         ; Format: FORMAT_HEX
         ; raw
         db      40h, 60h, 41h, 61h                             ;#DEA9
         db      42h, 62h                                       ;#DEAD
 
-BPB_HANDLER_PTR_TABLE:
-        ; 6-entry word table — handler offsets indexed by matched media code
-        dw      DRV_CMD_IOCTL_OUTPUT                           ;#DEAF: DC E4
+IOCTL_MINOR_HANDLER_TABLE:
+        ; 6-entry word table — handlers in IOCTL_MINOR_CODE_LIST's order
+        dw      IOCTL_MINOR_40_SET_PARAMS                      ;#DEAF: DC E4
         dw      COPY_BPB_AND_DRIVER_BYTES                      ;#DEB1: 0B E4
-        dw      BPB_HANDLER_41_DONE                            ;#DEB3: 33 E5
-        dw      BPB_HANDLER_61_DONE                            ;#DEB5: 37 E5
-        dw      BPB_HANDLER_42_DONE                            ;#DEB7: 3B E5
-        dw      BPB_HANDLER_62_SET                             ;#DEB9: 3F E5
+        dw      IOCTL_MINOR_41_DONE                            ;#DEB3: 33 E5
+        dw      IOCTL_MINOR_61_DONE                            ;#DEB5: 37 E5
+        dw      IOCTL_MINOR_42_DONE                            ;#DEB7: 3B E5
+        dw      IOCTL_MINOR_62_VERIFY                          ;#DEB9: 3F E5
 
 DEV_STRATEGY_DISK:
         ; Strategy entry for CLOCK$ and the block driver — packet ES:BX to cs:[F040h]
@@ -20238,8 +20238,8 @@ PICK_DRIVE_CONFIG_RET:
         clc                                                    ;#E3B2: F8
         ret                                                    ;#E3B3: C3
 
-DRV_CMD_BUILD_BPB:
-        ; DOS driver Build-BPB — scan DEA9h media table, call format-table fn ptr
+DRV_CMD_GENERIC_IOCTL:
+        ; Block-driver cmd 19h — match the packet+0Eh minor code, call its handler
         push    ds                                             ;#E3B4: 1E
         push    es                                             ;#E3B5: 06
         push    di                                             ;#E3B6: 57
@@ -20248,13 +20248,13 @@ DRV_CMD_BUILD_BPB:
         mov     cx, 6                                          ;#E3BF: B9 06 00
         push    cs                                             ;#E3C2: 0E
         pop     es                                             ;#E3C3: 07
-        mov     di, BPB_MEDIA_SCAN_BYTES                       ;#E3C4: BF A9 DE
+        mov     di, IOCTL_MINOR_CODE_LIST                      ;#E3C4: BF A9 DE
         cld                                                    ;#E3C7: FC
         repne   scasb                                          ;#E3C8: F2 AE
         mov     bx, 5                                          ;#E3CA: BB 05 00
         sub     bx, cx                                         ;#E3CD: 2B D9
         shl     bx, 1                                          ;#E3CF: D1 E3
-        mov     ax, [es:bx+BPB_HANDLER_PTR_TABLE]              ;#E3D1: 26 8B 87 AF DE
+        mov     ax, [es:bx+IOCTL_MINOR_HANDLER_TABLE]          ;#E3D1: 26 8B 87 AF DE
         call    near LOOKUP_FORMAT_TABLE                       ;#E3D6: E8 0F 00
         les     di, [cs:INT13_DRIVER_VARS]                     ;#E3D9: 2E C4 3E 40 F0
         les     di, [es:di+13h]                                ;#E3DE: 26 C4 7D 13
@@ -20287,7 +20287,7 @@ LOOKUP_FORMAT_TABLE_RET:
         ret                                                    ;#E40A: C3
 
 COPY_BPB_AND_DRIVER_BYTES:
-        ; Copy first 5 BPB bytes, terminate with 0, dispatch by mode bit 0
+        ; Minor 60h (get device parameters) — 5 BPB bytes, a 0, then by mode bit 0
         mov     al, [es:di]                                    ;#E40B: 26 8A 05
         mov     ah, [si]                                       ;#E40E: 8A 24
         mov     bx, [si+2]                                     ;#E410: 8B 5C 02
@@ -20415,8 +20415,8 @@ INT13_READ_SEC_TO_EE40:
         pop     es                                             ;#E4DA: 07
         ret                                                    ;#E4DB: C3
 
-DRV_CMD_IOCTL_OUTPUT:
-        ; IOCTL output entry — bits 0+1 pick err / fixed 26h / variable copy path
+IOCTL_MINOR_40_SET_PARAMS:
+        ; Minor 40h (set device parameters) — bits 0+1 pick err / fixed 26h / copy
         mov     al, [es:di]                                    ;#E4DC: 26 8A 05
         mov     ah, al                                         ;#E4DF: 8A E0
         and     ah, 3                                          ;#E4E1: 80 E4 03
@@ -20473,23 +20473,23 @@ DRV_WRITE_OK_RET:
         mov     ax, 100h                                       ;#E52F: B8 00 01
         ret                                                    ;#E532: C3
 
-BPB_HANDLER_41_DONE:
-        ; BPB scan code 41h — nothing to do, return AX=0100h (done, no error)
+IOCTL_MINOR_41_DONE:
+        ; Minor 41h (write track) — nothing to do, AX=0100h
         mov     ax, 100h                                       ;#E533: B8 00 01
         ret                                                    ;#E536: C3
 
-BPB_HANDLER_61_DONE:
-        ; BPB scan code 61h — nothing to do, return AX=0100h
+IOCTL_MINOR_61_DONE:
+        ; Minor 61h (read track) — nothing to do, AX=0100h
         mov     ax, 100h                                       ;#E537: B8 00 01
         ret                                                    ;#E53A: C3
 
-BPB_HANDLER_42_DONE:
-        ; BPB scan code 42h — nothing to do, return AX=0100h
+IOCTL_MINOR_42_DONE:
+        ; Minor 42h (format track) — nothing to do, AX=0100h
         mov     ax, 100h                                       ;#E53B: B8 00 01
         ret                                                    ;#E53E: C3
 
-BPB_HANDLER_62_SET:
-        ; BPB scan code 62h — set cs:0F057h to 4, then the drive-request path
+IOCTL_MINOR_62_VERIFY:
+        ; Minor 62h (verify track) — INT 13h op 4 into cs:0F057h, then the request path
         mov     byte [cs:0F057h], 4                            ;#E53F: 2E C6 06 57 F0 04
         cmp     dl, [cs:0F044h]                                ;#E545: 2E 3A 16 44 F0
         jnb     short DRV_REQ_OPEN_AND_OP                      ;#E54A: 73 0B
@@ -20552,7 +20552,7 @@ OPEN_DRIVE_STORE_STATE:
         ret                                                    ;#E5B7: C3
 
 DRV_CMD_HEAD0_ENTRY:
-        ; Driver-cmd stub — pre-set dh=0 (head 0), fall to DRV_HEAD_BUILDUP
+        ; Driver-cmd stub — pre-set dh=0 (head 0), jmp over the head-1 stub
         mov     dh, 0                                          ;#E5B8: B6 00
         jmp     short DRV_HEAD_BUILDUP                         ;#E5BA: EB 02
 
@@ -20594,55 +20594,55 @@ DRV_RET_ERR_8001:
         mov     ax, 8001h                                      ;#E5F8: B8 01 80
         ret                                                    ;#E5FB: C3
 
-DRV_CMD2_DRIVE_READ:
-        ; Driver cmd-2 entry — AX=2, jmp DRIVE_LASTOP_CACHE_AND_READ
+DRV_CMD4_DRIVE_READ:
+        ; Block-driver cmd 4 (input) — AL=2, the INT 13h read op, into the shared tail
         mov     ax, 2                                          ;#E5FC: B8 02 00
-        jmp     short DRIVE_LASTOP_CACHE_AND_READ              ;#E5FF: EB 0A
+        jmp     short DRIVE_LASTOP_CACHE_AND_RUN               ;#E5FF: EB 0A
 
-DRV_CMD3_DRIVE_READ:
-        ; Driver cmd-3 entry — AX=3, jmp DRIVE_LASTOP_CACHE_AND_READ
+DRV_CMD8_DRIVE_WRITE:
+        ; Block-driver cmd 8 (output) — AL=3, the INT 13h write op, into the same tail
         mov     ax, 3                                          ;#E601: B8 03 00
-        jmp     short DRIVE_LASTOP_CACHE_AND_READ              ;#E604: EB 05
+        jmp     short DRIVE_LASTOP_CACHE_AND_RUN               ;#E604: EB 05
 
-DRV_CMD_FF03_DRIVE_READ:
-        ; Driver cmd entry — AX=FF03h, jmp DRIVE_LASTOP_CACHE_AND_READ
+DRV_CMD9_DRIVE_WRITE_VERIFY:
+        ; Block-driver cmd 9 (output with verify) — AX=0FF03h, write plus the AH flag
         mov     ax, 0FF03h                                     ;#E606: B8 03 FF
-        jmp     short DRIVE_LASTOP_CACHE_AND_READ              ;#E609: EB 00
+        jmp     short DRIVE_LASTOP_CACHE_AND_RUN               ;#E609: EB 00
 
-DRIVE_LASTOP_CACHE_AND_READ:
-        ; Stash AH:AL last-op (DS:F058/F057) and dispatch INT13_BIG_READ loop
+DRIVE_LASTOP_CACHE_AND_RUN:
+        ; Stash AH:AL as the last op (DS:F058/F057) and run the INT13_BIG_OP chunk loop
         mov     [0F058h], ah                                   ;#E60B: 88 26 58 F0
         mov     [0F057h], al                                   ;#E60F: A2 57 F0
         call    near SETUP_DRIVE_FOR_INT13                     ;#E612: E8 54 00
         mov     cx, [es:di+12h]                                ;#E615: 26 8B 4D 12
-        jb      short READ_LOOP_FINALIZE                       ;#E619: 72 17
-        jcxz    INT13_BIG_READ_DONE                            ;#E61B: E3 12
-DRIVE_READ_CHUNK_LOOP:
-        ; Per-chunk body — INT13_BIG_READ, ADVANCE_TO_NEXT_SECTOR, continue while cx>0
+        jb      short DRIVE_OP_FINALIZE                        ;#E619: 72 17
+        jcxz    DRIVE_OP_DONE                                  ;#E61B: E3 12
+DRIVE_OP_CHUNK_LOOP:
+        ; Per-chunk body — INT13_BIG_OP, ADVANCE_TO_NEXT_SECTOR, continue while cx>0
         push    cx                                             ;#E61D: 51
-        call    near INT13_BIG_READ                            ;#E61E: E8 1A 01
+        call    near INT13_BIG_OP                              ;#E61E: E8 1A 01
         pop     cx                                             ;#E621: 59
-        jb      short READ_LOOP_FINALIZE                       ;#E622: 72 0E
+        jb      short DRIVE_OP_FINALIZE                        ;#E622: 72 0E
         push    cx                                             ;#E624: 51
         push    ax                                             ;#E625: 50
         call    near ADVANCE_TO_NEXT_SECTOR                    ;#E626: E8 D8 00
         pop     ax                                             ;#E629: 58
         pop     cx                                             ;#E62A: 59
         sub     cx, ax                                         ;#E62B: 2B C8
-        jnz     short DRIVE_READ_CHUNK_LOOP                    ;#E62D: 75 EE
-INT13_BIG_READ_DONE:
-        ; Read complete — AX=0100h DOS success status, fall to READ_LOOP_FINALIZE
+        jnz     short DRIVE_OP_CHUNK_LOOP                      ;#E62D: 75 EE
+DRIVE_OP_DONE:
+        ; Every chunk done — AX=0100h DOS success status, fall to DRIVE_OP_FINALIZE
         mov     ax, 100h                                       ;#E62F: B8 00 01
-READ_LOOP_FINALIZE:
-        ; Common exit of INT13_BIG_READ loop — subtract CX, RECORD_DRIVE_LAST_OP
+DRIVE_OP_FINALIZE:
+        ; Common exit of the chunk loop — subtract CX, RECORD_DRIVE_LAST_OP
         sub     [es:di+12h], cx                                ;#E632: 26 29 4D 12
         push    ax                                             ;#E636: 50
         mov     al, [es:di+1]                                  ;#E637: 26 8A 45 01
         cmp     al, [0F044h]                                   ;#E63B: 3A 06 44 F0
-        jnb     short READ_LOOP_RET                            ;#E63F: 73 03
+        jnb     short DRIVE_OP_RET                             ;#E63F: 73 03
         call    near RECORD_DRIVE_LAST_OP                      ;#E641: E8 02 00
-READ_LOOP_RET:
-        ; Pop saved AX status, ret — common tail of READ_LOOP_FINALIZE
+DRIVE_OP_RET:
+        ; Pop the saved AX status, ret — common tail of DRIVE_OP_FINALIZE
         pop     ax                                             ;#E644: 58
         ret                                                    ;#E645: C3
 
@@ -20764,8 +20764,8 @@ ADVANCE_TO_NEXT_SECTOR_RET:
         ; Ret after CHS triple updated and accumulator carry rolled into ds:[F055h]
         ret                                                    ;#E73A: C3
 
-INT13_BIG_READ:
-        ; Extend INT 13h read across 1000h paragraph boundary, then DISK_OP_FROM_DPB
+INT13_BIG_OP:
+        ; Extend one INT 13h op across a 1000h paragraph boundary, then DISK_OP_FROM_DPB
         push    es                                             ;#E73B: 06
         push    di                                             ;#E73C: 57
         push    cx                                             ;#E73D: 51
@@ -20782,16 +20782,16 @@ INT13_BIG_READ:
         sub     dl, [0F04Fh]                                   ;#E757: 2A 16 4F F0
         mov     ax, dx                                         ;#E75B: 8B C2
         cmp     ax, cx                                         ;#E75D: 3B C1
-        jb      short INT13_BIG_READ_DO_DPB                    ;#E75F: 72 02
+        jb      short INT13_BIG_OP_DO_DPB                      ;#E75F: 72 02
         mov     ax, cx                                         ;#E761: 8B C1
-INT13_BIG_READ_DO_DPB:
+INT13_BIG_OP_DO_DPB:
         ; Load es:bx from ds:[F053h], dispatch INT13_DISK_OP_FROM_DPB
         les     bx, [0F053h]                                   ;#E763: C4 1E 53 F0
         call    near INT13_DISK_OP_FROM_DPB                    ;#E767: E8 07 00
-        jb      short INT13_BIG_READ_RET                       ;#E76A: 72 02
+        jb      short INT13_BIG_OP_RET                         ;#E76A: 72 02
         sub     ah, ah                                         ;#E76C: 2A E4
-INT13_BIG_READ_RET:
-        ; Pop di/es saved by INT13_BIG_READ, ret
+INT13_BIG_OP_RET:
+        ; Pop the di/es INT13_BIG_OP saved, ret
         pop     di                                             ;#E76E: 5F
         pop     es                                             ;#E76F: 07
         ret                                                    ;#E770: C3
