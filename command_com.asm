@@ -292,6 +292,25 @@ MSGREF_DADOS                     equ     000E4h    ; #52 in the ERROR_MSG_INDEX 
 MSGREF_COLOQUE_O_DISCO_CORRETO   equ     000E5h    ; #53 in the ERROR_MSG_INDEX run, ERRMSG_COLOQUE_O_DISCO_CORRETO
 MSGREF_NA_CARGA_DO               equ     000E6h    ; #54 in the ERROR_MSG_INDEX run, ERRMSG_NA_CARGA_DO
 MSGREF_COMANDO_55                equ     000E7h    ; #55 in the ERROR_MSG_INDEX run, ERRMSG_COMANDO_55
+ASCII_BEL                        equ     00007h    ; The bell CMD_BEEP prints, and the one the sign-on screen ends on
+ASCII_TAB                        equ     00009h    ; Blank alongside the space in every separator test
+ASCII_LF                         equ     0000Ah    ; Second half of the newline the batch reader and the Y/N prompt write
+ASCII_CR                         equ     0000Dh    ; Ends every command line: the tail, the batch line and the console line
+ASCII_CTRL_Z                     equ     0001Ah    ; SUB in ASCII, the end-of-file mark COPY and TYPE honour
+ASCII_ESC                        equ     0001Bh    ; What the $E prompt escape puts out
+
+; One record of INTERNAL_COMMAND_TABLE: the name measures itself, and the
+; handler is written as the label the transient runs it at, which is where
+; every other reference to it names it too.
+
+COMMAND MACRO name, handler
+        LOCAL s, e
+        db      e - s
+s:
+        db      name
+e:
+        dw      handler - TRANSIENT_BIAS
+        ENDM
 
 ; The sign-on logo script.  One macro per record and per op kind, so
 ; SIGNON_LOGO_SCRIPT reads as the screen it paints rather than as bytes.
@@ -395,9 +414,9 @@ FIXUP_DONE:
         mov     di, VERSION_COPY                               ;#0172: BF 56 0B
         mov     cx, 0Bh                                        ;#0175: B9 0B 00
         rep     movsb                                          ;#0178: F3 A4
-        cmp     byte [VERSION_R_FLAG], 52h                     ;#017A: 80 3E 5D 0B 52
+        cmp     byte [VERSION_R_FLAG], "R"                     ;#017A: 80 3E 5D 0B 52
         jnz     short 186h                                     ;#017F: 75 05
-        mov     byte [MSG_COMMAND_VERSION+18h], 24h            ;#0181: C6 06 60 0B 24
+        mov     byte [MSG_COMMAND_VERSION+18h], "$"            ;#0181: C6 06 60 0B 24
         sti                                                    ;#0186: FB
         jmp     near COMMAND_MAIN                              ;#0187: E9 C0 15
 
@@ -597,15 +616,14 @@ SAVED_JFT_PTR_SEG:
 
 VEC_BATCH_ABORT:
         ; Far pointer, BATCH_ABORT_IGNORE by default
-        ; Format: FORMAT_HEX
-        ; raw
-        db      98h, 0Fh, 0, 0                                 ;#0281
+        ; Format: FORMAT_WORDS
+        dw      BATCH_ABORT_IGNORE                             ;#0281 98 0F
+        dw      0                                              ;#0283 00 00
 
 VEC_INT24_ACTION:
         ; INT 24h policy, INT_24_REPORT by default; 0FE5h jumps through it
-        ; Format: FORMAT_HEX
-        ; raw
-        db      0EDh, 0Fh                                      ;#0285
+        ; Format: FORMAT_WORDS
+        dw      INT_24_REPORT                                  ;#0285 ED 0F
 
 ERROR_LOCATION_CHAR:
         ; FILL_ERROR_LOCATION reads it into BH; the prompt and OPEN_COMMAND_COM set it
@@ -651,33 +669,33 @@ RELOAD_FAILED:
 
 VEC_PROMPT:
         ; -> RESIDENT_PROMPT_ENTRY; RETURN_TO_PROMPT jumps through this
-        ; Format: FORMAT_HEX
-        ; raw
-        db      99h, 0Eh, 0, 0                                 ;#0291
+        ; Format: FORMAT_WORDS
+        dw      RESIDENT_PROMPT_ENTRY                          ;#0291 99 0E
+        dw      0                                              ;#0293 00 00
 
 VEC_PROMPT_FLAG80:
         ; -> PROMPT_ENTRY_MARK_SEEN
-        ; Format: FORMAT_HEX
-        ; raw
-        db      19h, 0Fh, 0, 0                                 ;#0295
+        ; Format: FORMAT_WORDS
+        dw      PROMPT_ENTRY_MARK_SEEN                         ;#0295 19 0F
+        dw      0                                              ;#0297 00 00
 
 VEC_DRIVE_REMOVABLE:
         ; -> FAR_DRIVE_REMOVABLE
-        ; Format: FORMAT_HEX
-        ; raw
-        db      62h, 11h, 0, 0                                 ;#0299
+        ; Format: FORMAT_WORDS
+        dw      FAR_DRIVE_REMOVABLE                            ;#0299 62 11
+        dw      0                                              ;#029B 00 00
 
 VEC_OPEN_DEVICE:
         ; -> FAR_OPEN_DEVICE
-        ; Format: FORMAT_HEX
-        ; raw
-        db      66h, 11h, 0, 0                                 ;#029D
+        ; Format: FORMAT_WORDS
+        dw      FAR_OPEN_DEVICE                                ;#029D 66 11
+        dw      0                                              ;#029F 00 00
 
 VEC_EXEC_CHILD:
         ; -> EXEC_CHILD
-        ; Format: FORMAT_HEX
-        ; raw
-        db      32h, 11h, 0, 0                                 ;#02A1
+        ; Format: FORMAT_WORDS
+        dw      EXEC_CHILD                                     ;#02A1 32 11
+        dw      0                                              ;#02A3 00 00
 
 EXEC_PARAM_BLOCK:
         ; AH=4Bh parameter block: env seg, then far pointers to the tail and both FCBs
@@ -860,7 +878,7 @@ REDIR_OUT_NAME:
         ; 3C49    push    di
         ; mov     di, REDIR_OUT_NAME      ; ">" here
         ; mov     byte [es:di-1], 0       ; REDIR_APPEND_FLAG
-        ; cmp     byte [si], 3Eh          ; a second ">"?
+        ; cmp byte [si], ">"          ; a second ">"?
         ; inc     byte [es:di-1]          ; ...then append
         ;
         ; REDIRECT_STDIN and REDIRECT_STDOUT open whichever is non-empty with AX=3D00h
@@ -2047,9 +2065,9 @@ READKEY_FLUSH:
 
 UPCASE_AL_RESIDENT:
         ; Byte-identical to UPCASE_AL at 2F00h — one copy per half
-        cmp     al, 61h                                        ;#0BE4: 3C 61
+        cmp     al, "a"                                        ;#0BE4: 3C 61
         jb      short UPCASE_RES_RETURN                        ;#0BE6: 72 06
-        cmp     al, 7Ah                                        ;#0BE8: 3C 7A
+        cmp     al, "z"                                        ;#0BE8: 3C 7A
         jnbe    short UPCASE_RES_RETURN                        ;#0BEA: 77 02
         sub     al, 20h                                        ;#0BEC: 2C 20
 UPCASE_RES_RETURN:
@@ -2204,12 +2222,12 @@ PATCH_INSERT_MSG:
         mov     byte [SYSMSG_COLOQUE_O_COMMAND_COM_NA_UNIDA+COLOQUE_DRIVE], 0CBh ;#0CA3: C6 06 27 0A CB
         mov     byte [SYSMSG_COLOQUE_O_COMMAND_COM_NA_UNIDA+COLOQUE_COLON], 0CEh ;#0CA8: C6 06 28 0A CE
         xor     al, al                                         ;#0CAD: 32 C0
-        cmp     byte [HEAD_DATA_TAIL+6Ah], 3Ah                 ;#0CAF: 80 3E 01 02 3A
+        cmp     byte [HEAD_DATA_TAIL+6Ah], ":"                 ;#0CAF: 80 3E 01 02 3A
         jnz     short PATCHMSG_RETURN                          ;#0CB4: 75 0F
         mov     al, [HEAD_DATA_TAIL+69h]                       ;#0CB6: A0 00 02
         and     al, 0DFh                                       ;#0CB9: 24 DF
         mov     [SYSMSG_COLOQUE_O_COMMAND_COM_NA_UNIDA+COLOQUE_DRIVE], al ;#0CBB: A2 27 0A
-        mov     byte [SYSMSG_COLOQUE_O_COMMAND_COM_NA_UNIDA+COLOQUE_COLON], 3Ah ;#0CBE: C6 06 28 0A 3A
+        mov     byte [SYSMSG_COLOQUE_O_COMMAND_COM_NA_UNIDA+COLOQUE_COLON], ":" ;#0CBE: C6 06 28 0A 3A
         sub     al, 40h                                        ;#0CC3: 2C 40
 PATCHMSG_RETURN:
         ; AL is the drive number the message now names
@@ -2456,14 +2474,14 @@ ENVFIND_SKIP_STRING:
 
 ENVFIND_CHECK_EQUALS:
         ; The name matched only if '=' comes next
-        cmp     al, 3Dh                                        ;#0E03: 3C 3D
+        cmp     al, "="                                        ;#0E03: 3C 3D
         jnz     short ENVFIND_COMPARE_CHAR                     ;#0E05: 75 ED
         mov     al, [si]                                       ;#0E07: 8A 04
-        cmp     al, 20h                                        ;#0E09: 3C 20
+        cmp     al, " "                                        ;#0E09: 3C 20
         jbe     short ENV_STRING_NOT_FOUND                     ;#0E0B: 76 1F
-        cmp     al, 3Bh                                        ;#0E0D: 3C 3B
+        cmp     al, ";"                                        ;#0E0D: 3C 3B
         jz      short ENV_STRING_NOT_FOUND                     ;#0E0F: 74 1B
-        cmp     al, 2Ch                                        ;#0E11: 3C 2C
+        cmp     al, ","                                        ;#0E11: 3C 2C
         jz      short ENV_STRING_NOT_FOUND                     ;#0E13: 74 17
         push    es                                             ;#0E15: 06
         push    ds                                             ;#0E16: 1E
@@ -2773,11 +2791,11 @@ ABORT_ASK_AGAIN:
         ; Anything but N, S or Return asks once more
         mov     dx, SYSMSG_CANCELAR_ARQUIVO_DE_COMANDOS_S      ;#0FA1: BA 70 09
         call    near ASK_AND_READ_KEY                          ;#0FA4: E8 10 FC
-        cmp     al, 4Eh                                        ;#0FA7: 3C 4E
+        cmp     al, "N"                                        ;#0FA7: 3C 4E
         jz      short ABORT_RETURN                             ;#0FA9: 74 12
-        cmp     al, 53h                                        ;#0FAB: 3C 53
+        cmp     al, "S"                                        ;#0FAB: 3C 53
         jz      short ABORT_STOP_BATCH                         ;#0FAD: 74 04
-        cmp     al, 0Dh                                        ;#0FAF: 3C 0D
+        cmp     al, ASCII_CR                                   ;#0FAF: 3C 0D
         jnz     short ABORT_ASK_AGAIN                          ;#0FB1: 75 EE
 ABORT_STOP_BATCH:
         ; Drop SHELL_BATCH_ACTIVE and note that it was dropped
@@ -2842,9 +2860,9 @@ INT_24_REPORT:
         ;
         ; The prompt itself is four bytes of text and one instruction of policy:
         ;
-        ; 1033    cmp     al, 0Dh
+        ; 1033    cmp al, ASCII_CR
         ; jnz     short INT24_LOOK_UP_LETTER
-        ; mov     al, 50h
+        ; mov al, "P"
         ; 1039    mov     di, ERR_OPTION_LETTERS_B
         ; mov     cx, 4
         ; repne   scasb
@@ -2852,7 +2870,7 @@ INT_24_REPORT:
         ; dec     cl
         ; and     cl, 3
         ;
-        ; Enter is Persistir.  Pressing it costs one `mov al, 50h`, which is the cheapest
+        ; Enter is Persistir.  Pressing it costs one `mov al, "P"`, which is the cheapest
         ; possible way to give a prompt a default, and the retry is the safe answer to
         ; choose blind.  Ctrl-C is handled earlier, at 102Fh, and takes the same exit as
         ; Cancelar.
@@ -2899,9 +2917,9 @@ INT24_ASK_CHOICE:
         call    near ASK_AND_READ_KEY                          ;#102C: E8 88 FB
         cmp     al, 3                                          ;#102F: 3C 03
         jz      short INT24_ABORT                              ;#1031: 74 2D
-        cmp     al, 0Dh                                        ;#1033: 3C 0D
+        cmp     al, ASCII_CR                                   ;#1033: 3C 0D
         jnz     short INT24_LOOK_UP_LETTER                     ;#1035: 75 02
-        mov     al, 50h                                        ;#1037: B0 50
+        mov     al, "P"                                        ;#1037: B0 50
 INT24_LOOK_UP_LETTER:
         ; Which of the four letters was pressed
         mov     di, ERR_OPTION_LETTERS_B                       ;#1039: BF AC 09
@@ -2970,7 +2988,7 @@ FILL_ERROR_LOCATION:
         ; So the whole line is chosen rather than composed: five reference bytes and one
         ; eight-character name, and the expander does the rest.  Nothing here knows what
         ; any of the words are.
-        add     al, 41h                                        ;#107C: 04 41
+        add     al, "A"                                        ;#107C: 04 41
         mov     [ERRMSG_NA_UNIDADE+4], al                      ;#107E: A2 56 08
         push    ds                                             ;#1081: 1E
         lds     si, [bp+0Ah]                                   ;#1082: C5 76 0A
@@ -3028,7 +3046,7 @@ ADD_ERROR_OPTION:
         ; Append an option letter and its table reference byte
         jnz     short ERROROPT_STEP                            ;#10F2: 75 06
         mov     byte [si], 0CEh                                ;#10F4: C6 04 CE
-        mov     byte [di], 43h                                 ;#10F7: C6 05 43
+        mov     byte [di], "C"                                 ;#10F7: C6 05 43
 ERROROPT_STEP:
         ; Both cursors on, whether or not it was copied
         inc     si                                             ;#10FA: 46
@@ -3294,7 +3312,7 @@ RESET_MARK_AND_RETRY:
         mov     cx, ax                                         ;#1249: 8B C8
         mov     di, PSP_TAIL_LEN                               ;#124B: BF 80 00
         rep     movsb                                          ;#124E: F3 A4
-        mov     al, 0Dh                                        ;#1250: B0 0D
+        mov     al, ASCII_CR                                   ;#1250: B0 0D
         stosb                                                  ;#1252: AA
         push    cs                                             ;#1253: 0E
         pop     ds                                             ;#1254: 1F
@@ -3571,7 +3589,7 @@ INIT_PATCH_DOS_VERSION:
         jz      short INIT_VERSION_TOO_OLD                     ;#14D7: 74 6C
         or      ah, ah                                         ;#14D9: 0A E4
         jz      short INIT_PATCH_SISNE_VERSION                 ;#14DB: 74 0C
-        mov     byte [MSG_SISNE_PLUS+BANNER_R_OR_P], 50h       ;#14DD: C6 06 3B 0B 50
+        mov     byte [MSG_SISNE_PLUS+BANNER_R_OR_P], "P"       ;#14DD: C6 06 3B 0B 50
         add     ah, 60h                                        ;#14E2: 80 C4 60
         mov     [MSG_SISNE_PLUS+BANNER_SUFFIX], ah             ;#14E5: 88 26 3E 0B
 INIT_PATCH_SISNE_VERSION:
@@ -3645,9 +3663,9 @@ BUILD_TEMP_NAME:
         stosw                                                  ;#1564: AB
         mov     ax, 2Fh                                        ;#1565: B8 2F 00
         stosw                                                  ;#1568: AB
-        mov     al, 5Fh                                        ;#1569: B0 5F
+        mov     al, "_"                                        ;#1569: B0 5F
         rep     stosb                                          ;#156B: F3 AA
-        mov     al, 2Eh                                        ;#156D: B0 2E
+        mov     al, "."                                        ;#156D: B0 2E
         mov     [es:di-4], al                                  ;#156F: 26 88 45 FC
         xor     al, al                                         ;#1573: 32 C0
         stosb                                                  ;#1575: AA
@@ -3665,7 +3683,7 @@ DECIMAL_NEXT_DIGIT:
         jb      short DECIMAL_RANGE_CHECK                      ;#1581: 72 1C
         cmp     dx, 1999h                                      ;#1583: 81 FA 99 19
         jnbe    short DECIMAL_OVERFLOW                         ;#1587: 77 11
-        sub     al, 30h                                        ;#1589: 2C 30
+        sub     al, "0"                                        ;#1589: 2C 30
         cbw                                                    ;#158B: 98
         shl     dx, 1                                          ;#158C: D1 E2
         mov     cx, dx                                         ;#158E: 8B CA
@@ -3743,7 +3761,7 @@ SWITCH_E_ENV_SIZE:
         ; /E:nnnn -- PARSE_DECIMAL the size into ENV_SIZE_PARAS
         call    near SKIP_BLANKS                               ;#15F2: E8 47 01
         jb      short SWITCH_ARG_DONE                          ;#15F5: 72 0A
-        cmp     al, 3Ah                                        ;#15F7: 3C 3A
+        cmp     al, ":"                                        ;#15F7: 3C 3A
         jnz     short SWITCH_ARG_DONE                          ;#15F9: 75 06
         call    near PARSE_DECIMAL                             ;#15FB: E8 79 FF
         mov     [ENV_SIZE_PARAS], ax                           ;#15FE: A3 80 14
@@ -3763,17 +3781,17 @@ PARSE_STARTUP_SWITCH:
 DISPATCH_STARTUP_SWITCH:
         ; Upcase and compare against C P D O M E; unknown letters are ignored
         call    near UPCASE_CHAR                               ;#1613: E8 05 01
-        cmp     al, 43h                                        ;#1616: 3C 43
+        cmp     al, "C"                                        ;#1616: 3C 43
         jz      short SWITCH_C_COMMAND                         ;#1618: 74 AE
-        cmp     al, 50h                                        ;#161A: 3C 50
+        cmp     al, "P"                                        ;#161A: 3C 50
         jz      short SWITCH_P_PERMANENT                       ;#161C: 74 B7
-        cmp     al, 44h                                        ;#161E: 3C 44
+        cmp     al, "D"                                        ;#161E: 3C 44
         jz      short SWITCH_D_NO_AUTOEXEC                     ;#1620: 74 BE
-        cmp     al, 4Fh                                        ;#1622: 3C 4F
+        cmp     al, "O"                                        ;#1622: 3C 4F
         jz      short SWITCH_O_ECHO_OFF                        ;#1624: 74 C0
-        cmp     al, 4Dh                                        ;#1626: 3C 4D
+        cmp     al, "M"                                        ;#1626: 3C 4D
         jz      short SWITCH_M_NO_VECTOR                       ;#1628: 74 C2
-        cmp     al, 45h                                        ;#162A: 3C 45
+        cmp     al, "E"                                        ;#162A: 3C 45
         jz      short SWITCH_E_ENV_SIZE                        ;#162C: 74 C4
         ret                                                    ;#162E: C3
 
@@ -3786,7 +3804,7 @@ STARTUP_TAIL_TO_PATH:
         ; chosen so the "\COMMAND.COM" that may be appended still fits.  A trailing ':'
         ; is then dropped unless the whole argument is a drive:
         ;
-        ; 164D    cmp     byte [di-1], 3Ah
+        ; 164D    cmp byte [di-1], ":"
         ; jnz     short PATH_WRITE_NUL
         ; cmp     di, 2022h
         ; jz      short PATH_WRITE_NUL
@@ -3824,7 +3842,7 @@ PATH_END_OF_ARG:
         dec     si                                             ;#1646: 4E
         cmp     di, 2063h                                      ;#1647: 81 FF 63 20
         jnb     short PATH_INVALID                             ;#164B: 73 46
-        cmp     byte [di-1], 3Ah                               ;#164D: 80 7D FF 3A
+        cmp     byte [di-1], ":"                               ;#164D: 80 7D FF 3A
         jnz     short PATH_WRITE_NUL                           ;#1651: 75 07
         cmp     di, 2022h                                      ;#1653: 81 FF 22 20
         jz      short PATH_WRITE_NUL                           ;#1657: 74 01
@@ -3842,7 +3860,7 @@ PATH_WRITE_NUL:
         mov     al, [di]                                       ;#166F: 8A 05
         cmp     al, [PATH_SEP]                                 ;#1671: 3A 06 7A 14
         jz      short PATH_APPEND_COMMAND                      ;#1675: 74 05
-        cmp     al, 5Ch                                        ;#1677: 3C 5C
+        cmp     al, "\"                                        ;#1677: 3C 5C
         jz      short PATH_APPEND_COMMAND                      ;#1679: 74 01
         inc     di                                             ;#167B: 47
 PATH_APPEND_COMMAND:
@@ -3979,9 +3997,9 @@ STUB_COPY_TO_NUL:
 
 UPCASE_CHAR:
         ; AL a-z becomes A-Z via and 0DFh; anything else is left alone
-        cmp     al, 61h                                        ;#171B: 3C 61
+        cmp     al, "a"                                        ;#171B: 3C 61
         jb      short UPCASECHAR_RETURN                        ;#171D: 72 06
-        cmp     al, 7Ah                                        ;#171F: 3C 7A
+        cmp     al, "z"                                        ;#171F: 3C 7A
         jnbe    short UPCASECHAR_RETURN                        ;#1721: 77 02
         and     al, 0DFh                                       ;#1723: 24 DF
 UPCASECHAR_RETURN:
@@ -3990,9 +4008,9 @@ UPCASECHAR_RETURN:
 
 IS_DIGIT:
         ; Carry set when AL is 0-9 — cmp/cmc rather than a branch
-        cmp     al, 30h                                        ;#1726: 3C 30
+        cmp     al, "0"                                        ;#1726: 3C 30
         jb      short ISDIGIT_RETURN                           ;#1728: 72 03
-        cmp     al, 3Ah                                        ;#172A: 3C 3A
+        cmp     al, ":"                                        ;#172A: 3C 3A
         cmc                                                    ;#172C: F5
 ISDIGIT_RETURN:
         ; Carry when it is not one of 0 to 9
@@ -4013,12 +4031,12 @@ OPENRO_RETURN:
 SKIP_BLANKS:
         ; lodsb past spaces; CF set at CR, ZF set on a blank — the tail scanner
         lodsb                                                  ;#173C: AC
-        cmp     al, 0Dh                                        ;#173D: 3C 0D
+        cmp     al, ASCII_CR                                   ;#173D: 3C 0D
         stc                                                    ;#173F: F9
         jz      short BLANKS_RETURN                            ;#1740: 74 07
-        cmp     al, 20h                                        ;#1742: 3C 20
+        cmp     al, " "                                        ;#1742: 3C 20
         jz      short BLANKS_NOT_BLANK                         ;#1744: 74 02
-        cmp     al, 9                                          ;#1746: 3C 09
+        cmp     al, ASCII_TAB                                  ;#1746: 3C 09
 BLANKS_NOT_BLANK:
         ; Clear carry -- this character stands
         clc                                                    ;#1748: F8
@@ -4044,7 +4062,7 @@ PSPTAIL_AT_END:
         push    si                                             ;#175F: 56
         cbw                                                    ;#1760: 98
         add     si, ax                                         ;#1761: 03 F0
-        mov     byte [si], 0Dh                                 ;#1763: C6 04 0D
+        mov     byte [si], ASCII_CR                            ;#1763: C6 04 0D
         pop     si                                             ;#1766: 5E
 CMD_TAIL_LOOP:
         ; Walk the tail: CF ends it, ZF skips a blank, otherwise run one command
@@ -4061,7 +4079,7 @@ STARTUP_AUTOEXEC:
         pop     ds                                             ;#1777: 1F
         mov     ah, 19h                                        ;#1778: B4 19
         int     21h                                            ;#177A: CD 21
-        add     al, 41h                                        ;#177C: 04 41
+        add     al, "A"                                        ;#177C: 04 41
         mov     [AUTOEXEC_PATH], al                            ;#177E: A2 E3 03
         mov     ax, [HEAD_DATA_TAIL+69h]                       ;#1781: A1 00 02
         cmp     ah, 3Ah                                        ;#1784: 80 FC 3A
@@ -4332,7 +4350,7 @@ DRAW_SIGNON_SCREEN:
         ;
         ; The banner length is the part worth having:
         ;
-        ; 1999    cmp     byte [MSG_SISNE_PLUS+BANNER_SUFFIX], 24h
+        ; 1999    cmp byte [MSG_SISNE_PLUS+BANNER_SUFFIX], "$"
         ; jz      short SIGNON_VERSION_WIDTH
         ; inc     cx
         ;
@@ -4418,7 +4436,7 @@ DRAW_SIGNON_SCREEN:
         push    ss                                             ;#1994: 16
         pop     ds                                             ;#1995: 1F
         mov     cx, 9                                          ;#1996: B9 09 00
-        cmp     byte [MSG_SISNE_PLUS+BANNER_SUFFIX], 24h       ;#1999: 80 3E 3E 0B 24
+        cmp     byte [MSG_SISNE_PLUS+BANNER_SUFFIX], "$"       ;#1999: 80 3E 3E 0B 24
         jz      short SIGNON_VERSION_WIDTH                     ;#199E: 74 01
         inc     cx                                             ;#19A0: 41
 SIGNON_VERSION_WIDTH:
@@ -4828,8 +4846,9 @@ RUN_SCREEN_SCRIPT:
         ; and each op is a byte of kind, a byte of count, and then whatever that kind
         ; needs.  Three kinds: 0FFh repeats one character and attribute COUNT times, 00
         ; takes one attribute and then COUNT characters, 01 takes COUNT (character,
-        ; attribute) pairs.  Anything else is skipped at 1F8Bh rather than treated as an
-        ; error, so an unknown op costs its count byte and nothing more.
+        ; attribute) pairs.  Anything else gives up: 1F8Bh jumps to SCRIPT_UNKNOWN_OP,
+        ; which rings the bell twice through AH=0Eh and falls into the epilogue, so the
+        ; rest of the script is never drawn.  Nothing in SIGNON_LOGO_SCRIPT reaches it.
         ;
         ; Two counters run at once and only one of them is anybody's job.
         ; SCRIPT_NEXT_BYTE decrements SCRIPT_BYTES_LEFT and never touches
@@ -4901,7 +4920,7 @@ SCRIPT_NEXT_RECORD:
         jz      short SCRIPT_OP_RUN                            ;#1F84: 74 25
         cmp     cl, 0FFh                                       ;#1F86: 80 F9 FF
         jz      short SCRIPT_OP_REPEAT                         ;#1F89: 74 03
-        jmp     short CELLS_RECORD_DONE                        ;#1F8B: EB 66
+        jmp     short SCRIPT_UNKNOWN_OP                        ;#1F8B: EB 66
         nop                                                    ;#1F8D: 90
 
 SCRIPT_OP_REPEAT:
@@ -4952,10 +4971,10 @@ SCRIPT_OP_CELLS:
         call    near SCREEN_WRITE_RUN                          ;#1FEE: E8 C2 FE
         jmp     short SCRIPT_OP_CELLS                          ;#1FF1: EB DB
 
-CELLS_RECORD_DONE:
-        ; A space through AH=0Eh closes the line
+SCRIPT_UNKNOWN_OP:
+        ; Two bells through AH=0Eh, then the script is abandoned
         mov     bh, [SCREEN_PAGE]                              ;#1FF3: 8A 3E 12 06
-        mov     al, 7                                          ;#1FF7: B0 07
+        mov     al, ASCII_BEL                                  ;#1FF7: B0 07
         mov     ah, 0Eh                                        ;#1FF9: B4 0E
         push    bx                                             ;#1FFB: 53
         push    ax                                             ;#1FFC: 50
@@ -5656,9 +5675,9 @@ PROMPT_CHAR_TABLE:
         ; every one of them is the handler the escape names, and the first
         ; instruction is usually the character itself:
         ;
-        ; $$ PROMPT_DOLLAR   mov al,24h ('$')   $E PROMPT_ESCAPE   mov al,1Bh (ESC)
-        ; $L PROMPT_LESS     mov al,3Ch ('<')   $Q PROMPT_EQUAL    mov al,3Dh ('=')
-        ; $G PROMPT_GREATER  mov al,3Eh ('>')   $B PROMPT_PIPE     mov al,7Ch ('|')
+        ; $$ PROMPT_DOLLAR   mov al,"$" ('$')   $E PROMPT_ESCAPE   mov al,ASCII_ESC (ESC)
+        ; $L PROMPT_LESS     mov al,"<" ('<')   $Q PROMPT_EQUAL    mov al,"=" ('=')
+        ; $G PROMPT_GREATER  mov al,">" ('>')   $B PROMPT_PIPE     mov al,"|" ('|')
         ;
         ; Nothing here is fitted: the immediate operand IS the character the
         ; escape produces, for six of the thirteen independently.  The other
@@ -5841,189 +5860,71 @@ INTERNAL_COMMAND_TABLE:
         ; The largest group is not an alias set at all.  DATE, DATA, DAT, TIME, HORA and
         ; HOR share one handler because DATE and TIME are one command here -- see 5239h.
         ; Format: FORMAT_CMD_TABLE
-        db      3                                              ;#2CA3: 03 49 43 43 43 24
-        db      "ICC"                                          ;#2CA4
-        dw      CMD_ICC - TRANSIENT_BIAS                       ;#2CA7
-        db      5                                              ;#2CA9: 05 44 49 52 45 54 55 24
-        db      "DIRET"                                        ;#2CAA
-        dw      CMD_DIRET - TRANSIENT_BIAS                     ;#2CAF
-        db      3                                              ;#2CB1: 03 44 49 52 55 24
-        db      "DIR"                                          ;#2CB2
-        dw      CMD_DIRET - TRANSIENT_BIAS                     ;#2CB5
-        db      5                                              ;#2CB7: 05 45 52 41 53 45 9F 27
-        db      "ERASE"                                        ;#2CB8
-        dw      CMD_SUPRIME - TRANSIENT_BIAS                   ;#2CBD
-        db      3                                              ;#2CBF: 03 45 52 41 9F 27
-        db      "ERA"                                          ;#2CC0
-        dw      CMD_SUPRIME - TRANSIENT_BIAS                   ;#2CC3
-        db      7                                              ;#2CC5: 07 53 55 50 52 49 4D 45 9F 27
-        db      "SUPRIME"                                      ;#2CC6
-        dw      CMD_SUPRIME - TRANSIENT_BIAS                   ;#2CCD
-        db      3                                              ;#2CCF: 03 53 55 50 9F 27
-        db      "SUP"                                          ;#2CD0
-        dw      CMD_SUPRIME - TRANSIENT_BIAS                   ;#2CD3
-        db      3                                              ;#2CD5: 03 44 45 4C 9F 27
-        db      "DEL"                                          ;#2CD6
-        dw      CMD_SUPRIME - TRANSIENT_BIAS                   ;#2CD9
-        db      6                                              ;#2CDB: 06 52 45 4E 41 4D 45 E6 28
-        db      "RENAME"                                       ;#2CDC
-        dw      CMD_RENOMEIA - TRANSIENT_BIAS                  ;#2CE2
-        db      8                                              ;#2CE4: 08 52 45 4E 4F 4D 45 49 41 E6 28
-        db      "RENOMEIA"                                     ;#2CE5
-        dw      CMD_RENOMEIA - TRANSIENT_BIAS                  ;#2CED
-        db      3                                              ;#2CEF: 03 52 45 4E E6 28
-        db      "REN"                                          ;#2CF0
-        dw      CMD_RENOMEIA - TRANSIENT_BIAS                  ;#2CF3
-        db      4                                              ;#2CF5: 04 54 59 50 45 0E 2C
-        db      "TYPE"                                         ;#2CF6
-        dw      CMD_MOSTRA - TRANSIENT_BIAS                    ;#2CFA
-        db      6                                              ;#2CFC: 06 4D 4F 53 54 52 41 0E 2C
-        db      "MOSTRA"                                       ;#2CFD
-        dw      CMD_MOSTRA - TRANSIENT_BIAS                    ;#2D03
-        db      3                                              ;#2D05: 03 4D 4F 53 0E 2C
-        db      "MOS"                                          ;#2D06
-        dw      CMD_MOSTRA - TRANSIENT_BIAS                    ;#2D09
-        db      3                                              ;#2D0B: 03 56 4F 4C 8E 2C
-        db      "VOL"                                          ;#2D0C
-        dw      CMD_VOL - TRANSIENT_BIAS                       ;#2D0F
-        db      4                                              ;#2D11: 04 45 43 48 4F 2D 2D
-        db      "ECHO"                                         ;#2D12
-        dw      CMD_ECHO - TRANSIENT_BIAS                      ;#2D16
-        db      3                                              ;#2D18: 03 45 43 4F 2D 2D
-        db      "ECO"                                          ;#2D19
-        dw      CMD_ECHO - TRANSIENT_BIAS                      ;#2D1C
-        db      5                                              ;#2D1E: 05 42 52 45 41 4B 59 2D
-        db      "BREAK"                                        ;#2D1F
-        dw      CMD_BREAK - TRANSIENT_BIAS                     ;#2D24
-        db      6                                              ;#2D26: 06 56 45 52 49 46 59 88 2D
-        db      "VERIFY"                                       ;#2D27
-        dw      CMD_VERIFY - TRANSIENT_BIAS                    ;#2D2D
-        db      7                                              ;#2D2F: 07 42 52 41 53 43 49 49 9F 2D
-        db      "BRASCII"                                      ;#2D30
-        dw      CMD_BRASCII - TRANSIENT_BIAS                   ;#2D37
-        db      7                                              ;#2D39: 07 4F 50 54 49 4F 4E 53 DF 2D
-        db      "OPTIONS"                                      ;#2D3A
-        dw      CMD_OPTIONS - TRANSIENT_BIAS                   ;#2D41
-        db      4                                              ;#2D43: 04 4D 45 4E 55 02 2E
-        db      "MENU"                                         ;#2D44
-        dw      CMD_MENU - TRANSIENT_BIAS                      ;#2D48
-        db      6                                              ;#2D4A: 06 46 49 4C 54 52 4F 08 2E
-        db      "FILTRO"                                       ;#2D4B
-        dw      CMD_FILTRO - TRANSIENT_BIAS                    ;#2D51
-        db      4                                              ;#2D53: 04 50 41 54 48 4E 2E
-        db      "PATH"                                         ;#2D54
-        dw      CMD_PATH - TRANSIENT_BIAS                      ;#2D58
-        db      6                                              ;#2D5A: 06 50 52 4F 4D 50 54 CA 2E
-        db      "PROMPT"                                       ;#2D5B
-        dw      CMD_PROMPT - TRANSIENT_BIAS                    ;#2D61
-        db      3                                              ;#2D63: 03 53 45 54 06 2F
-        db      "SET"                                          ;#2D64
-        dw      CMD_SET - TRANSIENT_BIAS                       ;#2D67
-        db      3                                              ;#2D69: 03 52 45 4D 1F 30
-        db      "REM"                                          ;#2D6A
-        dw      RETURN_TO_PROMPT - TRANSIENT_BIAS              ;#2D6D
-        db      6                                              ;#2D6F: 06 43 4F 4D 45 4E 54 1F 30
-        db      "COMENT"                                       ;#2D70
-        dw      RETURN_TO_PROMPT - TRANSIENT_BIAS              ;#2D76
-        db      3                                              ;#2D78: 03 43 4F 4D 1F 30
-        db      "COM"                                          ;#2D79
-        dw      RETURN_TO_PROMPT - TRANSIENT_BIAS              ;#2D7C
-        db      4                                              ;#2D7E: 04 45 58 49 54 28 30
-        db      "EXIT"                                         ;#2D7F
-        dw      CMD_EXIT - TRANSIENT_BIAS                      ;#2D83
-        db      4                                              ;#2D85: 04 42 45 45 50 36 30
-        db      "BEEP"                                         ;#2D86
-        dw      CMD_BEEP - TRANSIENT_BIAS                      ;#2D8A
-        db      5                                              ;#2D8C: 05 50 41 55 53 45 3B 30
-        db      "PAUSE"                                        ;#2D8D
-        dw      CMD_PAUSE - TRANSIENT_BIAS                     ;#2D92
-        db      5                                              ;#2D94: 05 50 41 55 53 41 3B 30
-        db      "PAUSA"                                        ;#2D95
-        dw      CMD_PAUSE - TRANSIENT_BIAS                     ;#2D9A
-        db      3                                              ;#2D9C: 03 50 41 55 3B 30
-        db      "PAU"                                          ;#2D9D
-        dw      CMD_PAUSE - TRANSIENT_BIAS                     ;#2DA0
-        db      3                                              ;#2DA2: 03 56 45 52 67 30
-        db      "VER"                                          ;#2DA3
-        dw      CMD_VER - TRANSIENT_BIAS                       ;#2DA6
-        db      4                                              ;#2DA8: 04 43 54 54 59 80 30
-        db      "CTTY"                                         ;#2DA9
-        dw      CMD_CTTY - TRANSIENT_BIAS                      ;#2DAD
-        db      3                                              ;#2DAF: 03 43 4C 53 A8 30
-        db      "CLS"                                          ;#2DB0
-        dw      CMD_CLS - TRANSIENT_BIAS                       ;#2DB3
-        db      4                                              ;#2DB5: 04 44 41 54 45 19 32
-        db      "DATE"                                         ;#2DB6
-        dw      CMD_DATETIME - TRANSIENT_BIAS                  ;#2DBA
-        db      4                                              ;#2DBC: 04 44 41 54 41 19 32
-        db      "DATA"                                         ;#2DBD
-        dw      CMD_DATETIME - TRANSIENT_BIAS                  ;#2DC1
-        db      3                                              ;#2DC3: 03 44 41 54 19 32
-        db      "DAT"                                          ;#2DC4
-        dw      CMD_DATETIME - TRANSIENT_BIAS                  ;#2DC7
-        db      4                                              ;#2DC9: 04 54 49 4D 45 19 32
-        db      "TIME"                                         ;#2DCA
-        dw      CMD_DATETIME - TRANSIENT_BIAS                  ;#2DCE
-        db      4                                              ;#2DD0: 04 48 4F 52 41 19 32
-        db      "HORA"                                         ;#2DD1
-        dw      CMD_DATETIME - TRANSIENT_BIAS                  ;#2DD5
-        db      3                                              ;#2DD7: 03 48 4F 52 19 32
-        db      "HOR"                                          ;#2DD8
-        dw      CMD_DATETIME - TRANSIENT_BIAS                  ;#2DDB
-        db      5                                              ;#2DDD: 05 43 48 44 49 52 78 33
-        db      "CHDIR"                                        ;#2DDE
-        dw      CMD_CHDIR - TRANSIENT_BIAS                     ;#2DE3
-        db      2                                              ;#2DE5: 02 43 44 78 33
-        db      "CD"                                           ;#2DE6
-        dw      CMD_CHDIR - TRANSIENT_BIAS                     ;#2DE8
-        db      5                                              ;#2DEA: 05 4D 4B 44 49 52 7F 33
-        db      "MKDIR"                                        ;#2DEB
-        dw      CMD_MKDIR - TRANSIENT_BIAS                     ;#2DF0
-        db      2                                              ;#2DF2: 02 4D 44 7F 33
-        db      "MD"                                           ;#2DF3
-        dw      CMD_MKDIR - TRANSIENT_BIAS                     ;#2DF5
-        db      5                                              ;#2DF7: 05 52 4D 44 49 52 86 33
-        db      "RMDIR"                                        ;#2DF8
-        dw      CMD_RMDIR - TRANSIENT_BIAS                     ;#2DFD
-        db      2                                              ;#2DFF: 02 52 44 86 33
-        db      "RD"                                           ;#2E00
-        dw      CMD_RMDIR - TRANSIENT_BIAS                     ;#2E02
-        db      6                                              ;#2E04: 06 41 50 50 45 4E 44 D3 33
-        db      "APPEND"                                       ;#2E05
-        dw      CMD_APPEND - TRANSIENT_BIAS                    ;#2E0B
-        db      4                                              ;#2E0D: 04 4A 4F 49 4E 7B 36
-        db      "JOIN"                                         ;#2E0E
-        dw      CMD_JOIN - TRANSIENT_BIAS                      ;#2E12
-        db      5                                              ;#2E14: 05 53 55 42 53 54 DC 36
-        db      "SUBST"                                        ;#2E15
-        dw      CMD_SUBST - TRANSIENT_BIAS                     ;#2E1A
-        db      4                                              ;#2E1C: 04 43 48 43 50 22 37
-        db      "CHCP"                                         ;#2E1D
-        dw      CMD_CHCP - TRANSIENT_BIAS                      ;#2E21
-        db      4                                              ;#2E23: 04 43 41 4C 4C 28 37
-        db      "CALL"                                         ;#2E24
-        dw      CMD_CALL - TRANSIENT_BIAS                      ;#2E28
-        db      3                                              ;#2E2A: 03 46 4F 52 3F 37
-        db      "FOR"                                          ;#2E2B
-        dw      CMD_FOR - TRANSIENT_BIAS                       ;#2E2E
-        db      2                                              ;#2E30: 02 49 46 1E 38
-        db      "IF"                                           ;#2E31
-        dw      CMD_IF - TRANSIENT_BIAS                        ;#2E33
-        db      5                                              ;#2E35: 05 53 48 49 46 54 D6 39
-        db      "SHIFT"                                        ;#2E36
-        dw      CMD_SHIFT - TRANSIENT_BIAS                     ;#2E3B
-        db      4                                              ;#2E3D: 04 47 4F 54 4F 0D 3A
-        db      "GOTO"                                         ;#2E3E
-        dw      CMD_GOTO - TRANSIENT_BIAS                      ;#2E42
-        db      4                                              ;#2E44: 04 43 4F 50 59 A2 3A
-        db      "COPY"                                         ;#2E45
-        dw      CMD_COPIA - TRANSIENT_BIAS                     ;#2E49
-        db      5                                              ;#2E4B: 05 43 4F 50 49 41 A2 3A
-        db      "COPIA"                                        ;#2E4C
-        dw      CMD_COPIA - TRANSIENT_BIAS                     ;#2E51
-        db      3                                              ;#2E53: 03 43 4F 50 A2 3A
-        db      "COP"                                          ;#2E54
-        dw      CMD_COPIA - TRANSIENT_BIAS                     ;#2E57
+        ; - One record per clause, keyed on the length byte, because the name's length
+        ; - is where the handler word sits: COMMAND measures the name itself and puts
+        ; - the count back, and takes the handler off the transient's bias.  A zero
+        ; - length ends the table, which is the one record that is not a command.
+        COMMAND "ICC", CMD_ICC                                 ;#2CA3: 03 49 43 43 43 24
+        COMMAND "DIRET", CMD_DIRET                             ;#2CA9: 05 44 49 52 45 54 55 24
+        COMMAND "DIR", CMD_DIRET                               ;#2CB1: 03 44 49 52 55 24
+        COMMAND "ERASE", CMD_SUPRIME                           ;#2CB7: 05 45 52 41 53 45 9F 27
+        COMMAND "ERA", CMD_SUPRIME                             ;#2CBF: 03 45 52 41 9F 27
+        COMMAND "SUPRIME", CMD_SUPRIME                         ;#2CC5: 07 53 55 50 52 49 4D 45 9F 27
+        COMMAND "SUP", CMD_SUPRIME                             ;#2CCF: 03 53 55 50 9F 27
+        COMMAND "DEL", CMD_SUPRIME                             ;#2CD5: 03 44 45 4C 9F 27
+        COMMAND "RENAME", CMD_RENOMEIA                         ;#2CDB: 06 52 45 4E 41 4D 45 E6 28
+        COMMAND "RENOMEIA", CMD_RENOMEIA                       ;#2CE4: 08 52 45 4E 4F 4D 45 49 41 E6 28
+        COMMAND "REN", CMD_RENOMEIA                            ;#2CEF: 03 52 45 4E E6 28
+        COMMAND "TYPE", CMD_MOSTRA                             ;#2CF5: 04 54 59 50 45 0E 2C
+        COMMAND "MOSTRA", CMD_MOSTRA                           ;#2CFC: 06 4D 4F 53 54 52 41 0E 2C
+        COMMAND "MOS", CMD_MOSTRA                              ;#2D05: 03 4D 4F 53 0E 2C
+        COMMAND "VOL", CMD_VOL                                 ;#2D0B: 03 56 4F 4C 8E 2C
+        COMMAND "ECHO", CMD_ECHO                               ;#2D11: 04 45 43 48 4F 2D 2D
+        COMMAND "ECO", CMD_ECHO                                ;#2D18: 03 45 43 4F 2D 2D
+        COMMAND "BREAK", CMD_BREAK                             ;#2D1E: 05 42 52 45 41 4B 59 2D
+        COMMAND "VERIFY", CMD_VERIFY                           ;#2D26: 06 56 45 52 49 46 59 88 2D
+        COMMAND "BRASCII", CMD_BRASCII                         ;#2D2F: 07 42 52 41 53 43 49 49 9F 2D
+        COMMAND "OPTIONS", CMD_OPTIONS                         ;#2D39: 07 4F 50 54 49 4F 4E 53 DF 2D
+        COMMAND "MENU", CMD_MENU                               ;#2D43: 04 4D 45 4E 55 02 2E
+        COMMAND "FILTRO", CMD_FILTRO                           ;#2D4A: 06 46 49 4C 54 52 4F 08 2E
+        COMMAND "PATH", CMD_PATH                               ;#2D53: 04 50 41 54 48 4E 2E
+        COMMAND "PROMPT", CMD_PROMPT                           ;#2D5A: 06 50 52 4F 4D 50 54 CA 2E
+        COMMAND "SET", CMD_SET                                 ;#2D63: 03 53 45 54 06 2F
+        COMMAND "REM", RETURN_TO_PROMPT                        ;#2D69: 03 52 45 4D 1F 30
+        COMMAND "COMENT", RETURN_TO_PROMPT                     ;#2D6F: 06 43 4F 4D 45 4E 54 1F 30
+        COMMAND "COM", RETURN_TO_PROMPT                        ;#2D78: 03 43 4F 4D 1F 30
+        COMMAND "EXIT", CMD_EXIT                               ;#2D7E: 04 45 58 49 54 28 30
+        COMMAND "BEEP", CMD_BEEP                               ;#2D85: 04 42 45 45 50 36 30
+        COMMAND "PAUSE", CMD_PAUSE                             ;#2D8C: 05 50 41 55 53 45 3B 30
+        COMMAND "PAUSA", CMD_PAUSE                             ;#2D94: 05 50 41 55 53 41 3B 30
+        COMMAND "PAU", CMD_PAUSE                               ;#2D9C: 03 50 41 55 3B 30
+        COMMAND "VER", CMD_VER                                 ;#2DA2: 03 56 45 52 67 30
+        COMMAND "CTTY", CMD_CTTY                               ;#2DA8: 04 43 54 54 59 80 30
+        COMMAND "CLS", CMD_CLS                                 ;#2DAF: 03 43 4C 53 A8 30
+        COMMAND "DATE", CMD_DATETIME                           ;#2DB5: 04 44 41 54 45 19 32
+        COMMAND "DATA", CMD_DATETIME                           ;#2DBC: 04 44 41 54 41 19 32
+        COMMAND "DAT", CMD_DATETIME                            ;#2DC3: 03 44 41 54 19 32
+        COMMAND "TIME", CMD_DATETIME                           ;#2DC9: 04 54 49 4D 45 19 32
+        COMMAND "HORA", CMD_DATETIME                           ;#2DD0: 04 48 4F 52 41 19 32
+        COMMAND "HOR", CMD_DATETIME                            ;#2DD7: 03 48 4F 52 19 32
+        COMMAND "CHDIR", CMD_CHDIR                             ;#2DDD: 05 43 48 44 49 52 78 33
+        COMMAND "CD", CMD_CHDIR                                ;#2DE5: 02 43 44 78 33
+        COMMAND "MKDIR", CMD_MKDIR                             ;#2DEA: 05 4D 4B 44 49 52 7F 33
+        COMMAND "MD", CMD_MKDIR                                ;#2DF2: 02 4D 44 7F 33
+        COMMAND "RMDIR", CMD_RMDIR                             ;#2DF7: 05 52 4D 44 49 52 86 33
+        COMMAND "RD", CMD_RMDIR                                ;#2DFF: 02 52 44 86 33
+        COMMAND "APPEND", CMD_APPEND                           ;#2E04: 06 41 50 50 45 4E 44 D3 33
+        COMMAND "JOIN", CMD_JOIN                               ;#2E0D: 04 4A 4F 49 4E 7B 36
+        COMMAND "SUBST", CMD_SUBST                             ;#2E14: 05 53 55 42 53 54 DC 36
+        COMMAND "CHCP", CMD_CHCP                               ;#2E1C: 04 43 48 43 50 22 37
+        COMMAND "CALL", CMD_CALL                               ;#2E23: 04 43 41 4C 4C 28 37
+        COMMAND "FOR", CMD_FOR                                 ;#2E2A: 03 46 4F 52 3F 37
+        COMMAND "IF", CMD_IF                                   ;#2E30: 02 49 46 1E 38
+        COMMAND "SHIFT", CMD_SHIFT                             ;#2E35: 05 53 48 49 46 54 D6 39
+        COMMAND "GOTO", CMD_GOTO                               ;#2E3D: 04 47 4F 54 4F 0D 3A
+        COMMAND "COPY", CMD_COPIA                              ;#2E44: 04 43 4F 50 59 A2 3A
+        COMMAND "COPIA", CMD_COPIA                             ;#2E4B: 05 43 4F 50 49 41 A2 3A
+        COMMAND "COP", CMD_COPIA                               ;#2E53: 03 43 4F 50 A2 3A
         db      0                                              ;#2E59: 00
 
 TRANSIENT_ENTRY:
@@ -6075,7 +5976,7 @@ DISPATCH_LINE:
         mov     si, LINE_BUF                                   ;#2EB1: BE 64 46
         call    near SKIP_WHITESPACE                           ;#2EB4: E8 54 00
         jz      short ERROREXIT_GO                             ;#2EB7: 74 44
-        cmp     al, 3Bh                                        ;#2EB9: 3C 3B
+        cmp     al, ";"                                        ;#2EB9: 3C 3B
         jz      short ERROREXIT_GO                             ;#2EBB: 74 40
         call    near SAVE_REDIRECTION                          ;#2EBD: E8 E9 0D
         call    near PARSE_NAME_TO_FCB                         ;#2EC0: E8 90 13
@@ -6140,9 +6041,9 @@ UPCASE_AL:
         ; three copies necessary rather than wasteful -- a `call` cannot cross a frame,
         ; and the alternative is the far-call trampoline at 1242h for eleven bytes of
         ; work.
-        cmp     al, 61h                                        ;#2F00: 3C 61
+        cmp     al, "a"                                        ;#2F00: 3C 61
         jb      short UPCASE_RETURN                            ;#2F02: 72 06
-        cmp     al, 7Ah                                        ;#2F04: 3C 7A
+        cmp     al, "z"                                        ;#2F04: 3C 7A
         jnbe    short UPCASE_RETURN                            ;#2F06: 77 02
         sub     al, 20h                                        ;#2F08: 2C 20
 UPCASE_RETURN:
@@ -6152,12 +6053,12 @@ UPCASE_RETURN:
 SKIP_WHITESPACE:
         ; lodsb past spaces and tabs
         lodsb                                                  ;#2F0B: AC
-        cmp     al, 20h                                        ;#2F0C: 3C 20
+        cmp     al, " "                                        ;#2F0C: 3C 20
         jz      short SKIP_WHITESPACE                          ;#2F0E: 74 FB
-        cmp     al, 9                                          ;#2F10: 3C 09
+        cmp     al, ASCII_TAB                                  ;#2F10: 3C 09
         jz      short SKIP_WHITESPACE                          ;#2F12: 74 F7
         dec     si                                             ;#2F14: 4E
-        cmp     al, 0Dh                                        ;#2F15: 3C 0D
+        cmp     al, ASCII_CR                                   ;#2F15: 3C 0D
         ret                                                    ;#2F17: C3
 
 IS_NAME_TERMINATOR:
@@ -6180,35 +6081,35 @@ IS_NAME_TERMINATOR:
         ; already propagating.
         call    near NORMALISE_PATH_SEP                        ;#2F18: E8 45 00
         jz      short TERMINATOR_RETURN                        ;#2F1B: 74 42
-        cmp     al, 3Ah                                        ;#2F1D: 3C 3A
+        cmp     al, ":"                                        ;#2F1D: 3C 3A
         jz      short TERMINATOR_RETURN                        ;#2F1F: 74 3E
-        cmp     al, 2Eh                                        ;#2F21: 3C 2E
+        cmp     al, "."                                        ;#2F21: 3C 2E
         jz      short TERMINATOR_RETURN                        ;#2F23: 74 3A
         cmp     al, [cs:SWITCHAR_CHAR]                         ;#2F25: 2E 3A 06 62 46
         jz      short NAME_TERMINATOR_YES                      ;#2F2A: 74 32
-        cmp     al, 2Fh                                        ;#2F2C: 3C 2F
+        cmp     al, "/"                                        ;#2F2C: 3C 2F
         jz      short NAME_TERMINATOR_YES                      ;#2F2E: 74 2E
-        cmp     al, 3Dh                                        ;#2F30: 3C 3D
+        cmp     al, "="                                        ;#2F30: 3C 3D
         jz      short NAME_TERMINATOR_YES                      ;#2F32: 74 2A
-        cmp     al, 2Ch                                        ;#2F34: 3C 2C
+        cmp     al, ","                                        ;#2F34: 3C 2C
         jz      short NAME_TERMINATOR_YES                      ;#2F36: 74 26
-        cmp     al, 3Bh                                        ;#2F38: 3C 3B
+        cmp     al, ";"                                        ;#2F38: 3C 3B
         jz      short NAME_TERMINATOR_YES                      ;#2F3A: 74 22
-        cmp     al, 2Bh                                        ;#2F3C: 3C 2B
+        cmp     al, "+"                                        ;#2F3C: 3C 2B
         jz      short NAME_TERMINATOR_YES                      ;#2F3E: 74 1E
-        cmp     al, 5Bh                                        ;#2F40: 3C 5B
+        cmp     al, "["                                        ;#2F40: 3C 5B
         jz      short NAME_TERMINATOR_YES                      ;#2F42: 74 1A
-        cmp     al, 5Dh                                        ;#2F44: 3C 5D
+        cmp     al, "]"                                        ;#2F44: 3C 5D
         jz      short NAME_TERMINATOR_YES                      ;#2F46: 74 16
-        cmp     al, 22h                                        ;#2F48: 3C 22
+        cmp     al, '"'                                        ;#2F48: 3C 22
         jz      short NAME_TERMINATOR_YES                      ;#2F4A: 74 12
-        cmp     al, 7Ch                                        ;#2F4C: 3C 7C
+        cmp     al, "|"                                        ;#2F4C: 3C 7C
         jz      short NAME_TERMINATOR_YES                      ;#2F4E: 74 0E
-        cmp     al, 3Ch                                        ;#2F50: 3C 3C
+        cmp     al, "<"                                        ;#2F50: 3C 3C
         jz      short NAME_TERMINATOR_YES                      ;#2F52: 74 0A
-        cmp     al, 3Eh                                        ;#2F54: 3C 3E
+        cmp     al, ">"                                        ;#2F54: 3C 3E
         jz      short NAME_TERMINATOR_YES                      ;#2F56: 74 06
-        cmp     al, 20h                                        ;#2F58: 3C 20
+        cmp     al, " "                                        ;#2F58: 3C 20
         jnbe    short TERMINATOR_RETURN                        ;#2F5A: 77 03
         cmp     al, al                                         ;#2F5C: 3A C0
 NAME_TERMINATOR_YES:
@@ -6220,11 +6121,11 @@ TERMINATOR_RETURN:
 
 NORMALISE_PATH_SEP:
         ; Turn PATH_SEP_CHAR into a backslash, leaving anything else alone
-        cmp     al, 5Ch                                        ;#2F60: 3C 5C
+        cmp     al, "\"                                        ;#2F60: 3C 5C
         jz      short NORMALISE_RETURN                         ;#2F62: 74 09
         cmp     al, [cs:PATH_SEP_CHAR]                         ;#2F64: 2E 3A 06 63 46
         jnz     short NORMALISE_RETURN                         ;#2F69: 75 02
-        mov     al, 5Ch                                        ;#2F6B: B0 5C
+        mov     al, "\"                                        ;#2F6B: B0 5C
 NORMALISE_RETURN:
         ; Either separator comes back as a backslash
         ret                                                    ;#2F6D: C3
@@ -6233,7 +6134,7 @@ IS_PATH_SEP:
         ; ZF set on the configured separator or a literal backslash
         cmp     al, [cs:PATH_SEP_CHAR]                         ;#2F6E: 2E 3A 06 63 46
         jz      short PATHSEP_RETURN                           ;#2F73: 74 02
-        cmp     al, 5Ch                                        ;#2F75: 3C 5C
+        cmp     al, "\"                                        ;#2F75: 3C 5C
 PATHSEP_RETURN:
         ; Zero flag set for '/' or the chosen character
         ret                                                    ;#2F77: C3
@@ -6247,7 +6148,7 @@ UPCASECR_NEXT_CHAR:
         call    near UPCASE_AL                                 ;#2F7B: E8 82 FF
         stosb                                                  ;#2F7E: AA
         inc     cx                                             ;#2F7F: 41
-        cmp     al, 0Dh                                        ;#2F80: 3C 0D
+        cmp     al, ASCII_CR                                   ;#2F80: 3C 0D
         jnz     short UPCASECR_NEXT_CHAR                       ;#2F82: 75 F6
         dec     cx                                             ;#2F84: 49
         ret                                                    ;#2F85: C3
@@ -6274,7 +6175,7 @@ TOCR_NEXT_CHAR:
         lodsb                                                  ;#2F96: AC
         stosb                                                  ;#2F97: AA
         inc     cx                                             ;#2F98: 41
-        cmp     al, 0Dh                                        ;#2F99: 3C 0D
+        cmp     al, ASCII_CR                                   ;#2F99: 3C 0D
         jnz     short TOCR_NEXT_CHAR                           ;#2F9B: 75 F9
         dec     cx                                             ;#2F9D: 49
         ret                                                    ;#2F9E: C3
@@ -6288,7 +6189,7 @@ TOCRBP_NEXT_CHAR:
         inc     bp                                             ;#2FA4: 45
         stosb                                                  ;#2FA5: AA
         inc     cx                                             ;#2FA6: 41
-        cmp     al, 0Dh                                        ;#2FA7: 3C 0D
+        cmp     al, ASCII_CR                                   ;#2FA7: 3C 0D
         jnz     short TOCRBP_NEXT_CHAR                         ;#2FA9: 75 F6
         dec     cx                                             ;#2FAB: 49
         ret                                                    ;#2FAC: C3
@@ -6346,29 +6247,29 @@ ENVSCAN_SKIP_STRING:
 
 IS_WILDCARD:
         ; ZF set on '*' or '?'
-        cmp     al, 2Ah                                        ;#2FE0: 3C 2A
+        cmp     al, "*"                                        ;#2FE0: 3C 2A
         jz      short WILDCARD_RETURN                          ;#2FE2: 74 02
-        cmp     al, 3Fh                                        ;#2FE4: 3C 3F
+        cmp     al, "?"                                        ;#2FE4: 3C 3F
 WILDCARD_RETURN:
         ; Zero flag set for '*' or '?'
         ret                                                    ;#2FE6: C3
 
 IS_REDIR_CHAR:
         ; ZF set on one of " > < | — the four the tail scanner dispatches on
-        cmp     al, 22h                                        ;#2FE7: 3C 22
+        cmp     al, '"'                                        ;#2FE7: 3C 22
         jz      short REDIRCHAR_RETURN                         ;#2FE9: 74 0A
-        cmp     al, 3Eh                                        ;#2FEB: 3C 3E
+        cmp     al, ">"                                        ;#2FEB: 3C 3E
         jz      short REDIRCHAR_RETURN                         ;#2FED: 74 06
-        cmp     al, 3Ch                                        ;#2FEF: 3C 3C
+        cmp     al, "<"                                        ;#2FEF: 3C 3C
         jz      short REDIRCHAR_RETURN                         ;#2FF1: 74 02
-        cmp     al, 7Ch                                        ;#2FF3: 3C 7C
+        cmp     al, "|"                                        ;#2FF3: 3C 7C
 REDIRCHAR_RETURN:
         ; Zero flag set for a quote, '<', '>' or '|'
         ret                                                    ;#2FF5: C3
 
 IS_CR_OR_SWITCH:
         ; ZF set when AL is CR or the switch character
-        cmp     al, 0Dh                                        ;#2FF6: 3C 0D
+        cmp     al, ASCII_CR                                   ;#2FF6: 3C 0D
         jz      short CRSWITCH_RETURN                          ;#2FF8: 74 05
         cmp     al, [cs:SWITCHAR_CHAR]                         ;#2FFA: 2E 3A 06 62 46
 CRSWITCH_RETURN:
@@ -6377,30 +6278,30 @@ CRSWITCH_RETURN:
 
 IS_CR_OR_BLANK:
         ; ZF set when AL is CR, space or TAB
-        cmp     al, 0Dh                                        ;#3000: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3000: 3C 0D
         jz      short ISBLANK_RETURN                           ;#3002: 74 06
 IS_BLANK:
         ; Same test without the CR arm — space or TAB only
-        cmp     al, 20h                                        ;#3004: 3C 20
+        cmp     al, " "                                        ;#3004: 3C 20
         jz      short ISBLANK_RETURN                           ;#3006: 74 02
-        cmp     al, 9                                          ;#3008: 3C 09
+        cmp     al, ASCII_TAB                                  ;#3008: 3C 09
 ISBLANK_RETURN:
         ; Zero flag set for CR, space or tab
         ret                                                    ;#300A: C3
 
 IS_SEPARATOR:
         ; ZF set when AL is one of ; = , space TAB
-        cmp     al, 3Bh                                        ;#300B: 3C 3B
+        cmp     al, ";"                                        ;#300B: 3C 3B
         jz      short SEPNOSEMI_RETURN                         ;#300D: 74 0E
 IS_SEPARATOR_NO_SEMI:
         ; IS_SEPARATOR past its ';' test: = , space TAB only
-        cmp     al, 3Dh                                        ;#300F: 3C 3D
+        cmp     al, "="                                        ;#300F: 3C 3D
         jz      short SEPNOSEMI_RETURN                         ;#3011: 74 0A
-        cmp     al, 2Ch                                        ;#3013: 3C 2C
+        cmp     al, ","                                        ;#3013: 3C 2C
         jz      short SEPNOSEMI_RETURN                         ;#3015: 74 06
-        cmp     al, 20h                                        ;#3017: 3C 20
+        cmp     al, " "                                        ;#3017: 3C 20
         jz      short SEPNOSEMI_RETURN                         ;#3019: 74 02
-        cmp     al, 9                                          ;#301B: 3C 09
+        cmp     al, ASCII_TAB                                  ;#301B: 3C 09
 SEPNOSEMI_RETURN:
         ; Zero flag set; the semicolon is not one here
         ret                                                    ;#301D: C3
@@ -6438,7 +6339,7 @@ SKIP_BLANKS_AT_BP:
         mov     al, [bp]                                       ;#301F: 8A 46 00
         call    near IS_BLANK                                  ;#3022: E8 DF FF
         jz      short SKIP_BLANKS_BP_NEXT                      ;#3025: 74 F7
-        cmp     al, 0Dh                                        ;#3027: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3027: 3C 0D
         ret                                                    ;#3029: C3
 
 SKIP_SEPARATORS_AT_SI:
@@ -6447,7 +6348,7 @@ SKIP_SEPARATORS_AT_SI:
         call    near IS_SEPARATOR                              ;#302B: E8 DD FF
         jz      short SKIP_SEPARATORS_AT_SI                    ;#302E: 74 FA
         dec     si                                             ;#3030: 4E
-        cmp     al, 0Dh                                        ;#3031: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3031: 3C 0D
         ret                                                    ;#3033: C3
 
 IS_DOT_ENTRY:
@@ -6458,7 +6359,7 @@ IS_DOT_ENTRY:
         ; 3034    test    byte [si+DTA_ATTR], 10h    ; a directory?
         ; clc
         ; jz      short DOTENTRY_RETURN
-        ; cmp     byte [si+DTA_NAME], 2Eh    ; name starts with '.'
+        ; cmp byte [si+DTA_NAME], "."    ; name starts with '.'
         ; stc
         ; jnz     short DOTENTRY_RETURN
         ; cmp     byte [si+DTA_NAME+1], 0    ; exactly "."
@@ -6493,7 +6394,7 @@ IS_DOT_ENTRY:
         test    byte [si+DTA_ATTR], 10h                        ;#3034: F6 44 15 10
         clc                                                    ;#3038: F8
         jz      short DOTENTRY_RETURN                          ;#3039: 74 14
-        cmp     byte [si+DTA_NAME], 2Eh                        ;#303B: 80 7C 1E 2E
+        cmp     byte [si+DTA_NAME], "."                        ;#303B: 80 7C 1E 2E
         stc                                                    ;#303F: F9
         jnz     short DOTENTRY_RETURN                          ;#3040: 75 0D
         cmp     byte [si+DTA_NAME+1], 0                        ;#3042: 80 7C 1F 00
@@ -6510,7 +6411,7 @@ SCAN_TO_DOT:
         lodsb                                                  ;#3050: AC
         or      al, al                                         ;#3051: 0A C0
         jz      short SCANDOT_RETURN                           ;#3053: 74 04
-        cmp     al, 2Eh                                        ;#3055: 3C 2E
+        cmp     al, "."                                        ;#3055: 3C 2E
         jnz     short SCAN_TO_DOT                              ;#3057: 75 F7
 SCANDOT_RETURN:
         ; Zero flag distinguishes the NUL from the dot
@@ -6644,7 +6545,7 @@ GUARDED_COPY_CHAR:
         ; Up to the CR, or until DI catches SI
         lodsb                                                  ;#312E: AC
         stosb                                                  ;#312F: AA
-        cmp     al, 0Dh                                        ;#3130: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3130: 3C 0D
         jnz     short GUARDED_COPY_CHAR                        ;#3132: 75 FA
 GUARDED_RETURN:
         ; Stopped either way
@@ -6733,7 +6634,7 @@ TABLE_RETURN:
 
 COPY_MAYBE_QUOTED:
         ; Copy a token, honouring a leading quote
-        cmp     byte [si], 22h                                 ;#316A: 80 3C 22
+        cmp     byte [si], '"'                                 ;#316A: 80 3C 22
         jnz     short QUOTED_EMPTY                             ;#316D: 75 19
         push    ax                                             ;#316F: 50
         push    di                                             ;#3170: 57
@@ -6743,12 +6644,12 @@ COPY_MAYBE_QUOTED:
 QUOTED_NEXT_CHAR:
         ; One character of the token
         lodsb                                                  ;#3174: AC
-        cmp     al, 0Dh                                        ;#3175: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3175: 3C 0D
         jz      short QUOTED_HIT_CR                            ;#3177: 74 18
-        cmp     al, 22h                                        ;#3179: 3C 22
+        cmp     al, '"'                                        ;#3179: 3C 22
         jnz     short QUOTED_STORE                             ;#317B: 75 05
         lodsb                                                  ;#317D: AC
-        cmp     al, 22h                                        ;#317E: 3C 22
+        cmp     al, '"'                                        ;#317E: 3C 22
         jnz     short QUOTED_TOOK_IT                           ;#3180: 75 17
 QUOTED_STORE:
         ; Room left, so keep it
@@ -6913,7 +6814,7 @@ PATHNAME_BACK_ONE:
         mov     al, [es:di-1]                                  ;#3214: 26 8A 45 FF
         call    near IS_PATH_SEP                               ;#3218: E8 53 FD
         jz      short PATHNAME_FOUND                           ;#321B: 74 09
-        cmp     al, 3Ah                                        ;#321D: 3C 3A
+        cmp     al, ":"                                        ;#321D: 3C 3A
         jz      short PATHNAME_FOUND                           ;#321F: 74 05
         dec     di                                             ;#3221: 4F
         cmp     di, dx                                         ;#3222: 3B FA
@@ -6960,7 +6861,7 @@ DECIMALBP_RETURN:
 DIGIT_AT_BP:
         ; CX = the digit at [BP], carry when it is not one
         mov     al, [bp]                                       ;#3251: 8A 46 00
-        sub     al, 30h                                        ;#3254: 2C 30
+        sub     al, "0"                                        ;#3254: 2C 30
         jb      short DIGITBP_RETURN                           ;#3256: 72 07
         cmp     al, 0Ah                                        ;#3258: 3C 0A
         cmc                                                    ;#325A: F5
@@ -6985,7 +6886,7 @@ PUT_TWO_DIGITS:
         aam                                                    ;#326A: D4 0A
         or      ax, 3030h                                      ;#326C: 0D 30 30
         xchg    al, ah                                         ;#326F: 86 E0
-        cmp     al, 30h                                        ;#3271: 3C 30
+        cmp     al, "0"                                        ;#3271: 3C 30
         jnz     short TWODIGITS_WRITE                          ;#3273: 75 02
         sub     al, bh                                         ;#3275: 2A C7
 TWODIGITS_WRITE:
@@ -7081,7 +6982,7 @@ PUT_BCD_NIBBLE:
         xor     ch, ch                                         ;#32D2: 32 ED
 BCDNIB_EMIT:
         ; Digit or blank, and CH decides which
-        add     al, 30h                                        ;#32D4: 04 30
+        add     al, "0"                                        ;#32D4: 04 30
         dec     cl                                             ;#32D6: FE C9
         and     ch, cl                                         ;#32D8: 22 E9
         sub     al, ch                                         ;#32DA: 2A C5
@@ -7108,7 +7009,7 @@ PARSE_DRIVE_INTO_FCB:
         pop     es                                             ;#32EE: 07
         mov     si, DRIVE_STRING_BUF                           ;#32EF: BE 08 47
         mov     di, PARSE_FCB                                  ;#32F2: BF 3D 4E
-        add     al, 41h                                        ;#32F5: 04 41
+        add     al, "A"                                        ;#32F5: 04 41
         mov     [si], al                                       ;#32F7: 88 04
         mov     word [si+1], 0D3Ah                             ;#32F9: C7 44 01 3A 0D
         mov     ax, 2901h                                      ;#32FE: B8 01 29
@@ -7164,7 +7065,7 @@ ARG_PARSE_INIT:
         mov     dx, di                                         ;#3316: 8B D7
         add     dx, 50h                                        ;#3318: 83 C2 50
         mov     ax, [bp]                                       ;#331B: 8B 46 00
-        cmp     al, 0Dh                                        ;#331E: 3C 0D
+        cmp     al, ASCII_CR                                   ;#331E: 3C 0D
         jz      short ARG_NEXT_CHAR                            ;#3320: 74 2B
         cmp     ah, 3Ah                                        ;#3322: 80 FC 3A
         jnz     short ARG_NEXT_CHAR                            ;#3325: 75 26
@@ -7192,7 +7093,7 @@ ARG_NEXT_CHAR:
         call    near IS_SEPARATOR                              ;#3355: E8 B3 FC
         jz      short ARG_NAME_ENDED                           ;#3358: 74 2A
         inc     bp                                             ;#335A: 45
-        cmp     al, 3Ah                                        ;#335B: 3C 3A
+        cmp     al, ":"                                        ;#335B: 3C 3A
         jz      short ARG_NAME_ENDED                           ;#335D: 74 25
         stosb                                                  ;#335F: AA
         and     byte [ARG_FLAGS], 0EFh                         ;#3360: 80 26 2D 47 EF
@@ -7227,7 +7128,7 @@ PARSE_DRIVE_PREFIX:
         ; Take an "X:" prefix if present, else CURRENT_DRIVE
         xor     dl, dl                                         ;#3393: 32 D2
         mov     al, [cs:CURRENT_DRIVE]                         ;#3395: 2E A0 06 47
-        add     al, 41h                                        ;#3399: 04 41
+        add     al, "A"                                        ;#3399: 04 41
         mov     ah, 3Ah                                        ;#339B: B4 3A
         cmp     [si], dl                                       ;#339D: 38 14
         jz      short DRIVEPREFIX_WRITE                        ;#339F: 74 0E
@@ -7320,7 +7221,7 @@ TAKE_NEXT_PATH_ENTRY:
         ;
         ; 3421    mov     ah, 3Ah
         ; mov     al, [cs:CURRENT_DRIVE]
-        ; add     al, 41h
+        ; add al, "A"
         ; cmp     [si+1], ah
         ; jnz     short PATH_ENTRY_CHECK_DRIVE
         ; lodsw
@@ -7352,7 +7253,7 @@ TAKE_NEXT_PATH_ENTRY:
         lodsb                                                  ;#340D: AC
         call    near IS_BLANK                                  ;#340E: E8 F3 FB
         jz      short TAKE_NEXT_PATH_ENTRY                     ;#3411: 74 FA
-        cmp     al, 3Bh                                        ;#3413: 3C 3B
+        cmp     al, ";"                                        ;#3413: 3C 3B
         jz      short TAKE_NEXT_PATH_ENTRY                     ;#3415: 74 F6
         or      al, al                                         ;#3417: 0A C0
         jz      short PATH_VALUE_FAIL                          ;#3419: 74 E8
@@ -7361,7 +7262,7 @@ TAKE_NEXT_PATH_ENTRY:
         xor     dl, dl                                         ;#341F: 32 D2
         mov     ah, 3Ah                                        ;#3421: B4 3A
         mov     al, [cs:CURRENT_DRIVE]                         ;#3423: 2E A0 06 47
-        add     al, 41h                                        ;#3427: 04 41
+        add     al, "A"                                        ;#3427: 04 41
         cmp     [si+1], ah                                     ;#3429: 38 64 01
         jnz     short PATH_ENTRY_CHECK_DRIVE                   ;#342C: 75 10
         lodsw                                                  ;#342E: AD
@@ -7386,7 +7287,7 @@ PATH_ENTRY_COPY_CHAR:
         stosb                                                  ;#3450: AA
         call    near IS_BLANK                                  ;#3451: E8 B0 FB
         jz      short PATH_ENTRY_ENDED                         ;#3454: 74 08
-        cmp     al, 3Bh                                        ;#3456: 3C 3B
+        cmp     al, ";"                                        ;#3456: 3C 3B
         jz      short PATH_ENTRY_ENDED                         ;#3458: 74 04
         or      al, al                                         ;#345A: 0A C0
         jnz     short PATH_ENTRY_COPY_CHAR                     ;#345C: 75 F1
@@ -7426,7 +7327,7 @@ PATH_ENTRY_SKIP_BLANK:
         lodsb                                                  ;#348C: AC
         call    near IS_BLANK                                  ;#348D: E8 74 FB
         jz      short PATH_ENTRY_RESTART                       ;#3490: 74 08
-        cmp     al, 3Bh                                        ;#3492: 3C 3B
+        cmp     al, ";"                                        ;#3492: 3C 3B
         jz      short PATH_ENTRY_RESTART                       ;#3494: 74 04
         or      al, al                                         ;#3496: 0A C0
         jnz     short PATH_ENTRY_SKIP_BLANK                    ;#3498: 75 F2
@@ -7441,7 +7342,7 @@ PARSE_DRIVE_LETTER:
         mov     al, [si]                                       ;#34A0: 8A 04
         call    near IS_NAME_TERMINATOR                        ;#34A2: E8 73 FA
         jz      short DRIVELET_RETURN                          ;#34A5: 74 1B
-        cmp     byte [si+1], 3Ah                               ;#34A7: 80 7C 01 3A
+        cmp     byte [si+1], ":"                               ;#34A7: 80 7C 01 3A
         jnz     short DRIVELET_RETURN                          ;#34AB: 75 15
         lodsw                                                  ;#34AD: AD
         call    near UPCASE_AL                                 ;#34AE: E8 4F FA
@@ -7453,7 +7354,7 @@ PARSE_DRIVE_LETTER:
         mov     ah, 0FFh                                       ;#34BE: B4 FF
 DRIVELET_MAKE_LETTER:
         ; Number to letter, valid or not
-        add     al, 41h                                        ;#34C0: 04 41
+        add     al, "A"                                        ;#34C0: 04 41
 DRIVELET_RETURN:
         ; AH is 0FFh when the drive does not exist
         or      ah, ah                                         ;#34C2: 0A E4
@@ -7465,7 +7366,7 @@ APPEND_CWD_BOUNDED:
         push    si                                             ;#34C6: 56
         stc                                                    ;#34C7: F9
         jcxz    CWDB_RETURN                                    ;#34C8: E3 29
-        mov     al, 5Ch                                        ;#34CA: B0 5C
+        mov     al, "\"                                        ;#34CA: B0 5C
         stosb                                                  ;#34CC: AA
         dec     cx                                             ;#34CD: 49
         push    es                                             ;#34CE: 06
@@ -7619,7 +7520,7 @@ TAKE_PATH_COMPONENT:
         ; mov     al, [si]
         ; call    near IS_NAME_TERMINATOR
         ; jz      short PB_SCAN_EXTENSION
-        ; 35E5    mov     al, 2Eh
+        ; 35E5    mov al, "."
         ; call    near PUT_BYTE_BOUNDED
         ;
         ; The '.' is written only if something follows it.  A name ending in a bare dot
@@ -7662,7 +7563,7 @@ PB_COMPONENT_FINISHED:
 PB_AFTER_NAME:
         ; The name ended; the terminator says what follows
         inc     si                                             ;#35AF: 46
-        cmp     al, 5Ch                                        ;#35B0: 3C 5C
+        cmp     al, "\"                                        ;#35B0: 3C 5C
         jnz     short PB_NAME_ENDED_COLON                      ;#35B2: 75 09
         jcxz    PB_EMPTY_COMPONENT                             ;#35B4: E3 02
         jmp     short TAKE_PATH_COMPONENT                      ;#35B6: EB C3
@@ -7674,7 +7575,7 @@ PB_EMPTY_COMPONENT:
 
 PB_NAME_ENDED_COLON:
         ; A ':' after the name — the drive case
-        cmp     al, 3Ah                                        ;#35BD: 3C 3A
+        cmp     al, ":"                                        ;#35BD: 3C 3A
         jnz     short PB_NAME_ENDED_DOT                        ;#35BF: 75 15
         or      bh, 10h                                        ;#35C1: 80 CF 10
         jcxz    PB_COMPONENT_FINISHED                          ;#35C4: E3 E7
@@ -7695,7 +7596,7 @@ PB_NAME_ENDED_DOT:
         jz      short PB_SCAN_EXTENSION                        ;#35E3: 74 09
 PB_WRITE_DOT:
         ; Put the '.' down, something follows it
-        mov     al, 2Eh                                        ;#35E5: B0 2E
+        mov     al, "."                                        ;#35E5: B0 2E
         call    near PUT_BYTE_BOUNDED                          ;#35E7: E8 DF 03
         mov     [es:bp+PB_CUR], di                             ;#35EA: 26 89 7E 62
 PB_SCAN_EXTENSION:
@@ -7706,7 +7607,7 @@ PB_SCAN_EXTENSION:
         call    near SCAN_NAME_COMPONENT                       ;#35F5: E8 9F 03
         jb      short PB_COMPONENT_DONE                        ;#35F8: 72 19
         inc     si                                             ;#35FA: 46
-        cmp     al, 5Ch                                        ;#35FB: 3C 5C
+        cmp     al, "\"                                        ;#35FB: 3C 5C
         jnz     short PB_EXT_ENDED_COLON                       ;#35FD: 75 0D
         jcxz    PB_NEXT_COMPONENT                              ;#35FF: E3 08
         test    bl, 4                                          ;#3601: F6 C3 04
@@ -7718,7 +7619,7 @@ PB_NEXT_COMPONENT:
 
 PB_EXT_ENDED_COLON:
         ; A ':' after the extension
-        cmp     al, 3Ah                                        ;#360C: 3C 3A
+        cmp     al, ":"                                        ;#360C: 3C 3A
         jnz     short PB_EXT_OVERRUN                           ;#360E: 75 06
 PB_MARK_HAD_COLON:
         ; Note the colon and finish
@@ -7739,9 +7640,9 @@ PB_SWALLOW_REST:
         call    near IS_NAME_TERMINATOR                        ;#3623: E8 F2 F8
         jb      short PB_COMPONENT_DONE                        ;#3626: 72 EB
         inc     si                                             ;#3628: 46
-        cmp     al, 5Ch                                        ;#3629: 3C 5C
+        cmp     al, "\"                                        ;#3629: 3C 5C
         jz      short PB_NEXT_COMPONENT                        ;#362B: 74 DC
-        cmp     al, 3Ah                                        ;#362D: 3C 3A
+        cmp     al, ":"                                        ;#362D: 3C 3A
         jz      short PB_MARK_HAD_COLON                        ;#362F: 74 DF
 PB_MARK_TOO_LONG:
         ; BH bit 3 records the overflow, then keep swallowing
@@ -7768,7 +7669,7 @@ PB_DRIVE_NOTED:
 PB_EMIT_DRIVE:
         ; The letter and its colon into the buffer
         call    near PUT_BYTE_BOUNDED                          ;#364E: E8 78 03
-        mov     al, 3Ah                                        ;#3651: B0 3A
+        mov     al, ":"                                        ;#3651: B0 3A
         call    near PUT_BYTE_BOUNDED                          ;#3653: E8 73 03
 PB_STORE_DRIVE_USED:
         ; Which drive the block ended up on
@@ -7792,7 +7693,7 @@ PB_CHECK_ROOT:
         call    near IS_NAME_TERMINATOR                        ;#3675: E8 A0 F8
         jb      short PB_SUPPLY_DIR                            ;#3678: 72 0D
         mov     byte [es:bp+PB_WAS_ABSOLUTE], 0FFh             ;#367A: 26 C6 46 5E FF
-        cmp     al, 5Ch                                        ;#367F: 3C 5C
+        cmp     al, "\"                                        ;#367F: 3C 5C
         jnz     short PB_SUPPLY_DIR                            ;#3681: 75 04
         inc     si                                             ;#3683: 46
         jmp     near APPEND_SLASH                              ;#3684: E9 3D 03
@@ -7809,12 +7710,12 @@ PB_SUPPLY_DIR:
         jb      short PB_DIR_CANNOT_HAPPEN                     ;#36A2: 72 1D
         cmp     byte [es:bp+PB_DRIVE], 0FFh                    ;#36A4: 26 80 7E 50 FF
         jnz     short PB_DIR_CANNOT_HAPPEN                     ;#36A9: 75 16
-        cmp     byte [es:di-1], 5Ch                            ;#36AB: 26 80 7D FF 5C
+        cmp     byte [es:di-1], "\"                            ;#36AB: 26 80 7D FF 5C
         jz      short PB_DIR_RETURN                            ;#36B0: 74 0E
         mov     al, [si]                                       ;#36B2: 8A 04
         call    near IS_NAME_TERMINATOR                        ;#36B4: E8 61 F8
         jb      short PB_DIR_RETURN                            ;#36B7: 72 07
-        cmp     al, 3Ah                                        ;#36B9: 3C 3A
+        cmp     al, ":"                                        ;#36B9: 3C 3A
         jz      short PB_DIR_RETURN                            ;#36BB: 74 03
         call    near APPEND_SLASH_NO_MARK                      ;#36BD: E8 07 03
 PB_DIR_RETURN:
@@ -7929,7 +7830,7 @@ PB_RESOLVE_IF_ASKED:
         ; stosb
         ; or      al, al
         ; jz      short PB_RETAKE_POSITIONS
-        ; cmp     al, 2Eh
+        ; cmp al, "."
         ; jnz     short PB_COPY_NAME
         ; mov     byte [es:di-1], 0
         ;
@@ -7988,7 +7889,7 @@ PB_FIND_FAILED:
         jnz     short PB_ADD_DOT_STAR                          ;#375F: 75 1B
         push    di                                             ;#3761: 57
         mov     di, [es:bp+PB_MARK]                            ;#3762: 26 8B 7E 60
-        cmp     byte [es:di], 2Eh                              ;#3766: 26 80 3D 2E
+        cmp     byte [es:di], "."                              ;#3766: 26 80 3D 2E
         pop     di                                             ;#376A: 5F
         jnz     short PB_TEST_EXISTS                           ;#376B: 75 12
         or      bh, 40h                                        ;#376D: 80 CF 40
@@ -8039,7 +7940,7 @@ PB_COPY_NAME:
         stosb                                                  ;#37B0: AA
         or      al, al                                         ;#37B1: 0A C0
         jz      short PB_RETAKE_POSITIONS                      ;#37B3: 74 13
-        cmp     al, 2Eh                                        ;#37B5: 3C 2E
+        cmp     al, "."                                        ;#37B5: 3C 2E
         jnz     short PB_COPY_NAME                             ;#37B7: 75 F5
         mov     byte [es:di-1], 0                              ;#37B9: 26 C6 45 FF 00
 PB_DROP_EXTENSION:
@@ -8147,7 +8048,7 @@ WILDNOSLASH_MARK:
         ; The mark moves here before '*.*' is written
         mov     [es:bp+PB_MARK], di                            ;#384E: 26 89 7E 60
         or      bl, 0Ch                                        ;#3852: 80 CB 0C
-        mov     al, 2Ah                                        ;#3855: B0 2A
+        mov     al, "*"                                        ;#3855: B0 2A
         call    near PUT_BYTE_BOUNDED                          ;#3857: E8 6F 01
         jmp     short APPEND_DOT_MARK                          ;#385A: EB 21
 
@@ -8173,10 +8074,10 @@ DOTSTAR_CHECK_EXT:
 APPEND_DOT_MARK:
         ; Set BL bits 4..6, write '.', and note PB_CUR
         or      bl, 70h                                        ;#387D: 80 CB 70
-        mov     al, 2Eh                                        ;#3880: B0 2E
+        mov     al, "."                                        ;#3880: B0 2E
         call    near PUT_BYTE_BOUNDED                          ;#3882: E8 44 01
         mov     [es:bp+PB_CUR], di                             ;#3885: 26 89 7E 62
-        mov     al, 2Ah                                        ;#3889: B0 2A
+        mov     al, "*"                                        ;#3889: B0 2A
         call    near PUT_BYTE_BOUNDED                          ;#388B: E8 3B 01
         mov     byte [es:di], 0                                ;#388E: 26 C6 05 00
         ret                                                    ;#3892: C3
@@ -8185,11 +8086,11 @@ PUT_STAR_AT_MARK:
         ; Set BL bits 2 and 3, then write '*' at PB_MARK
         or      bl, 0Ch                                        ;#3893: 80 CB 0C
         mov     di, [es:bp+PB_MARK]                            ;#3896: 26 8B 7E 60
-        mov     al, 2Ah                                        ;#389A: B0 2A
+        mov     al, "*"                                        ;#389A: B0 2A
         stosb                                                  ;#389C: AA
         test    bl, 20h                                        ;#389D: F6 C3 20
         jz      short STARMARK_TERMINATE                       ;#38A0: 74 13
-        mov     al, 2Eh                                        ;#38A2: B0 2E
+        mov     al, "."                                        ;#38A2: B0 2E
         inc     word [es:bp+PB_CUR]                            ;#38A4: 26 FF 46 62
 STARMARK_SHIFT_CHAR:
         ; Push what is there along by one
@@ -8273,12 +8174,12 @@ DOTS_BACK_ONE:
         dec     di                                             ;#38F2: 4F
         call    near ENDS_AT_SEPARATOR                         ;#38F3: E8 8E 00
         jnz     short DOTS_BACK_ONE                            ;#38F6: 75 FA
-        cmp     byte [es:di], 2Eh                              ;#38F8: 26 80 3D 2E
+        cmp     byte [es:di], "."                              ;#38F8: 26 80 3D 2E
         jnz     short DOTS_ORDINARY_NAME                       ;#38FC: 75 0B
         add     si, dx                                         ;#38FE: 03 F2
         push    si                                             ;#3900: 56
         inc     cx                                             ;#3901: 41
-        cmp     byte [es:di+1], 2Eh                            ;#3902: 26 80 7D 01 2E
+        cmp     byte [es:di+1], "."                            ;#3902: 26 80 7D 01 2E
         jz      short DOTS_RESTART                             ;#3907: 74 E2
 DOTS_ORDINARY_NAME:
         ; Not a dot: it may cancel a stacked '..'
@@ -8314,7 +8215,7 @@ DOTS_ALL_DONE:
         call    near TRIM_TRAILING_SLASH                       ;#393E: E8 21 00
         pop     di                                             ;#3941: 5F
         jb      short DOTS_FINISHED                            ;#3942: 72 1B
-        cmp     byte [di-1], 5Ch                               ;#3944: 80 7D FF 5C
+        cmp     byte [di-1], "\"                               ;#3944: 80 7D FF 5C
         jnz     short DOTS_FINISHED                            ;#3948: 75 15
         dec     di                                             ;#394A: 4F
         mov     byte [es:di], 0                                ;#394B: 26 C6 05 00
@@ -8330,14 +8231,14 @@ TRIM_TRAILING_SLASH:
         ; Drop a trailing 5Ch unless it follows a colon, so "C:\" survives
         cmp     di, bp                                         ;#3962: 3B FD
         jz      short TRIM_AT_LIMIT                            ;#3964: 74 1C
-        cmp     byte [es:di-1], 3Ah                            ;#3966: 26 80 7D FF 3A
+        cmp     byte [es:di-1], ":"                            ;#3966: 26 80 7D FF 3A
         jz      short TRIM_AT_LIMIT                            ;#396B: 74 15
-        cmp     byte [es:di-1], 5Ch                            ;#396D: 26 80 7D FF 5C
+        cmp     byte [es:di-1], "\"                            ;#396D: 26 80 7D FF 5C
         jnz     short TRIM_CAN_TRIM                            ;#3972: 75 0C
         dec     di                                             ;#3974: 4F
         cmp     di, bp                                         ;#3975: 3B FD
         jz      short TRIM_AT_LIMIT                            ;#3977: 74 09
-        cmp     byte [es:di-1], 3Ah                            ;#3979: 26 80 7D FF 3A
+        cmp     byte [es:di-1], ":"                            ;#3979: 26 80 7D FF 3A
         jz      short TRIM_AT_LIMIT                            ;#397E: 74 02
 TRIM_CAN_TRIM:
         ; There is something above the root to remove
@@ -8354,10 +8255,10 @@ ENDS_AT_SEPARATOR:
         cmp     di, bp                                         ;#3984: 3B FD
         stc                                                    ;#3986: F9
         jz      short ENDSSEP_RETURN                           ;#3987: 74 0D
-        cmp     byte [es:di-1], 3Ah                            ;#3989: 26 80 7D FF 3A
+        cmp     byte [es:di-1], ":"                            ;#3989: 26 80 7D FF 3A
         stc                                                    ;#398E: F9
         jz      short ENDSSEP_RETURN                           ;#398F: 74 05
-        cmp     byte [es:di-1], 5Ch                            ;#3991: 26 80 7D FF 5C
+        cmp     byte [es:di-1], "\"                            ;#3991: 26 80 7D FF 5C
 ENDSSEP_RETURN:
         ; Carry set when the last byte was ':' or a slash
         ret                                                    ;#3996: C3
@@ -8413,9 +8314,9 @@ SCAN_NAME_COMPONENT:
         call    near IS_NAME_TERMINATOR                        ;#3998: E8 7D F5
         jz      short NAMECOMP_ENDED                           ;#399B: 74 1C
         or      bl, dh                                         ;#399D: 0A DE
-        cmp     al, 3Fh                                        ;#399F: 3C 3F
+        cmp     al, "?"                                        ;#399F: 3C 3F
         jz      short NAMECOMP_MARK_WILD                       ;#39A1: 74 09
-        cmp     al, 2Ah                                        ;#39A3: 3C 2A
+        cmp     al, "*"                                        ;#39A3: 3C 2A
         jnz     short NAMECOMP_STORE_CHAR                      ;#39A5: 75 07
         jcxz    NAMECOMP_MARK_WILD                             ;#39A7: E3 03
         mov     cx, 1                                          ;#39A9: B9 01 00
@@ -8448,7 +8349,7 @@ APPEND_SLASH:
         or      bl, 2                                          ;#39C4: 80 CB 02
 APPEND_SLASH_NO_MARK:
         ; APPEND_SLASH without setting bit 1 of BL
-        mov     al, 5Ch                                        ;#39C7: B0 5C
+        mov     al, "\"                                        ;#39C7: B0 5C
 PUT_BYTE_BOUNDED:
         ; stosb while the count at [es:bp+64h] lasts; BH bit 80h when it runs out
         cmp     word [es:bp+PB_SPACE], 0                       ;#39C9: 26 83 7E 64 00
@@ -8517,13 +8418,13 @@ PRINT_NUL_STDOUT:
 PRINT_CR_STDOUT:
         ; AL=0Dh, BX=1 — CR-terminated
         push    ax                                             ;#39E9: 50
-        mov     al, 0Dh                                        ;#39EA: B0 0D
+        mov     al, ASCII_CR                                   ;#39EA: B0 0D
         jmp     short PRINT_WITH_BX1                           ;#39EC: EB 03
 
 PRINT_DOLLAR_STDOUT:
         ; AL=24h, BX=1 — the usual "$"-terminated form
         push    ax                                             ;#39EE: 50
-        mov     al, 24h                                        ;#39EF: B0 24
+        mov     al, "$"                                        ;#39EF: B0 24
 PRINT_WITH_BX1:
         ; Handle 1 and carry set, then PRINT_STRING_COMMON
         push    bx                                             ;#39F1: 53
@@ -8540,7 +8441,7 @@ PRINT_NUL_STDERR:
 PRINT_DOLLAR_STDERR:
         ; AL=24h, BX=2 — the stderr twin of PRINT_DOLLAR_STDOUT
         push    ax                                             ;#39FD: 50
-        mov     al, 24h                                        ;#39FE: B0 24
+        mov     al, "$"                                        ;#39FE: B0 24
 STDERR_WRITE:
         ; Handle 2, with AL saying which terminator
         push    bx                                             ;#3A00: 53
@@ -8668,7 +8569,7 @@ PROMPT_STR_NEXT_CHAR:
         lodsb                                                  ;#3AB1: AC
         or      al, al                                         ;#3AB2: 0A C0
         jz      short PROMPT_STR_RETURN                        ;#3AB4: 74 F7
-        cmp     al, 24h                                        ;#3AB6: 3C 24
+        cmp     al, "$"                                        ;#3AB6: 3C 24
         jz      short PROMPT_STR_ESCAPE                        ;#3AB8: 74 05
         call    near PUT_CHAR                                  ;#3ABA: E8 2C 00
         jmp     short PROMPT_STR_NEXT_CHAR                     ;#3ABD: EB F2
@@ -8704,7 +8605,7 @@ PROMPT_CR_LF:
 PROMPT_DRIVE:
         ; PROMPT $N — current drive letter
         mov     al, [cs:CURRENT_DRIVE]                         ;#3AE3: 2E A0 06 47
-        add     al, 41h                                        ;#3AE7: 04 41
+        add     al, "A"                                        ;#3AE7: 04 41
 PUT_CHAR:
         ; AH=2 bracketed by BRASCII on/off, like PRINT_STRING_COMMON
         push    ax                                             ;#3AE9: 50
@@ -8723,7 +8624,7 @@ PUT_CHAR:
 PUT_TWO_SPACES:
         ; Two PUT_CHAR calls with AL=20h
         push    ax                                             ;#3AFE: 50
-        mov     al, 20h                                        ;#3AFF: B0 20
+        mov     al, " "                                        ;#3AFF: B0 20
         call    near PUT_CHAR                                  ;#3B01: E8 E5 FF
         call    near PUT_CHAR                                  ;#3B04: E8 E2 FF
         pop     ax                                             ;#3B07: 58
@@ -8731,9 +8632,9 @@ PUT_TWO_SPACES:
 
 PUT_DRIVE_LETTER:
         ; AL + 'A', then PUT_CHAR
-        add     al, 41h                                        ;#3B09: 04 41
+        add     al, "A"                                        ;#3B09: 04 41
         call    near PUT_CHAR                                  ;#3B0B: E8 DB FF
-        mov     al, 3Ah                                        ;#3B0E: B0 3A
+        mov     al, ":"                                        ;#3B0E: B0 3A
         jmp     short PUT_CHAR                                 ;#3B10: EB D7
 
 PRINT_ARROW:
@@ -8749,33 +8650,33 @@ PRINT_ARROW:
         ret                                                    ;#3B1E: C3
 
 PROMPT_DOLLAR:
-        ; PROMPT $$ — a literal '$' (mov al,24h)
-        mov     al, 24h                                        ;#3B1F: B0 24
+        ; PROMPT $$ — a literal '$' (mov al,"$")
+        mov     al, "$"                                        ;#3B1F: B0 24
         jmp     short PUT_CHAR                                 ;#3B21: EB C6
 
 PROMPT_ESCAPE:
-        ; PROMPT $E — ESC, for ANSI sequences (mov al,1Bh)
-        mov     al, 1Bh                                        ;#3B23: B0 1B
+        ; PROMPT $E — ESC, for ANSI sequences (mov al,ASCII_ESC)
+        mov     al, ASCII_ESC                                  ;#3B23: B0 1B
         jmp     short PUT_CHAR                                 ;#3B25: EB C2
 
 PROMPT_LESS:
-        ; PROMPT $L — '<' (mov al,3Ch)
-        mov     al, 3Ch                                        ;#3B27: B0 3C
+        ; PROMPT $L — '<' (mov al,"<")
+        mov     al, "<"                                        ;#3B27: B0 3C
         jmp     short PUT_CHAR                                 ;#3B29: EB BE
 
 PROMPT_EQUAL:
-        ; PROMPT $Q — '=' (mov al,3Dh)
-        mov     al, 3Dh                                        ;#3B2B: B0 3D
+        ; PROMPT $Q — '=' (mov al,"=")
+        mov     al, "="                                        ;#3B2B: B0 3D
         jmp     short PUT_CHAR                                 ;#3B2D: EB BA
 
 PROMPT_GREATER:
-        ; PROMPT $G — '>' (mov al,3Eh)
-        mov     al, 3Eh                                        ;#3B2F: B0 3E
+        ; PROMPT $G — '>' (mov al,">")
+        mov     al, ">"                                        ;#3B2F: B0 3E
         jmp     short PUT_CHAR                                 ;#3B31: EB B6
 
 PROMPT_PIPE:
-        ; PROMPT $B — '|' (mov al,7Ch)
-        mov     al, 7Ch                                        ;#3B33: B0 7C
+        ; PROMPT $B — '|' (mov al,"|")
+        mov     al, "|"                                        ;#3B33: B0 7C
         jmp     short PUT_CHAR                                 ;#3B35: EB B2
 
 PROMPT_BACKSPACE:
@@ -8808,18 +8709,18 @@ PROMPT_DATE:
         mov     di, FORMAT_SCRATCH                             ;#3B60: BF 0B 47
         mov     si, DAY_ABBREV - TRANSIENT_BIAS                ;#3B63: BE 6C 06
         call    near COPY_3CHAR_ENTRY                          ;#3B66: E8 F7 F6
-        mov     al, 20h                                        ;#3B69: B0 20
+        mov     al, " "                                        ;#3B69: B0 20
         stosb                                                  ;#3B6B: AA
         mov     bh, 10h                                        ;#3B6C: B7 10
         mov     al, dl                                         ;#3B6E: 8A C2
         call    near PUT_TWO_DIGITS                            ;#3B70: E8 F7 F6
-        mov     al, 2Dh                                        ;#3B73: B0 2D
+        mov     al, "-"                                        ;#3B73: B0 2D
         stosb                                                  ;#3B75: AA
         mov     al, dh                                         ;#3B76: 8A C6
         dec     al                                             ;#3B78: FE C8
         mov     si, MONTH_ABBREV - TRANSIENT_BIAS              ;#3B7A: BE 48 06
         call    near COPY_3CHAR_ENTRY                          ;#3B7D: E8 E0 F6
-        mov     al, 2Dh                                        ;#3B80: B0 2D
+        mov     al, "-"                                        ;#3B80: B0 2D
         stosb                                                  ;#3B82: AA
         xchg    ax, cx                                         ;#3B83: 91
         mov     dl, 64h                                        ;#3B84: B2 64
@@ -8844,15 +8745,15 @@ PROMPT_TIME:
         mov     bh, 10h                                        ;#3BA2: B7 10
         mov     al, ch                                         ;#3BA4: 8A C5
         call    near PUT_TWO_DIGITS                            ;#3BA6: E8 C1 F6
-        mov     al, 3Ah                                        ;#3BA9: B0 3A
+        mov     al, ":"                                        ;#3BA9: B0 3A
         stosb                                                  ;#3BAB: AA
         mov     al, cl                                         ;#3BAC: 8A C1
         call    near PUT_TWO_DIGITS                            ;#3BAE: E8 B9 F6
-        mov     al, 3Ah                                        ;#3BB1: B0 3A
+        mov     al, ":"                                        ;#3BB1: B0 3A
         stosb                                                  ;#3BB3: AA
         mov     al, dh                                         ;#3BB4: 8A C6
         call    near PUT_TWO_DIGITS                            ;#3BB6: E8 B1 F6
-        mov     al, 2Eh                                        ;#3BB9: B0 2E
+        mov     al, "."                                        ;#3BB9: B0 2E
         stosb                                                  ;#3BBB: AA
         mov     al, dl                                         ;#3BBC: 8A C2
         call    near PUT_TWO_DIGITS                            ;#3BBE: E8 A9 F6
@@ -8871,13 +8772,13 @@ SCAN_TAIL_SPECIALS:
         ; unchanged.  IS_REDIR_CHAR picks them out, and what happens next differs for
         ; each:
         ;
-        ; 3BDD    cmp     al, 22h
+        ; 3BDD    cmp al, '"'
         ; jnz     short TAIL_CHECK_GT
         ; call    near COPY_QUOTED
-        ; 3BE6    cmp     al, 3Eh
+        ; 3BE6    cmp al, ">"
         ; jnz     short TAIL_CHECK_LT
         ; call    near PARSE_REDIR_OUT
-        ; 3BF1    cmp     al, 3Ch
+        ; 3BF1    cmp al, "<"
         ; jnz     short TAIL_IS_PIPE
         ; call    near PARSE_REDIR_IN
         ; 3BFC    or      byte [es:SHELL_FLAGS], SHELL_PIPE_ACTIVE
@@ -8898,9 +8799,9 @@ SCAN_TAIL_SPECIALS:
         ;
         ; 3C02    call    near SKIP_SEPARATORS_AT_SI
         ; jz      short TAIL_PIPE_SYNTAX
-        ; cmp     al, 7Ch
+        ; cmp al, "|"
         ; jz      short TAIL_PIPE_SYNTAX
-        ; mov     al, 7Ch
+        ; mov al, "|"
         ; cmp     [di-1], al
         ; jz      short TAIL_PIPE_SYNTAX
         ;
@@ -8917,20 +8818,20 @@ SCAN_TAIL_SPECIALS:
         jz      short TAIL_CHECK_QUOTE                         ;#3BD3: 74 08
         mov     [di], al                                       ;#3BD5: 88 05
         inc     di                                             ;#3BD7: 47
-        cmp     al, 0Dh                                        ;#3BD8: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3BD8: 3C 0D
         jnz     short SCAN_TAIL_SPECIALS                       ;#3BDA: 75 F3
         ret                                                    ;#3BDC: C3
 
 TAIL_CHECK_QUOTE:
         ; A quote takes the run verbatim
-        cmp     al, 22h                                        ;#3BDD: 3C 22
+        cmp     al, '"'                                        ;#3BDD: 3C 22
         jnz     short TAIL_CHECK_GT                            ;#3BDF: 75 05
         call    near COPY_QUOTED                               ;#3BE1: E8 4D 00
         jmp     short SCAN_TAIL_SPECIALS                       ;#3BE4: EB E9
 
 TAIL_CHECK_GT:
         ; '>' starts an output redirection
-        cmp     al, 3Eh                                        ;#3BE6: 3C 3E
+        cmp     al, ">"                                        ;#3BE6: 3C 3E
         jnz     short TAIL_CHECK_LT                            ;#3BE8: 75 07
         call    near PARSE_REDIR_OUT                           ;#3BEA: E8 5C 00
         jb      short TAIL_REDIR_SYNTAX                        ;#3BED: 72 28
@@ -8938,7 +8839,7 @@ TAIL_CHECK_GT:
 
 TAIL_CHECK_LT:
         ; '<' starts an input one
-        cmp     al, 3Ch                                        ;#3BF1: 3C 3C
+        cmp     al, "<"                                        ;#3BF1: 3C 3C
         jnz     short TAIL_IS_PIPE                             ;#3BF3: 75 07
         call    near PARSE_REDIR_IN                            ;#3BF5: E8 4B 00
         jb      short TAIL_REDIR_SYNTAX                        ;#3BF8: 72 1D
@@ -8949,9 +8850,9 @@ TAIL_IS_PIPE:
         or      byte [es:SHELL_FLAGS], SHELL_PIPE_ACTIVE       ;#3BFC: 26 80 0E 39 03 02
         call    near SKIP_SEPARATORS_AT_SI                     ;#3C02: E8 25 F4
         jz      short TAIL_PIPE_SYNTAX                         ;#3C05: 74 16
-        cmp     al, 7Ch                                        ;#3C07: 3C 7C
+        cmp     al, "|"                                        ;#3C07: 3C 7C
         jz      short TAIL_PIPE_SYNTAX                         ;#3C09: 74 12
-        mov     al, 7Ch                                        ;#3C0B: B0 7C
+        mov     al, "|"                                        ;#3C0B: B0 7C
         cmp     [di-1], al                                     ;#3C0D: 38 45 FF
         jz      short TAIL_PIPE_SYNTAX                         ;#3C10: 74 0B
         mov     [di], al                                       ;#3C12: 88 05
@@ -8971,9 +8872,9 @@ TAIL_PIPE_SYNTAX:
 NEXT_CHAR_QUOTED:
         ; lodsb, stopping at CR and tracking the quote state
         lodsb                                                  ;#3C23: AC
-        cmp     al, 0Dh                                        ;#3C24: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3C24: 3C 0D
         jz      short QUOTED_SCAN_RETURN                       ;#3C26: 74 08
-        cmp     al, 22h                                        ;#3C28: 3C 22
+        cmp     al, '"'                                        ;#3C28: 3C 22
         jnz     short NEXT_CHAR_QUOTED                         ;#3C2A: 75 F7
         inc     ch                                             ;#3C2C: FE C5
         jmp     short NEXT_CHAR_QUOTED                         ;#3C2E: EB F3
@@ -8991,7 +8892,7 @@ QUOTE_COPY_CHAR:
         mov     [di], al                                       ;#3C35: 88 05
         inc     di                                             ;#3C37: 47
         lodsb                                                  ;#3C38: AC
-        cmp     al, 22h                                        ;#3C39: 3C 22
+        cmp     al, '"'                                        ;#3C39: 3C 22
         jnz     short QUOTE_COPY_CHAR                          ;#3C3B: 75 F8
         dec     ch                                             ;#3C3D: FE CD
 QUOTE_STORE_LAST:
@@ -9011,7 +8912,7 @@ PARSE_REDIR_OUT:
         push    di                                             ;#3C49: 57
         mov     di, REDIR_OUT_NAME                             ;#3C4A: BF 3E 03
         mov     byte [es:di-1], 0                              ;#3C4D: 26 C6 45 FF 00
-        cmp     byte [si], 3Eh                                 ;#3C52: 80 3C 3E
+        cmp     byte [si], ">"                                 ;#3C52: 80 3C 3E
         jnz     short REDIROUT_TAKE_NAME                       ;#3C55: 75 05
         inc     byte [es:di-1]                                 ;#3C57: 26 FE 45 FF
         inc     si                                             ;#3C5B: 46
@@ -9053,7 +8954,7 @@ REDIR_NEXT_CHAR:
 REDIR_NAME_ENDED:
         ; Back one, and drop a trailing colon
         dec     si                                             ;#3C96: 4E
-        cmp     byte [es:di-1], 3Ah                            ;#3C97: 26 80 7D FF 3A
+        cmp     byte [es:di-1], ":"                            ;#3C97: 26 80 7D FF 3A
         jnz     short REDIR_TERMINATE                          ;#3C9C: 75 01
         dec     di                                             ;#3C9E: 4F
 REDIR_TERMINATE:
@@ -9287,7 +9188,7 @@ SAVE_CHAIN_LINE:
         mov     [es:CHAIN_CURSOR], di                          ;#3DDC: 26 89 3E EC 04
         call    near COPY_TO_CR_COUNTED                        ;#3DE1: E8 B0 F1
         mov     al, [CURRENT_DRIVE]                            ;#3DE4: A0 06 47
-        add     al, 41h                                        ;#3DE7: 04 41
+        add     al, "A"                                        ;#3DE7: 04 41
         push    es                                             ;#3DE9: 06
         pop     ds                                             ;#3DEA: 1F
         mov     [PIPE_TEMP_NAME_1], al                         ;#3DEB: A2 CC 04
@@ -9396,7 +9297,7 @@ BATCH_PARAM_CHAR:
         lodsb                                                  ;#3E7A: AC
         call    near IS_SEPARATOR                              ;#3E7B: E8 8D F1
         jz      short BATCH_END_PARAM                          ;#3E7E: 74 07
-        cmp     al, 0Dh                                        ;#3E80: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3E80: 3C 0D
         jz      short BATCH_PARAMS_DONE                        ;#3E82: 74 0B
         stosb                                                  ;#3E84: AA
         jmp     short BATCH_PARAM_CHAR                         ;#3E85: EB F3
@@ -9567,10 +9468,10 @@ FOR_BUILD_BODY_LINE:
         ;
         ; 3F63    mov     al, [si]
         ; cmp     [FOR_VARIABLE_CHAR], al
-        ; mov     al, 25h
+        ; mov al, "%"
         ; jnz     short FORBODY_STORE_CHAR
         ;
-        ; `mov al, 25h` sits between the compare and the branch, so the '%' is already
+        ; `mov al, "%"` sits between the compare and the branch, so the '%' is already
         ; back in AL for the not-matched path to store -- the flags carry the answer
         ; across an instruction that would otherwise have to be duplicated on both sides.
         ; A match instead copies from FOR_LIST_CURSOR until its NUL.
@@ -9587,13 +9488,13 @@ FORBODY_NEXT_CHAR:
         ; Reading the body backwards from its end
         mov     al, [si]                                       ;#3F36: 8A 04
         dec     si                                             ;#3F38: 4E
-        cmp     al, 25h                                        ;#3F39: 3C 25
+        cmp     al, "%"                                        ;#3F39: 3C 25
         jz      short FOR_SUBSTITUTE_VARIABLE                  ;#3F3B: 74 26
 FORBODY_STORE_CHAR:
         ; Anything that is not the variable
         call    near STORE_LINE_BYTE                           ;#3F3D: E8 7E FF
         jnz     short FORBODY_NEXT_CHAR                        ;#3F40: 75 F4
-        mov     al, 0Dh                                        ;#3F42: B0 0D
+        mov     al, ASCII_CR                                   ;#3F42: B0 0D
         stosb                                                  ;#3F44: AA
         test    byte [SHELL_FLAGS], SHELL_PIPE_ACTIVE          ;#3F45: F6 06 39 03 02
         jnz     short ECHOLINE_RETURN                          ;#3F4A: 75 15
@@ -9616,7 +9517,7 @@ FOR_SUBSTITUTE_VARIABLE:
         ; The character after '%' matched — copy the current list item
         mov     al, [si]                                       ;#3F63: 8A 04
         cmp     [FOR_VARIABLE_CHAR], al                        ;#3F65: 38 06 EF 05
-        mov     al, 25h                                        ;#3F69: B0 25
+        mov     al, "%"                                        ;#3F69: B0 25
         jnz     short FORBODY_STORE_CHAR                       ;#3F6B: 75 D0
         dec     si                                             ;#3F6D: 4E
         mov     bx, [FOR_LIST_CURSOR]                          ;#3F6E: 8B 1E F2 05
@@ -9655,9 +9556,9 @@ TAKE_NEXT_CHAINED_COMMAND:
         ; 3FBB    mov     di, LINE_BUF
         ; lodsb
         ; stosb
-        ; cmp     al, 7Ch
+        ; cmp al, "|"
         ; jz      short CHAIN_END_COMMAND
-        ; cmp     al, 0Dh
+        ; cmp al, ASCII_CR
         ; jnz     short CHAIN_COPY_CHAR
         ; dec     si
         ; or      byte [REDIR_FLAGS], 0Ah
@@ -9692,7 +9593,7 @@ CHAIN_TAKE_NEXT:
 
 CHAIN_CHECK_PIPE:
         ; Swap the two temporary names over
-        cmp     al, 7Ch                                        ;#3FAD: 3C 7C
+        cmp     al, "|"                                        ;#3FAD: 3C 7C
         jz      short CHAIN_SYNTAX_ERROR                       ;#3FAF: 74 E5
         mov     ax, [PIPE_NAME_PTRS]                           ;#3FB1: A1 C8 04
         xchg    [PIPE_NAME_PTRS+2], ax                         ;#3FB4: 87 06 CA 04
@@ -9702,15 +9603,15 @@ CHAIN_COPY_CHAR:
         ; Copy up to the next bar or the CR
         lodsb                                                  ;#3FBE: AC
         stosb                                                  ;#3FBF: AA
-        cmp     al, 7Ch                                        ;#3FC0: 3C 7C
+        cmp     al, "|"                                        ;#3FC0: 3C 7C
         jz      short CHAIN_END_COMMAND                        ;#3FC2: 74 0A
-        cmp     al, 0Dh                                        ;#3FC4: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3FC4: 3C 0D
         jnz     short CHAIN_COPY_CHAR                          ;#3FC6: 75 F6
         dec     si                                             ;#3FC8: 4E
         or      byte [REDIR_FLAGS], 0Ah                        ;#3FC9: 80 0E 3A 03 0A
 CHAIN_END_COMMAND:
         ; CR over the bar, cursor saved, carry set
-        mov     byte [es:di-1], 0Dh                            ;#3FCE: 26 C6 45 FF 0D
+        mov     byte [es:di-1], ASCII_CR                       ;#3FCE: 26 C6 45 FF 0D
         mov     [CHAIN_CURSOR], si                             ;#3FD3: 89 36 EC 04
         stc                                                    ;#3FD7: F9
         ret                                                    ;#3FD8: C3
@@ -9721,11 +9622,11 @@ BATCH_NEXT_LINE:
         ; a decision later on.
         ;
         ; 3FEB    call    near SCAN_LINE_END
-        ; cmp     al, 3Ah
+        ; cmp al, ":"
         ; jz      short BATCH_READ_LINE
-        ; cmp     al, 0Dh
+        ; cmp al, ASCII_CR
         ; jz      short BATCH_READ_LINE
-        ; cmp     al, 40h
+        ; cmp al, "@"
         ; jnz     short SCAN_FOR_PERCENT
         ; mov     byte [ECHO_THIS_LINE], 0
         ; call    near DELETE_ONE_CHAR
@@ -9754,11 +9655,11 @@ BATCH_READ_LINE:
         call    near READ_BATCH_LINE                           ;#3FE6: E8 F8 00
         jz      short BATCH_FILE_ENDED                         ;#3FE9: 74 31
         call    near SCAN_LINE_END                             ;#3FEB: E8 84 01
-        cmp     al, 3Ah                                        ;#3FEE: 3C 3A
+        cmp     al, ":"                                        ;#3FEE: 3C 3A
         jz      short BATCH_READ_LINE                          ;#3FF0: 74 EF
-        cmp     al, 0Dh                                        ;#3FF2: 3C 0D
+        cmp     al, ASCII_CR                                   ;#3FF2: 3C 0D
         jz      short BATCH_READ_LINE                          ;#3FF4: 74 EB
-        cmp     al, 40h                                        ;#3FF6: 3C 40
+        cmp     al, "@"                                        ;#3FF6: 3C 40
         jnz     short SCAN_FOR_PERCENT                         ;#3FF8: 75 08
         mov     byte [ECHO_THIS_LINE], 0                       ;#3FFA: C6 06 DE 03 00
         call    near DELETE_ONE_CHAR                           ;#3FFF: E8 DB 01
@@ -9767,12 +9668,12 @@ SCAN_FOR_PERCENT:
         ; Three substitutions, decided by the character after the '%':
         ;
         ; 4024    call    near DELETE_ONE_CHAR    ; the '%' goes first, always
-        ; cmp     byte [es:di], 25h
+        ; cmp byte [es:di], "%"
         ; jnz     short PCT_TRY_DIGIT
         ; inc     di                      ; '%%' -- keep one, move on
         ;
         ; 4030    mov     dl, [es:di]
-        ; sub     dl, 30h
+        ; sub dl, "0"
         ; cmp     dl, 9
         ; jnbe    short PCT_TRY_ENV_NAME             ; not a digit -- try %NAME%
         ; call    near DELETE_ONE_CHAR
@@ -9785,9 +9686,9 @@ SCAN_FOR_PERCENT:
         ;
         ; 4061    mov     si, di                  ; scan on for the closing '%'
         ; lodsb
-        ; cmp     al, 0Dh
+        ; cmp al, ASCII_CR
         ; jz      short PCT_LINE_DONE
-        ; cmp     al, 25h
+        ; cmp al, "%"
         ; jnz     short PCT_SCAN_NAME
         ; mov     ds, [PSP_ENV_SEG]       ; ...and look the name up
         ;
@@ -9800,9 +9701,9 @@ SCAN_FOR_PERCENT:
         ; already gone.  CR ends the line at 4010h, echoing it first when ECHO_THIS_LINE
         ; says so.
         mov     al, [es:di]                                    ;#4002: 26 8A 05
-        cmp     al, 25h                                        ;#4005: 3C 25
+        cmp     al, "%"                                        ;#4005: 3C 25
         jz      short PCT_SAW_PERCENT                          ;#4007: 74 1B
-        cmp     al, 0Dh                                        ;#4009: 3C 0D
+        cmp     al, ASCII_CR                                   ;#4009: 3C 0D
         jz      short PCT_LINE_DONE                            ;#400B: 74 03
         inc     di                                             ;#400D: 47
         jmp     short SCAN_FOR_PERCENT                         ;#400E: EB F2
@@ -9825,7 +9726,7 @@ BATCH_FILE_ENDED:
 PCT_SAW_PERCENT:
         ; The '%' is gone; what follows decides which substitution
         call    near DELETE_ONE_CHAR                           ;#4024: E8 B6 01
-        cmp     byte [es:di], 25h                              ;#4027: 26 80 3D 25
+        cmp     byte [es:di], "%"                              ;#4027: 26 80 3D 25
         jnz     short PCT_TRY_DIGIT                            ;#402B: 75 03
         inc     di                                             ;#402D: 47
         jmp     short SCAN_FOR_PERCENT                         ;#402E: EB D2
@@ -9833,7 +9734,7 @@ PCT_SAW_PERCENT:
 PCT_TRY_DIGIT:
         ; A digit means %0..%9 out of BATCH_PARAM_PTRS
         mov     dl, [es:di]                                    ;#4030: 26 8A 15
-        sub     dl, 30h                                        ;#4033: 80 EA 30
+        sub     dl, "0"                                        ;#4033: 80 EA 30
         cmp     dl, 9                                          ;#4036: 80 FA 09
         jnbe    short PCT_TRY_ENV_NAME                         ;#4039: 77 26
         call    near DELETE_ONE_CHAR                           ;#403B: E8 9F 01
@@ -9862,9 +9763,9 @@ PCT_TRY_ENV_NAME:
 PCT_SCAN_NAME:
         ; One character of the variable name
         lodsb                                                  ;#4063: 26 AC
-        cmp     al, 0Dh                                        ;#4065: 3C 0D
+        cmp     al, ASCII_CR                                   ;#4065: 3C 0D
         jz      short PCT_LINE_DONE                            ;#4067: 74 A7
-        cmp     al, 25h                                        ;#4069: 3C 25
+        cmp     al, "%"                                        ;#4069: 3C 25
         jnz     short PCT_SCAN_NAME                            ;#406B: 75 F6
         sub     si, di                                         ;#406D: 2B F7
         push    ds                                             ;#406F: 1E
@@ -9877,7 +9778,7 @@ PCT_ENV_COMPARE:
         lodsb                                                  ;#4078: AC
         mov     ah, al                                         ;#4079: 8A E0
         mov     al, [es:di]                                    ;#407B: 26 8A 05
-        cmp     al, 25h                                        ;#407E: 3C 25
+        cmp     al, "%"                                        ;#407E: 3C 25
         jz      short PCT_ENV_HIT                              ;#4080: 74 0F
         cmp     ah, 3Dh                                        ;#4082: 80 FC 3D
         jz      short PCT_ENV_NEXT                             ;#4085: 74 45
@@ -10058,7 +9959,7 @@ TERMINATE_LINE:
         ; Put a CR at DI-1 and set BP to LINE_BUF_END less that position
         mov     bx, di                                         ;#4165: 8B DF
         dec     bx                                             ;#4167: 4B
-        mov     byte [es:bx], 0Dh                              ;#4168: 26 C6 07 0D
+        mov     byte [es:bx], ASCII_CR                         ;#4168: 26 C6 07 0D
         mov     bp, LINE_BUF_END                               ;#416C: BD E3 46
         sub     bp, bx                                         ;#416F: 2B EB
         ret                                                    ;#4171: C3
@@ -10071,11 +9972,11 @@ LINE_SCAN_CHAR:
         ; One character, looking for CR, LF or 1Ah
         mov     al, [es:di]                                    ;#4177: 26 8A 05
         inc     di                                             ;#417A: 47
-        cmp     al, 0Dh                                        ;#417B: 3C 0D
+        cmp     al, ASCII_CR                                   ;#417B: 3C 0D
         jz      short LINE_ENDS_AT_CR                          ;#417D: 74 14
-        cmp     al, 0Ah                                        ;#417F: 3C 0A
+        cmp     al, ASCII_LF                                   ;#417F: 3C 0A
         jz      short LINE_ENDS_AT_CR                          ;#4181: 74 10
-        cmp     al, 1Ah                                        ;#4183: 3C 1A
+        cmp     al, ASCII_CTRL_Z                               ;#4183: 3C 1A
         jz      short LINE_AT_EOF                              ;#4185: 74 2E
         dec     cx                                             ;#4187: 49
         jnz     short LINE_SCAN_CHAR                           ;#4188: 75 ED
@@ -10097,11 +9998,11 @@ LINE_SKIP_TO_END:
         cmp     di, dx                                         ;#41A0: 3B FA
         jnbe    short LINE_ADVANCE_POS                         ;#41A2: 77 1F
         mov     al, [es:di]                                    ;#41A4: 26 8A 05
-        cmp     al, 0Ah                                        ;#41A7: 3C 0A
+        cmp     al, ASCII_LF                                   ;#41A7: 3C 0A
         jz      short LINE_SKIP_TO_END                         ;#41A9: 74 F4
-        cmp     al, 0Dh                                        ;#41AB: 3C 0D
+        cmp     al, ASCII_CR                                   ;#41AB: 3C 0D
         jz      short LINE_SKIP_TO_END                         ;#41AD: 74 F0
-        cmp     al, 1Ah                                        ;#41AF: 3C 1A
+        cmp     al, ASCII_CTRL_Z                               ;#41AF: 3C 1A
         jz      short LINE_MARK_EOF                            ;#41B1: 74 05
         jmp     short LINE_ADVANCE_POS                         ;#41B3: EB 0E
 
@@ -10143,7 +10044,7 @@ DELCHARS_SHIFT:
         ; Pull the tail down over what is going
         lodsb                                                  ;#41E5: 26 AC
         stosb                                                  ;#41E7: AA
-        cmp     al, 0Dh                                        ;#41E8: 3C 0D
+        cmp     al, ASCII_CR                                   ;#41E8: 3C 0D
         jnz     short DELCHARS_SHIFT                           ;#41EA: 75 F9
         pop     di                                             ;#41EC: 5F
         add     bp, cx                                         ;#41ED: 03 E9
@@ -10340,7 +10241,7 @@ PARSE_EXTERNAL_NAME:
         test    byte [ARG_FLAGS], ARG_HAS_NAME                 ;#42BD: F6 06 2D 47 04
         jz      short NOT_INTERNAL_COMMAND                     ;#42C2: 74 E6
         mov     si, [ARG_BUFFER_PTR]                           ;#42C4: 8B 36 2F 47
-        cmp     byte [si], 2Eh                                 ;#42C8: 80 3C 2E
+        cmp     byte [si], "."                                 ;#42C8: 80 3C 2E
         jz      short NOT_INTERNAL_COMMAND                     ;#42CB: 74 DD
         call    near SCAN_TO_DOT                               ;#42CD: E8 80 ED
         jz      short MAKE_EXTENSION_WILDCARD                  ;#42D0: 74 10
@@ -10766,7 +10667,7 @@ SPLIT_PATH_AT_MARK:
         pop     ds                                             ;#455E: 1F
         mov     dx, di                                         ;#455F: 8B D7
         mov     di, [di+PB_MARK]                               ;#4561: 8B 7D 60
-        cmp     byte [di-2], 3Ah                               ;#4564: 80 7D FE 3A
+        cmp     byte [di-2], ":"                               ;#4564: 80 7D FE 3A
         jz      short SPLITPATH_CUT                            ;#4568: 74 01
         dec     di                                             ;#456A: 4F
 SPLITPATH_CUT:
@@ -10872,7 +10773,7 @@ DIRCOL_PRINT_GAP:
         call    near PRINT_DOLLAR_STDOUT                       ;#45FB: E8 F0 F3
         lea     si, [DIR_DTA+DTA_NAME]                         ;#45FE: 8D 36 17 49
         mov     di, DIR_NAME_FIELD                             ;#4602: BF 71 48
-        cmp     byte [si], 2Eh                                 ;#4605: 80 3C 2E
+        cmp     byte [si], "."                                 ;#4605: 80 3C 2E
         jnz     short DIRCOL_NAME_AND_EXT                      ;#4608: 75 0A
         mov     cx, 0Ch                                        ;#460A: B9 0C 00
         xor     ax, ax                                         ;#460D: 33 C0
@@ -10891,7 +10792,7 @@ DIRCOL_NAME_AND_EXT:
         dec     si                                             ;#4623: 4E
 DIRCOL_SPACE_BEFORE_EXT:
         ; One space where the dot would be
-        mov     al, 20h                                        ;#4624: B0 20
+        mov     al, " "                                        ;#4624: B0 20
         stosb                                                  ;#4626: AA
         xor     ax, ax                                         ;#4627: 33 C0
         mov     cx, 3                                          ;#4629: B9 03 00
@@ -10914,7 +10815,7 @@ COPY_PADDED_FIELD:
 PADDED_FILL_REST:
         ; Nothing left to copy: blanks to the end
         push    ax                                             ;#4642: 50
-        mov     al, 20h                                        ;#4643: B0 20
+        mov     al, " "                                        ;#4643: B0 20
         rep     stosb                                          ;#4645: F3 AA
         pop     ax                                             ;#4647: 58
 PADDED_WRITE_TERMINATOR:
@@ -10984,13 +10885,13 @@ DIR_PRINT_DATE_TIME:
 DATETIME_BUILD_DATE:
         ; Day, month abbreviation, then the year
         mov     di, DIR_SIZE_FIELD                             ;#4673: BF 7E 48
-        mov     al, 20h                                        ;#4676: B0 20
+        mov     al, " "                                        ;#4676: B0 20
         stosb                                                  ;#4678: AA
         mov     ax, dx                                         ;#4679: 8B C2
         mov     bh, 10h                                        ;#467B: B7 10
         and     al, 1Fh                                        ;#467D: 24 1F
         call    near PUT_TWO_DIGITS                            ;#467F: E8 E8 EB
-        mov     al, 2Dh                                        ;#4682: B0 2D
+        mov     al, "-"                                        ;#4682: B0 2D
         stosb                                                  ;#4684: AA
         mov     ax, dx                                         ;#4685: 8B C2
         mov     cl, 5                                          ;#4687: B1 05
@@ -11001,7 +10902,7 @@ DATETIME_BUILD_DATE:
         mov     si, MONTH_ABBREV - TRANSIENT_BIAS              ;#4690: BE 48 06
         call    near COPY_3CHAR_ENTRY                          ;#4693: E8 CA EB
         pop     si                                             ;#4696: 5E
-        mov     al, 2Dh                                        ;#4697: B0 2D
+        mov     al, "-"                                        ;#4697: B0 2D
         stosb                                                  ;#4699: AA
         mov     al, dh                                         ;#469A: 8A C6
         shr     al, 1                                          ;#469C: D0 E8
@@ -11015,7 +10916,7 @@ DATETIME_PUT_YEAR:
         mov     bx, [si+PB_DTA+DTA_TIME]                       ;#46A9: 8B 5C 7C
         or      bx, bx                                         ;#46AC: 0B DB
         jz      short DATETIME_TERMINATE                       ;#46AE: 74 1C
-        mov     al, 20h                                        ;#46B0: B0 20
+        mov     al, " "                                        ;#46B0: B0 20
         stosb                                                  ;#46B2: AA
         shr     bx, 1                                          ;#46B3: D1 EB
         shr     bx, 1                                          ;#46B5: D1 EB
@@ -11025,7 +10926,7 @@ DATETIME_PUT_YEAR:
         mov     al, bh                                         ;#46BD: 8A C7
         mov     bh, 10h                                        ;#46BF: B7 10
         call    near PUT_TWO_DIGITS                            ;#46C1: E8 A6 EB
-        mov     al, 3Ah                                        ;#46C4: B0 3A
+        mov     al, ":"                                        ;#46C4: B0 3A
         stosb                                                  ;#46C6: AA
         mov     al, bl                                         ;#46C7: 8A C3
         call    near PUT_TWO_DIGITS                            ;#46C9: E8 9E EB
@@ -11779,20 +11680,20 @@ ASK_YES_NO:
         mov     ax, 0C08h                                      ;#4B11: B8 08 0C
         int     21h                                            ;#4B14: CD 21
         call    near UPCASE_AL                                 ;#4B16: E8 E7 E3
-        mov     dl, 53h                                        ;#4B19: B2 53
-        cmp     al, 53h                                        ;#4B1B: 3C 53
+        mov     dl, "S"                                        ;#4B19: B2 53
+        cmp     al, "S"                                        ;#4B1B: 3C 53
         clc                                                    ;#4B1D: F8
         jz      short ASKYESNO_ECHO                            ;#4B1E: 74 03
-        mov     dl, 4Eh                                        ;#4B20: B2 4E
+        mov     dl, "N"                                        ;#4B20: B2 4E
         stc                                                    ;#4B22: F9
 ASKYESNO_ECHO:
         ; Print whichever letter the answer settled on
         pushf                                                  ;#4B23: 9C
         mov     ah, 2                                          ;#4B24: B4 02
         int     21h                                            ;#4B26: CD 21
-        mov     dl, 0Dh                                        ;#4B28: B2 0D
+        mov     dl, ASCII_CR                                   ;#4B28: B2 0D
         int     21h                                            ;#4B2A: CD 21
-        mov     dl, 0Ah                                        ;#4B2C: B2 0A
+        mov     dl, ASCII_LF                                   ;#4B2C: B2 0A
         int     21h                                            ;#4B2E: CD 21
         popf                                                   ;#4B30: 9D
         pop     dx                                             ;#4B31: 5A
@@ -12140,7 +12041,7 @@ SHOW_VOLUME_LABEL:
         mov     al, 0                                          ;#4CF8: B0 00
         stosb                                                  ;#4CFA: AA
         mov     cx, 0Bh                                        ;#4CFB: B9 0B 00
-        mov     al, 3Fh                                        ;#4CFE: B0 3F
+        mov     al, "?"                                        ;#4CFE: B0 3F
         rep     stosb                                          ;#4D00: F3 AA
         mov     cx, 14h                                        ;#4D02: B9 14 00
         mov     al, 0                                          ;#4D05: B0 00
@@ -12294,7 +12195,8 @@ CMD_BRASCII:
         ;
         ; MENU is the odd one out.  It is a name, a table record and a handler that
         ; prints MSG_COMANDO_NAO_IMPLEMENTADO -- shipped as a promise rather than a
-        ; command.  BEEP at 5056h is the opposite: `mov al, 7` and a jump to PUT_CHAR.
+        ; command.  BEEP at 5056h is the opposite: `mov al, ASCII_BEL` and a jump to
+        ; PUT_CHAR.
         call    near PARSE_ON_OFF                              ;#4DBF: E8 8D 00
         jcxz    BRASCII_QUERY_STATE                            ;#4DC2: E3 23
         ; Seventeen distinct masks across 39 sites, and the two mode pairs are one routine
@@ -12440,7 +12342,7 @@ FILTRO_BAD_ARG:
 PARSE_ON_OFF:
         ; Optional "=", then ON_OFF_TABLE through LOOKUP_NAME_TABLE
         call    near SKIP_BLANKS_AT_BP                         ;#4E4F: E8 CD E1
-        cmp     byte [bp], 3Dh                                 ;#4E52: 80 7E 00 3D
+        cmp     byte [bp], "="                                 ;#4E52: 80 7E 00 3D
         jnz     short ONOFF_LOOK_UP                            ;#4E56: 75 03
         call    near SKIP_BLANKS_BP_NEXT                       ;#4E58: E8 C3 E1
 ONOFF_LOOK_UP:
@@ -12464,11 +12366,11 @@ CMD_PATH:
         ; Separators are normalised before anything else:
         ;
         ; 4E84    lodsb
-        ; cmp     al, 0Dh
+        ; cmp al, ASCII_CR
         ; jz      short CMDPATH_REPLACE_VARIABLE
         ; call    near IS_SEPARATOR
         ; jnz     short CMDPATH_SCAN_ENTRY
-        ; mov     byte [si-1], 3Bh
+        ; mov byte [si-1], ";"
         ; mov     di, si
         ; push    si
         ; call    near SKIP_SEPARATORS_AT_SI
@@ -12498,7 +12400,7 @@ CMDPATH_SKIP_SEPARATORS:
         lodsb                                                  ;#4E70: AC
         call    near IS_SEPARATOR_NO_SEMI                      ;#4E71: E8 9B E1
         jz      short CMDPATH_SKIP_SEPARATORS                  ;#4E74: 74 FA
-        cmp     al, 0Dh                                        ;#4E76: 3C 0D
+        cmp     al, ASCII_CR                                   ;#4E76: 3C 0D
         jz      short CMDPATH_SHOW_CURRENT                     ;#4E78: 74 4C
         dec     si                                             ;#4E7A: 4E
         mov     di, PSP_TAIL                                   ;#4E7B: BF 81 00
@@ -12507,11 +12409,11 @@ CMDPATH_SKIP_SEPARATORS:
 CMDPATH_SCAN_ENTRY:
         ; Walk the copy, turning separators into ';'
         lodsb                                                  ;#4E84: AC
-        cmp     al, 0Dh                                        ;#4E85: 3C 0D
+        cmp     al, ASCII_CR                                   ;#4E85: 3C 0D
         jz      short CMDPATH_REPLACE_VARIABLE                 ;#4E87: 74 15
         call    near IS_SEPARATOR                              ;#4E89: E8 7F E1
         jnz     short CMDPATH_SCAN_ENTRY                       ;#4E8C: 75 F6
-        mov     byte [si-1], 3Bh                               ;#4E8E: C6 44 FF 3B
+        mov     byte [si-1], ";"                               ;#4E8E: C6 44 FF 3B
         mov     di, si                                         ;#4E92: 8B FE
         push    si                                             ;#4E94: 56
         call    near SKIP_SEPARATORS_AT_SI                     ;#4E95: E8 92 E1
@@ -12524,7 +12426,7 @@ CMDPATH_REPLACE_VARIABLE:
         mov     si, ENV_NAME_PATH - TRANSIENT_BIAS             ;#4E9E: BE 1D 05
         mov     cx, 5                                          ;#4EA1: B9 05 00
         call    near DELETE_ENV_VARIABLE                       ;#4EA4: E8 4D E2
-        cmp     byte [PSP_TAIL], 3Bh                           ;#4EA7: 80 3E 81 00 3B
+        cmp     byte [PSP_TAIL], ";"                           ;#4EA7: 80 3E 81 00 3B
         jz      short CMDPATH_DONE                             ;#4EAC: 74 17
         call    near STORE_ENV_VARIABLE                        ;#4EAE: E8 24 01
         jb      short ERROR_ENV_FULL                           ;#4EB1: 72 31
@@ -12566,7 +12468,7 @@ ERROR_ENV_FULL:
 CMD_PROMPT:
         ; PROMPT: the rest of the line becomes the PROMPT environment variable
         call    near SKIP_BLANKS_AT_BP                         ;#4EEA: E8 32 E1
-        cmp     byte [bp], 3Dh                                 ;#4EED: 80 7E 00 3D
+        cmp     byte [bp], "="                                 ;#4EED: 80 7E 00 3D
         jnz     short PROMPT_TAKE_VALUE                        ;#4EF1: 75 03
         call    near SKIP_BLANKS_BP_NEXT                       ;#4EF3: E8 28 E1
 PROMPT_TAKE_VALUE:
@@ -12577,7 +12479,7 @@ PROMPT_TAKE_VALUE:
         mov     si, ENV_NAME_PROMPT - TRANSIENT_BIAS           ;#4EFE: BE 22 05
         mov     cx, 7                                          ;#4F01: B9 07 00
         call    near DELETE_ENV_VARIABLE                       ;#4F04: E8 ED E1
-        cmp     byte [PSP_TAIL], 0Dh                           ;#4F07: 80 3E 81 00 0D
+        cmp     byte [PSP_TAIL], ASCII_CR                      ;#4F07: 80 3E 81 00 0D
         jz      short PROMPT_VALUE_DONE                        ;#4F0C: 74 17
         call    near STORE_ENV_VARIABLE                        ;#4F0E: E8 C4 00
         jb      short ERROR_ENV_FULL                           ;#4F11: 72 D1
@@ -12610,7 +12512,7 @@ CMD_SET:
         ; A set is always delete-then-append, never an edit:
         ;
         ; 4F55    lea     cx, [si+0FF7Fh]         ; si - 81h, the "NAME=" length
-        ; cmp     byte [si], 0Dh          ; empty value?
+        ; cmp byte [si], ASCII_CR          ; empty value?
         ; pushf
         ; mov     si, PSP_TAIL
         ; call    near DELETE_ENV_VARIABLE
@@ -12630,21 +12532,21 @@ CMD_SET:
         mov     di, PSP_TAIL                                   ;#4F33: BF 81 00
         call    near COPY_TO_CR_GUARDED                        ;#4F36: E8 F1 E1
         mov     si, PSP_TAIL                                   ;#4F39: BE 81 00
-        cmp     byte [si], 0Dh                                 ;#4F3C: 80 3C 0D
+        cmp     byte [si], ASCII_CR                            ;#4F3C: 80 3C 0D
         jz      short SET_LIST_ENVIRONMENT                     ;#4F3F: 74 73
-        cmp     byte [si], 3Dh                                 ;#4F41: 80 3C 3D
+        cmp     byte [si], "="                                 ;#4F41: 80 3C 3D
         jz      short SET_SYNTAX_ERROR                         ;#4F44: 74 65
 SET_UPCASE_NAME:
         ; Upcase in place up to the '='
         lodsb                                                  ;#4F46: AC
         call    near UPCASE_AL                                 ;#4F47: E8 B6 DF
         mov     [si-1], al                                     ;#4F4A: 88 44 FF
-        cmp     al, 0Dh                                        ;#4F4D: 3C 0D
+        cmp     al, ASCII_CR                                   ;#4F4D: 3C 0D
         jz      short SET_SYNTAX_ERROR                         ;#4F4F: 74 5A
-        cmp     al, 3Dh                                        ;#4F51: 3C 3D
+        cmp     al, "="                                        ;#4F51: 3C 3D
         jnz     short SET_UPCASE_NAME                          ;#4F53: 75 F1
         lea     cx, [si+0FF7Fh]                                ;#4F55: 8D 8C 7F FF
-        cmp     byte [si], 0Dh                                 ;#4F59: 80 3C 0D
+        cmp     byte [si], ASCII_CR                            ;#4F59: 80 3C 0D
         pushf                                                  ;#4F5C: 9C
         mov     si, PSP_TAIL                                   ;#4F5D: BE 81 00
         call    near DELETE_ENV_VARIABLE                       ;#4F60: E8 91 E1
@@ -12663,7 +12565,7 @@ SET_COPY_VALUE:
 SET_STORE_CHAR:
         ; One character into the environment block
         stosb                                                  ;#4F7C: AA
-        cmp     al, 0Dh                                        ;#4F7D: 3C 0D
+        cmp     al, ASCII_CR                                   ;#4F7D: 3C 0D
         jnz     short SET_COPY_VALUE                           ;#4F7F: 75 EF
         xor     ax, ax                                         ;#4F81: 33 C0
         dec     di                                             ;#4F83: 4F
@@ -12821,7 +12723,7 @@ CMD_EXIT:
 
 CMD_BEEP:
         ; AL=7 into PUT_CHAR, and that is the whole command
-        mov     al, 7                                          ;#5056: B0 07
+        mov     al, ASCII_BEL                                  ;#5056: B0 07
         jmp     near PUT_CHAR                                  ;#5058: E9 8E EA
 
 CMD_PAUSE:
@@ -13108,7 +13010,7 @@ PARSE_COLOUR_NUMBER:
         jz      short COLOUR_NONE_GIVEN                        ;#520C: 74 29
         cmp     [cs:SWITCHAR_CHAR], al                         ;#520E: 2E 38 06 62 46
         jz      short COLOUR_NONE_GIVEN                        ;#5213: 74 22
-        cmp     al, 2Ch                                        ;#5215: 3C 2C
+        cmp     al, ","                                        ;#5215: 3C 2C
         jz      short COLOUR_SKIP_COMMA                        ;#5217: 74 1D
         xchg    si, bp                                         ;#5219: 87 EE
         mov     ah, 4                                          ;#521B: B4 04
@@ -13119,7 +13021,7 @@ PARSE_COLOUR_NUMBER:
         and     bx, 7                                          ;#5226: 81 E3 07 00
         mov     byte [CLS_NEEDS_INTENSITY], 1                  ;#522A: C6 06 63 4E 01
         call    near SKIP_WHITESPACE                           ;#522F: E8 D9 DC
-        cmp     al, 2Ch                                        ;#5232: 3C 2C
+        cmp     al, ","                                        ;#5232: 3C 2C
         jnz     short COLOUR_NONE_GIVEN                        ;#5234: 75 01
 COLOUR_SKIP_COMMA:
         ; Step over the separator before the next one
@@ -13186,7 +13088,7 @@ DT_YEAR_TAKEN:
 DT_PARSE_TIME:
         ; Hours, then ':' minutes, ':' seconds, '.' hundredths
         xchg    [TIME_HOUR], dl                                ;#5275: 86 16 5F 48
-        mov     bl, 3Ah                                        ;#5279: B3 3A
+        mov     bl, ":"                                        ;#5279: B3 3A
         call    near ACCEPT_CHAR_BL                            ;#527B: E8 11 01
         jb      short DT_TIME_TAKEN                            ;#527E: 72 27
         call    near PARSE_2_DIGITS                            ;#5280: E8 A6 DF
@@ -13197,7 +13099,7 @@ DT_PARSE_TIME:
         call    near PARSE_2_DIGITS                            ;#528E: E8 98 DF
         jb      short DT_BAD_TIME                              ;#5291: 72 2C
         xchg    [TIME_SECOND], dl                              ;#5293: 86 16 61 48
-        mov     bl, 2Eh                                        ;#5297: B3 2E
+        mov     bl, "."                                        ;#5297: B3 2E
         call    near ACCEPT_CHAR_BL                            ;#5299: E8 F3 00
         jb      short DT_TIME_TAKEN                            ;#529C: 72 09
         call    near PARSE_2_DIGITS                            ;#529E: E8 88 DF
@@ -13243,7 +13145,7 @@ ASK_DATE_AND_TIME:
         mov     [TIME_HUNDREDTHS], al                          ;#52DC: A2 62 48
         call    near SKIP_BLANKS_AT_BP                         ;#52DF: E8 3D DD
         jz      short DT_SHOW_TIME                             ;#52E2: 74 09
-        cmp     al, 3Dh                                        ;#52E4: 3C 3D
+        cmp     al, "="                                        ;#52E4: 3C 3D
         jnz     short DT_ASK_RET                               ;#52E6: 75 32
         call    near SKIP_BLANKS_BP_NEXT                       ;#52E8: E8 33 DD
         jnz     short DT_ASK_RET                               ;#52EB: 75 2D
@@ -13253,7 +13155,7 @@ DT_SHOW_TIME:
         call    near PROMPT_DATE                               ;#52F0: E8 69 E8
         call    near PUT_TWO_SPACES                            ;#52F3: E8 08 E8
         call    near PROMPT_TIME                               ;#52F6: E8 A2 E8
-        mov     byte [DATETIME_INPUT_BUF], 20h                 ;#52F9: C6 06 E4 46 20
+        mov     byte [DATETIME_INPUT_BUF], " "                 ;#52F9: C6 06 E4 46 20
         mov     word [DATETIME_INPUT_BUF+1], 0D00h             ;#52FE: C7 06 E5 46 00 0D
         mov     dx, MSG_ATUALIZE - TRANSIENT_BIAS              ;#5304: BA 39 06
         call    near PRINT_DOLLAR_STDOUT                       ;#5307: E8 E4 E6
@@ -13326,9 +13228,9 @@ SETDT_RETURN:
 ACCEPT_DASH_OR_SLASH:
         ; Take a '-' or '/' at BP, else leave BP alone and set carry
         inc     bp                                             ;#537F: 45
-        cmp     byte [bp-1], 2Dh                               ;#5380: 80 7E FF 2D
+        cmp     byte [bp-1], "-"                               ;#5380: 80 7E FF 2D
         jz      short DASHSLASH_RETURN                         ;#5384: 74 08
-        cmp     byte [bp-1], 2Fh                               ;#5386: 80 7E FF 2F
+        cmp     byte [bp-1], "/"                               ;#5386: 80 7E FF 2F
         jz      short DASHSLASH_RETURN                         ;#538A: 74 02
         dec     bp                                             ;#538C: 4D
         stc                                                    ;#538D: F9
@@ -13440,7 +13342,7 @@ CMD_APPEND:
         ; 548F    test    byte [APPEND_STATE], 80h
         ; jnz     short APPEND_STORE_IN_ENV         ; ...the environment instead
         ; mov     si, PSP_TAIL
-        ; cmp     byte [si], 3Bh
+        ; cmp byte [si], ";"
         ; jnz     short APPEND_SET_VIA_TSR
         ; mov     byte [si], 0        ; a lone ';' clears the list
         ; 54A1    mov     ax, 0B702h
@@ -13519,7 +13421,7 @@ APPEND_SKIP_SEPARATORS:
         lodsb                                                  ;#545B: AC
         call    near IS_SEPARATOR_NO_SEMI                      ;#545C: E8 B0 DB
         jz      short APPEND_SKIP_SEPARATORS                   ;#545F: 74 FA
-        cmp     al, 0Dh                                        ;#5461: 3C 0D
+        cmp     al, ASCII_CR                                   ;#5461: 3C 0D
         jz      short APPEND_SHOW_PATH                         ;#5463: 74 6A
         dec     si                                             ;#5465: 4E
         mov     di, PSP_TAIL                                   ;#5466: BF 81 00
@@ -13528,13 +13430,13 @@ APPEND_SKIP_SEPARATORS:
 APPEND_COPY_PATH:
         ; Copy one path, normalising its separator to ';'
         lodsb                                                  ;#546F: AC
-        cmp     al, 0Dh                                        ;#5470: 3C 0D
+        cmp     al, ASCII_CR                                   ;#5470: 3C 0D
         jz      short APPEND_STORE_PATH                        ;#5472: 74 1B
         cmp     [SWITCHAR_CHAR], al                            ;#5474: 38 06 62 46
         jz      short APPEND_BAD_COUNT                         ;#5478: 74 8E
         call    near IS_SEPARATOR                              ;#547A: E8 8E DB
         jnz     short APPEND_COPY_PATH                         ;#547D: 75 F0
-        mov     byte [si-1], 3Bh                               ;#547F: C6 44 FF 3B
+        mov     byte [si-1], ";"                               ;#547F: C6 44 FF 3B
         mov     di, si                                         ;#5483: 8B FE
         push    si                                             ;#5485: 56
         call    near SKIP_SEPARATORS_AT_SI                     ;#5486: E8 A1 DB
@@ -13547,7 +13449,7 @@ APPEND_STORE_PATH:
         test    byte [APPEND_STATE], 80h                       ;#548F: F6 06 9C 4A 80
         jnz     short APPEND_STORE_IN_ENV                      ;#5494: 75 11
         mov     si, PSP_TAIL                                   ;#5496: BE 81 00
-        cmp     byte [si], 3Bh                                 ;#5499: 80 3C 3B
+        cmp     byte [si], ";"                                 ;#5499: 80 3C 3B
         jnz     short APPEND_SET_VIA_TSR                       ;#549C: 75 03
         mov     byte [si], 0                                   ;#549E: C6 04 00
 APPEND_SET_VIA_TSR:
@@ -13561,7 +13463,7 @@ APPEND_STORE_IN_ENV:
         mov     si, MSG_APPEND - TRANSIENT_BIAS                ;#54A7: BE 12 07
         mov     cx, 7                                          ;#54AA: B9 07 00
         call    near DELETE_ENV_VARIABLE                       ;#54AD: E8 44 DC
-        cmp     byte [PSP_TAIL], 3Bh                           ;#54B0: 80 3E 81 00 3B
+        cmp     byte [PSP_TAIL], ";"                           ;#54B0: 80 3E 81 00 3B
         jz      short APPEND_STORE_DONE                        ;#54B5: 74 17
         call    near STORE_ENV_VARIABLE                        ;#54B7: E8 1B FB
         jb      short APPEND_ENV_FULL                          ;#54BA: 72 43
@@ -13753,7 +13655,7 @@ ASSIGN_PARSE_D:
         cmp     ah, [CURRENT_DRIVE]                            ;#55CD: 3A 26 06 47
         jz      short ASSIGN_INCONSISTENT                      ;#55D1: 74 34
         call    near SKIP_WHITESPACE                           ;#55D3: E8 35 D9
-        cmp     al, 3Dh                                        ;#55D6: 3C 3D
+        cmp     al, "="                                        ;#55D6: 3C 3D
         jnz     short ASSIGN_PARSE_SWITCH                      ;#55D8: 75 01
         inc     si                                             ;#55DA: 46
 ASSIGN_PARSE_SWITCH:
@@ -14085,7 +13987,7 @@ FOR_STORE_ATTR:
         ; Search attribute settled; now expect the '%'
         mov     [FOR_SEARCH_ATTR], al                          ;#579D: A2 F4 05
         call    near SKIP_BLANKS_AT_BP                         ;#57A0: E8 7C D8
-        cmp     al, 25h                                        ;#57A3: 3C 25
+        cmp     al, "%"                                        ;#57A3: 3C 25
         jnz     short FOR_SYNTAX_ERROR                         ;#57A5: 75 DB
         inc     bp                                             ;#57A7: 45
         mov     al, [bp]                                       ;#57A8: 8A 46 00
@@ -14095,7 +13997,7 @@ FOR_STORE_ATTR:
         jz      short FOR_SYNTAX_ERROR                         ;#57B3: 74 CD
         mov     [FOR_VARIABLE_CHAR], al                        ;#57B5: A2 EF 05
         call    near SKIP_BLANKS_BP_NEXT                       ;#57B8: E8 63 D8
-        cmp     al, 28h                                        ;#57BB: 3C 28
+        cmp     al, "("                                        ;#57BB: 3C 28
         jz      short FOR_START_LIST                           ;#57BD: 74 13
         mov     ax, [bp]                                       ;#57BF: 8B 46 00
         and     ax, 0DFDFh                                     ;#57C2: 25 DF DF
@@ -14103,7 +14005,7 @@ FOR_STORE_ATTR:
         jnz     short FOR_SYNTAX_ERROR                         ;#57C8: 75 B8
         inc     bp                                             ;#57CA: 45
         call    near SKIP_BLANKS_BP_NEXT                       ;#57CB: E8 50 D8
-        cmp     al, 28h                                        ;#57CE: 3C 28
+        cmp     al, "("                                        ;#57CE: 3C 28
         jnz     short FOR_SYNTAX_ERROR                         ;#57D0: 75 B0
 FOR_START_LIST:
         ; Past the '(': the list buffer starts here
@@ -14122,12 +14024,12 @@ FOR_LIST_CHAR:
         ; One character of a list entry
         mov     al, [bp]                                       ;#57E8: 8A 46 00
         inc     bp                                             ;#57EB: 45
-        cmp     al, 0Dh                                        ;#57EC: 3C 0D
+        cmp     al, ASCII_CR                                   ;#57EC: 3C 0D
         jz      short FOR_SYNTAX_ERROR                         ;#57EE: 74 92
         stosb                                                  ;#57F0: AA
         call    near IS_FOR_SEPARATOR                          ;#57F1: E8 3B 00
         jz      short FOR_END_LIST_ITEM                        ;#57F4: 74 05
-        cmp     al, 29h                                        ;#57F6: 3C 29
+        cmp     al, ")"                                        ;#57F6: 3C 29
         jnz     short FOR_LIST_CHAR                            ;#57F8: 75 EE
         stc                                                    ;#57FA: F9
 FOR_END_LIST_ITEM:
@@ -14161,13 +14063,13 @@ FOR_TAKE_BODY:
 
 IS_FOR_SEPARATOR:
         ; Space, TAB, comma and the rest of the FOR list separators
-        cmp     al, 20h                                        ;#582F: 3C 20
+        cmp     al, " "                                        ;#582F: 3C 20
         jz      short FORSEP_RETURN                            ;#5831: 74 0A
-        cmp     al, 9                                          ;#5833: 3C 09
+        cmp     al, ASCII_TAB                                  ;#5833: 3C 09
         jz      short FORSEP_RETURN                            ;#5835: 74 06
-        cmp     al, 2Ch                                        ;#5837: 3C 2C
+        cmp     al, ","                                        ;#5837: 3C 2C
         jz      short FORSEP_RETURN                            ;#5839: 74 02
-        cmp     al, 3Bh                                        ;#583B: 3C 3B
+        cmp     al, ";"                                        ;#583B: 3C 3B
 FORSEP_RETURN:
         ; Zero flag set for blank, tab, comma or ';'
         ret                                                    ;#583D: C3
@@ -14353,7 +14255,7 @@ IF_ASK_AND_COMPARE:
         call    near COPY_MAYBE_QUOTED                         ;#58E3: E8 84 D8
         jb      short IF_CHECK_EMPTY                           ;#58E6: 72 4C
         add     di, cx                                         ;#58E8: 03 F9
-        mov     al, 0Dh                                        ;#58EA: B0 0D
+        mov     al, ASCII_CR                                   ;#58EA: B0 0D
         stosb                                                  ;#58EC: AA
         mov     bp, si                                         ;#58ED: 8B EE
         call    near SKIP_BLANKS_AT_BP                         ;#58EF: E8 2D D7
@@ -14412,7 +14314,7 @@ LOOKUP_IF_KEYWORD:
         call    near LOOKUP_NAME_TABLE                         ;#5940: E8 FD D7
         jcxz    KEYWORD_NOT_MINE                               ;#5943: E3 11
         mov     al, [si]                                       ;#5945: 8A 04
-        cmp     al, 3Dh                                        ;#5947: 3C 3D
+        cmp     al, "="                                        ;#5947: 3C 3D
         jz      short KEYWORD_TAKE_ARG                         ;#5949: 74 0D
         cmp     al, [SWITCHAR_CHAR]                            ;#594B: 3A 06 62 46
         jz      short KEYWORD_TAKE_ARG                         ;#594F: 74 07
@@ -14439,7 +14341,7 @@ IF_NOT:
 
 IF_ERRORLEVEL:
         ; IF ERRORLEVEL — compare against the last exit code
-        cmp     al, 3Dh                                        ;#596A: 3C 3D
+        cmp     al, "="                                        ;#596A: 3C 3D
         jnz     short ERRLEVEL_PARSE_NUMBER                    ;#596C: 75 03
         call    near SKIP_BLANKS_BP_NEXT                       ;#596E: E8 AD D6
 ERRLEVEL_PARSE_NUMBER:
@@ -14623,7 +14525,7 @@ GOTO_TAKE_LABEL:
         ; Skip blanks, then the optional ':'
         call    near SKIP_BLANKS_AT_BP                         ;#5A39: E8 E3 D5
         jz      short GOTO_SYNTAX_ERROR                        ;#5A3C: 74 3A
-        cmp     al, 3Ah                                        ;#5A3E: 3C 3A
+        cmp     al, ":"                                        ;#5A3E: 3C 3A
         jnz     short GOTO_MEASURE_LABEL                       ;#5A40: 75 09
         inc     bp                                             ;#5A42: 45
         mov     al, [bp]                                       ;#5A43: 8A 46 00
@@ -14667,7 +14569,7 @@ GOTO_ABANDON_BATCH:
 GOTO_LINE_IS_LABEL:
         ; The line starts ':' — compare it
         call    near SCAN_LINE_END                             ;#5A88: E8 E7 E6
-        cmp     al, 3Ah                                        ;#5A8B: 3C 3A
+        cmp     al, ":"                                        ;#5A8B: 3C 3A
         jnz     short GOTO_READ_LINE                           ;#5A8D: 75 DF
         mov     si, [es:GOTO_LABEL_PTR]                        ;#5A8F: 26 8B 36 C5 49
         dec     si                                             ;#5A94: 4E
@@ -14832,7 +14734,7 @@ COPY_DEST_SWITCH:
         jnz     short COPY_DEST_BAD_PARAM                      ;#5B69: 75 EA
 COPY_DEST_ENDED:
         ; The argument is over; decide what the name still needs
-        cmp     byte [di-1], 3Ah                               ;#5B6B: 80 7D FF 3A
+        cmp     byte [di-1], ":"                               ;#5B6B: 80 7D FF 3A
         jnz     short COPY_DEST_NO_ARG                         ;#5B6F: 75 1B
         mov     si, DEST_NAME_BUF                              ;#5B71: BE 09 4C
         call    near GET_CWD_AT_SI                             ;#5B74: E8 F4 0A
@@ -15051,7 +14953,7 @@ COPY_RESET_STATE:
 SKIPNAME_NEXT_CHAR:
         ; Run to the CR or the next separator
         mov     al, [bp]                                       ;#5D00: 8A 46 00
-        cmp     al, 0Dh                                        ;#5D03: 3C 0D
+        cmp     al, ASCII_CR                                   ;#5D03: 3C 0D
         jz      short SKIPNAME_HIT_CR                          ;#5D05: 74 08
         call    near IS_SEPARATOR_OR_COLON                     ;#5D07: E8 20 09
         jz      short SKIPNAME_AT_SEPARATOR                    ;#5D0A: 74 05
@@ -15074,7 +14976,7 @@ SCAN_NAME_FOR_WILD:
 WILDSCAN_NEXT_CHAR:
         ; Up to the dot, the NUL or a wildcard
         mov     al, [si]                                       ;#5D15: 8A 04
-        cmp     al, 2Eh                                        ;#5D17: 3C 2E
+        cmp     al, "."                                        ;#5D17: 3C 2E
         jz      short WILDSCAN_AT_DOT                          ;#5D19: 74 17
         cmp     al, 0                                          ;#5D1B: 3C 00
         clc                                                    ;#5D1D: F8
@@ -15124,7 +15026,7 @@ COPY_CHECK_NAME:
         call    near SCAN_NAME_FOR_WILD                        ;#5D4E: E8 C2 FF
         jnb     short CHECKNAME_NO_WILDCARDS                   ;#5D51: 73 17
         call    near NEXT_NAME_CHAR                            ;#5D53: E8 4F 02
-        cmp     byte [si], 3Fh                                 ;#5D56: 80 3C 3F
+        cmp     byte [si], "?"                                 ;#5D56: 80 3C 3F
         jnz     short CHECKNAME_EXPAND_STAR                    ;#5D59: 75 04
         mov     [si], al                                       ;#5D5B: 88 04
         jmp     short CHECKNAME_NEXT_WILD                      ;#5D5D: EB 07
@@ -15240,7 +15142,7 @@ SWITCH_SET_MODE_FLAG:
         mov     ah, 0FFh                                       ;#5DFB: B4 FF
 SWITCH_AT_END:
         ; Zero flag reports whether the line ends here
-        cmp     byte [bp], 0Dh                                 ;#5DFD: 80 7E 00 0D
+        cmp     byte [bp], ASCII_CR                            ;#5DFD: 80 7E 00 0D
         clc                                                    ;#5E01: F8
         ret                                                    ;#5E02: C3
 
@@ -15364,7 +15266,7 @@ SRC_START_NAME:
 SRC_NEXT_CHAR:
         ; One character of the source name
         mov     al, [bp]                                       ;#5EA2: 8A 46 00
-        cmp     al, 2Bh                                        ;#5EA5: 3C 2B
+        cmp     al, "+"                                        ;#5EA5: 3C 2B
         jz      short COPY_AFTER_SOURCE                        ;#5EA7: 74 6A
         call    near IS_PATH_SEP                               ;#5EA9: E8 C2 D0
         jz      short FILEOP_MARK_NAME                         ;#5EAC: 74 5D
@@ -15386,12 +15288,12 @@ SRC_STORE_CHAR:
 
 SRC_SEPARATOR:
         ; A separator or ':' ended the name
-        cmp     al, 3Ah                                        ;#5ECB: 3C 3A
+        cmp     al, ":"                                        ;#5ECB: 3C 3A
         jz      short SRC_STEP_OVER                            ;#5ECD: 74 0C
         call    near SKIP_BLANKS_AT_BP                         ;#5ECF: E8 4D D1
         call    near IS_SEPARATOR_OR_COLON                     ;#5ED2: E8 55 07
         jnz     short SRC_TAKE_SWITCH                          ;#5ED5: 75 05
-        cmp     al, 3Ah                                        ;#5ED7: 3C 3A
+        cmp     al, ":"                                        ;#5ED7: 3C 3A
         jz      short COPY_NAME_FAIL                           ;#5ED9: 74 2B
 SRC_STEP_OVER:
         ; Consume it and carry on
@@ -15403,7 +15305,7 @@ SRC_TAKE_SWITCH:
         jz      short CHECK_DEST_WILDCARD                      ;#5EE1: 74 06
 SRC_CHECK_PLUS:
         ; A '+' after the name means another source
-        cmp     byte [bp], 2Bh                                 ;#5EE3: 80 7E 00 2B
+        cmp     byte [bp], "+"                                 ;#5EE3: 80 7E 00 2B
         jz      short COPY_AFTER_SOURCE                        ;#5EE7: 74 2A
 CHECK_DEST_WILDCARD:
         ; Terminate the name, then SCAN_NAME_FOR_WILD on the destination
@@ -15440,7 +15342,7 @@ COPY_AFTER_SOURCE:
         ; What comes after a source name, and the answer decides whether COPY is copying
         ; one file or concatenating several.
         ;
-        ; 5F3A    cmp     byte [bp], 2Bh
+        ; 5F3A    cmp byte [bp], "+"
         ; jnz     short CHECK_DEST_WILDCARD
         ; inc     bp
         ; 5F41    or      byte [COPY_FLAGS], 0C0h
@@ -15477,7 +15379,7 @@ COPY_AFTER_SOURCE:
         call    near COPY_SET_MODE                             ;#5F33: E8 37 FE
         jb      short FILEOP_RETURN                            ;#5F36: 72 D2
         jz      short CHECK_DEST_WILDCARD                      ;#5F38: 74 AF
-        cmp     byte [bp], 2Bh                                 ;#5F3A: 80 7E 00 2B
+        cmp     byte [bp], "+"                                 ;#5F3A: 80 7E 00 2B
         jnz     short CHECK_DEST_WILDCARD                      ;#5F3E: 75 A9
         inc     bp                                             ;#5F40: 45
 CONCAT_MARK_MULTIPLE:
@@ -15492,14 +15394,14 @@ CONCAT_NEXT_SOURCE:
         jz      short COPY_NAME_FAIL                           ;#5F52: 74 B2
         call    near SKIP_BLANKS_AT_BP                         ;#5F54: E8 C8 D0
         jz      short CHECK_DEST_WILDCARD                      ;#5F57: 74 90
-        cmp     byte [bp+1], 3Ah                               ;#5F59: 80 7E 01 3A
+        cmp     byte [bp+1], ":"                               ;#5F59: 80 7E 01 3A
         jnz     short CONCAT_SKIP_NAME                         ;#5F5D: 75 02
         inc     bp                                             ;#5F5F: 45
         inc     bp                                             ;#5F60: 45
 CONCAT_SKIP_NAME:
         ; Run over it -- COPY_NEXT_MATCH reads it later
         mov     al, [bp]                                       ;#5F61: 8A 46 00
-        cmp     al, 0Dh                                        ;#5F64: 3C 0D
+        cmp     al, ASCII_CR                                   ;#5F64: 3C 0D
         jz      short CONCAT_DONE                              ;#5F66: 74 18
         inc     bp                                             ;#5F68: 45
         call    near IS_SEPARATOR_OR_COLON                     ;#5F69: E8 BE 06
@@ -15509,7 +15411,7 @@ CONCAT_SKIP_NAME:
         call    near COPY_SET_MODE                             ;#5F73: E8 F7 FD
         jb      short FILEOP_RETURN                            ;#5F76: 72 92
         inc     bp                                             ;#5F78: 45
-        cmp     byte [bp-1], 2Bh                               ;#5F79: 80 7E FF 2B
+        cmp     byte [bp-1], "+"                               ;#5F79: 80 7E FF 2B
         jz      short CONCAT_NEXT_SOURCE                       ;#5F7D: 74 CB
         dec     bp                                             ;#5F7F: 4D
 CONCAT_DONE:
@@ -15552,7 +15454,7 @@ NEXTCHAR_SKIP_TO_DOT:
         inc     di                                             ;#5FAD: 47
         cmp     byte [di], 0                                   ;#5FAE: 80 3D 00
         jz      short NEXTCHAR_PAST_END                        ;#5FB1: 74 11
-        cmp     byte [di], 2Eh                                 ;#5FB3: 80 3D 2E
+        cmp     byte [di], "."                                 ;#5FB3: 80 3D 2E
         jnz     short NEXTCHAR_SKIP_TO_DOT                     ;#5FB6: 75 F5
 NEXTCHAR_COUNT_DOWN:
         ; CX characters along, stopping at the NUL
@@ -15566,7 +15468,7 @@ NEXTCHAR_COUNT_DOWN:
 
 NEXTCHAR_PAST_END:
         ; A blank stands in for the missing character
-        mov     al, 20h                                        ;#5FC4: B0 20
+        mov     al, " "                                        ;#5FC4: B0 20
         ret                                                    ;#5FC6: C3
 
 EXPAND_STAR_IN_NAME:
@@ -15574,7 +15476,7 @@ EXPAND_STAR_IN_NAME:
         ; The two wildcards are expanded in completely different ways, a few instructions
         ; apart:
         ;
-        ; 5D56    cmp     byte [si], 3Fh
+        ; 5D56    cmp byte [si], "?"
         ; jnz     short CHECKNAME_EXPAND_STAR
         ; mov     [si], al
         ; jmp     short CHECKNAME_NEXT_WILD
@@ -15623,7 +15525,7 @@ STAR_NO_EXTENSION:
 
 STAR_FIND_DOT:
         ; Walk the pattern looking for its extension
-        cmp     byte [bp+1], 2Eh                               ;#5FDE: 80 7E 01 2E
+        cmp     byte [bp+1], "."                               ;#5FDE: 80 7E 01 2E
         jz      short STAR_SAVE_EXTENSION                      ;#5FE2: 74 09
         cmp     byte [bp+1], 0                                 ;#5FE4: 80 7E 01 00
         jz      short STAR_NO_EXTENSION                        ;#5FE8: 74 E7
@@ -15654,7 +15556,7 @@ COPY_TO_DOT:
         cmp     al, 0                                          ;#6013: 3C 00
         clc                                                    ;#6015: F8
         jz      short COPYDOT_RETURN                           ;#6016: 74 0C
-        cmp     al, 2Eh                                        ;#6018: 3C 2E
+        cmp     al, "."                                        ;#6018: 3C 2E
         stc                                                    ;#601A: F9
         jz      short COPYDOT_RETURN                           ;#601B: 74 07
         mov     [bp], al                                       ;#601D: 88 46 00
@@ -15755,7 +15657,7 @@ ADVANCE_DS_64K:
 PUT_DRIVE_COLON:
         ; Write "X:" at DI, from [BP] if it has one, else CURRENT_DRIVE plus 41h
         mov     ax, [bp]                                       ;#60A9: 8B 46 00
-        cmp     al, 0Dh                                        ;#60AC: 3C 0D
+        cmp     al, ASCII_CR                                   ;#60AC: 3C 0D
         jz      short DRIVECOLON_USE_CURRENT                   ;#60AE: 74 0B
         cmp     ah, 3Ah                                        ;#60B0: 80 FC 3A
         jnz     short DRIVECOLON_USE_CURRENT                   ;#60B3: 75 06
@@ -15774,7 +15676,7 @@ DRIVECOLON_WRITE:
         mov     [di], ax                                       ;#60C4: 89 05
         inc     di                                             ;#60C6: 47
         inc     di                                             ;#60C7: 47
-        cmp     byte [bp], 0Dh                                 ;#60C8: 80 7E 00 0D
+        cmp     byte [bp], ASCII_CR                            ;#60C8: 80 7E 00 0D
         ret                                                    ;#60CC: C3
 
 OPEN_SRC_IF_NEEDED:
@@ -16612,7 +16514,7 @@ WRITE_FROM_BUFFER:
         ; Appending it needs a register swap:
         ;
         ; 654D    xchg    cx, si
-        ; mov     byte [si], 1Ah
+        ; mov byte [si], ASCII_CTRL_Z
         ; xchg    si, cx
         ; inc     cx
         ;
@@ -16669,7 +16571,7 @@ WRITE_LAST_PART:
 WRITE_ADD_CTRL_Z:
         ; ASCII mode wants a 1Ah at the end
         xchg    cx, si                                         ;#654D: 87 F1
-        mov     byte [si], 1Ah                                 ;#654F: C6 04 1A
+        mov     byte [si], ASCII_CTRL_Z                        ;#654F: C6 04 1A
         xchg    si, cx                                         ;#6552: 87 CE
         inc     cx                                             ;#6554: 41
 WRITE_TAIL:
@@ -16746,7 +16648,7 @@ FIND_CTRL_Z:
         mov     di, dx                                         ;#65D4: 8B FA
         push    ds                                             ;#65D6: 1E
         pop     es                                             ;#65D7: 07
-        mov     al, 1Ah                                        ;#65D8: B0 1A
+        mov     al, ASCII_CTRL_Z                               ;#65D8: B0 1A
         repne   scasb                                          ;#65DA: F2 AE
         pop     cx                                             ;#65DC: 59
         clc                                                    ;#65DD: F8
@@ -16767,7 +16669,7 @@ PRINT_SOURCE_NAME:
         call    near PRINT_DOLLAR_STDOUT                       ;#65EC: E8 FF D3
         mov     dx, CURRENT_NAME_BUF                           ;#65EF: BA 89 4B
         mov     al, [cs:CURRENT_DRIVE]                         ;#65F2: 2E A0 06 47
-        add     al, 41h                                        ;#65F6: 04 41
+        add     al, "A"                                        ;#65F6: 04 41
         cmp     [CURRENT_NAME_BUF], al                         ;#65F8: 38 06 89 4B
         jnz     short SRCNAME_PRINT                            ;#65FC: 75 02
         inc     dx                                             ;#65FE: 42
@@ -16801,19 +16703,19 @@ SRCDEV_RETURN:
 
 IS_SEPARATOR_OR_COLON:
         ; IS_SEPARATOR's set plus ':'
-        cmp     al, 20h                                        ;#662A: 3C 20
+        cmp     al, " "                                        ;#662A: 3C 20
         jz      short PUNCTSEP_RETURN                          ;#662C: 74 12
-        cmp     al, 9                                          ;#662E: 3C 09
+        cmp     al, ASCII_TAB                                  ;#662E: 3C 09
         jz      short PUNCTSEP_RETURN                          ;#6630: 74 0E
 IS_PUNCT_SEPARATOR:
         ; IS_SEPARATOR_OR_COLON past space and TAB: , ; : = only
-        cmp     al, 2Ch                                        ;#6632: 3C 2C
+        cmp     al, ","                                        ;#6632: 3C 2C
         jz      short PUNCTSEP_RETURN                          ;#6634: 74 0A
-        cmp     al, 3Bh                                        ;#6636: 3C 3B
+        cmp     al, ";"                                        ;#6636: 3C 3B
         jz      short PUNCTSEP_RETURN                          ;#6638: 74 06
-        cmp     al, 3Ah                                        ;#663A: 3C 3A
+        cmp     al, ":"                                        ;#663A: 3C 3A
         jz      short PUNCTSEP_RETURN                          ;#663C: 74 02
-        cmp     al, 3Dh                                        ;#663E: 3C 3D
+        cmp     al, "="                                        ;#663E: 3C 3D
 PUNCTSEP_RETURN:
         ; Zero flag set for the five punctuation marks
         ret                                                    ;#6640: C3
@@ -16826,7 +16728,7 @@ COPY_TEST_DEST_IS_DIR:
         ; 6641    mov     si, SAVED_CWD_BUF
         ; mov     dl, [DEST_NAME_BUF]
         ; mov     [SAVED_CWD_BUF], dl
-        ; mov     byte [SAVED_CWD_BUF+1], 3Ah
+        ; mov byte [SAVED_CWD_BUF+1], ":"
         ; call    near GET_CWD_AT_SI
         ; mov     ah, 3Bh
         ; mov     dx, DEST_NAME_BUF
@@ -16849,7 +16751,7 @@ COPY_TEST_DEST_IS_DIR:
         mov     si, SAVED_CWD_BUF                              ;#6641: BE 79 49
         mov     dl, [DEST_NAME_BUF]                            ;#6644: 8A 16 09 4C
         mov     [SAVED_CWD_BUF], dl                            ;#6648: 88 16 79 49
-        mov     byte [SAVED_CWD_BUF+1], 3Ah                    ;#664C: C6 06 7A 49 3A
+        mov     byte [SAVED_CWD_BUF+1], ":"                    ;#664C: C6 06 7A 49 3A
         call    near GET_CWD_AT_SI                             ;#6651: E8 17 00
         mov     ah, 3Bh                                        ;#6654: B4 3B
         mov     dx, DEST_NAME_BUF                              ;#6656: BA 09 4C
@@ -17403,7 +17305,7 @@ FCB_WILDCARD_NAME:
         ; That is 0FFh for an extended FCB, five reserved zeros, attribute 8 for a volume
         ; label, drive 0, and eleven wildcards.  SHOW_VOLUME_LABEL writes exactly those
         ; bytes again at 4CE8h before every search -- `mov al, 0FFh / stosb`, five zeros,
-        ; `mov al, 8`, then `mov cx, 0Bh / mov al, 3Fh / rep stosb` -- so the copy in the
+        ; `mov al, 8`, then `mov cx, 0Bh / mov al, "?" / rep stosb` -- so the copy in the
         ; image is never the one that gets used.
         ;
         ; Only +7 changes: 4D0Dh puts the drive there after the rebuild, which is the
